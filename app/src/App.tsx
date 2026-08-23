@@ -1443,6 +1443,202 @@ function useTrackFeed() {
   return { sess, pos };
 }
 
+type RoomState = {
+  tcDec: number;
+  specOn: boolean;
+  waveOn: boolean;
+  fftOn: boolean;
+  specWin: number;
+  specFloor: number;
+  specLinear: boolean;
+  mode: "bypass" | "eq";
+  scrubTau: number;
+  scrubMax: number;
+};
+
+/**
+ * The Clip Studio ⚙ menu, satellite edition: the SAME menu as the main
+ * window, but the state has one owner — main feeds it over "room-state" and
+ * every change goes back over "room-cmd". Note: typing in the number fields
+ * may be dead here (Q-20: satellites get no DOM keys); the spinners and segs
+ * are clicks and always work.
+ */
+function ScopeRoomMenu() {
+  const [open, setOpen] = useState(false);
+  const [st, setSt] = useState<RoomState | null>(null);
+  useEffect(() => {
+    const un = listen<RoomState>("room-state", (e) => setSt(e.payload));
+    emit("scope-hello", "room-menu");
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
+  const cmd = (key: string, value: number | string) => emit("room-cmd", { key, value });
+  return (
+    <span style={{ position: "relative" }}>
+      <span
+        className="row-act"
+        title="Clip Studio view settings — shared with the main window"
+        onClick={() => setOpen((o) => !o)}
+      >
+        ⚙
+      </span>
+      {open && st && (
+        <div className="preset-menu device-menu room-menu">
+          <span className="mono lab-label">CLIP STUDIO VIEW</span>
+          <div className="room-row">
+            <span className="room-key">Timecode decimals</span>
+            <div className="seg seg-sm">
+              {[1, 2, 3].map((v) => (
+                <span
+                  key={v}
+                  className={`seg-opt ${st.tcDec === v ? "on" : ""}`}
+                  onClick={() => cmd("tcdec", v)}
+                >
+                  {`.${"0".repeat(v)}`}
+                </span>
+              ))}
+            </div>
+          </div>
+          <div className="room-row">
+            <span className="room-key">Scopes</span>
+            <div className="is-tags">
+              {(
+                [
+                  ["spec", "Spec", st.specOn],
+                  ["wave", "Wave", st.waveOn],
+                  ["fft", "FFT", st.fftOn],
+                ] as const
+              ).map(([k, label, on]) => (
+                <span
+                  key={k}
+                  className={`scale-opt ${on ? "on" : ""}`}
+                  onClick={() => cmd("scope", k)}
+                >
+                  {label}
+                </span>
+              ))}
+            </div>
+          </div>
+          <div className="room-row">
+            <span
+              className="room-key"
+              title="FFT window: smaller = sharper in time (transients, rhythm), bigger = sharper in frequency (tones, harmonics). 256 ≈ 5 ms slices; 8k ≈ 170 ms."
+            >
+              Spectrogram window
+            </span>
+            <div className="seg seg-sm">
+              {(
+                [
+                  [256, "256"],
+                  [512, "512"],
+                  [1024, "1k"],
+                  [2048, "2k"],
+                  [4096, "4k"],
+                  [8192, "8k"],
+                ] as const
+              ).map(([v, label]) => (
+                <span
+                  key={v}
+                  className={`seg-opt ${st.specWin === v ? "on" : ""}`}
+                  onClick={() => cmd("specwin", v)}
+                >
+                  {label}
+                </span>
+              ))}
+            </div>
+          </div>
+          <div className="room-row">
+            <span
+              className="room-key"
+              title="Log matches hearing (octaves get equal space). Linear gives every Hz equal space — harmonic stacks read as evenly spaced lines, and the treble half isn't squeezed."
+            >
+              Spectrogram axis
+            </span>
+            <div className="seg seg-sm">
+              <span
+                className={`seg-opt ${!st.specLinear ? "on" : ""}`}
+                onClick={() => cmd("speclinear", 0)}
+              >
+                Log
+              </span>
+              <span
+                className={`seg-opt ${st.specLinear ? "on" : ""}`}
+                onClick={() => cmd("speclinear", 1)}
+              >
+                Linear
+              </span>
+            </div>
+          </div>
+          <div className="room-row">
+            <span className="room-key">Spectrogram floor</span>
+            <div className="seg seg-sm">
+              {(
+                [
+                  [-70, "hot"],
+                  [-90, "normal"],
+                  [-110, "deep"],
+                ] as const
+              ).map(([v, label]) => (
+                <span
+                  key={v}
+                  className={`seg-opt ${st.specFloor === v ? "on" : ""}`}
+                  onClick={() => cmd("specfloor", v)}
+                >
+                  {label}
+                </span>
+              ))}
+            </div>
+          </div>
+          <div className="room-row">
+            <span
+              className="room-key"
+              title="How held-C chases your cursor. Chase is its reaction time — every chase interval it closes ~63% of the remaining gap to the mouse (smaller = tighter to your hand, larger = smoother tape-like glide). Max caps how fast it may play while catching up, in multiples of real time. Defaults: 60 ms · 8×."
+            >
+              Scrub feel
+            </span>
+            <div className="trials-ctl">
+              <GenNum
+                value={st.scrubTau}
+                min={5}
+                max={1000}
+                unit="ms chase"
+                onCommit={(v) => cmd("scrubtau", v)}
+              />
+              <GenNum
+                value={st.scrubMax}
+                min={0.5}
+                max={64}
+                unit="× max"
+                onCommit={(v) => cmd("scrubmax", v)}
+              />
+            </div>
+          </div>
+          <div className="room-row">
+            <span className="room-key">Play method</span>
+            <div className="seg seg-sm">
+              <span
+                className={`seg-opt ${st.mode === "bypass" ? "on" : ""}`}
+                onClick={() => cmd("mode", "bypass")}
+                title="Curation: the track itself — exclusive device, no EQ, level-matched toward the reference. Takes effect on the next play."
+              >
+                Bypass
+              </span>
+              <span
+                className={`seg-opt ${st.mode === "eq" ? "on" : ""}`}
+                onClick={() => cmd("mode", "eq")}
+                title="A regular player: the normal shared path — your EQ and the level-matched A/B apply like for any stream. Takes effect on the next play."
+              >
+                Through EQ
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+    </span>
+  );
+}
+
 /** The spectrogram in its own window — zoom/pan/seek, fed by broadcasts. */
 function PopoutScopeSpec() {
   const { sess, pos } = useTrackFeed();
@@ -1538,6 +1734,7 @@ function PopoutScopeSpec() {
         <span className="mono hist-title">SPECTROGRAM</span>
         <span className="spacer" />
         <span className="mono dim-sm">live · click = seek · scroll = zoom · drag = pan</span>
+        <ScopeRoomMenu />
       </div>
       {sess ? (
         <div className="scope-body">
@@ -1589,6 +1786,7 @@ function PopoutScopeFft() {
         <span className="mono hist-title">FFT</span>
         <span className="spacer" />
         <span className="mono dim-sm">spectrum at the playhead · your EQ overlaid</span>
+        <ScopeRoomMenu />
       </div>
       {sess ? (
         <div className="scope-body">
@@ -2942,6 +3140,22 @@ function MainApp() {
     }
   }, [scrubTau, scrubMax]);
 
+  // The satellites' ⚙ menus mirror this state — rebroadcast on any change.
+  useEffect(() => {
+    emit("room-state", {
+      tcDec,
+      specOn,
+      waveOn,
+      fftOn,
+      specWin,
+      specFloor,
+      specLinear,
+      mode: studioMode,
+      scrubTau,
+      scrubMax,
+    });
+  }, [tcDec, specOn, waveOn, fftOn, specWin, specFloor, specLinear, studioMode, scrubTau, scrubMax]);
+
   // Audible scrub (Resolve): while C is held the cursor IS the playhead —
   // each move sounds a short burst at the new spot, stillness holds silent,
   // and releasing C hands the transport back exactly as it was.
@@ -3551,6 +3765,7 @@ function MainApp() {
     scopeClosed: (_label: string) => {},
     scopeKey: (_p: { key: string; state: string }) => {},
     scopeHello: () => {},
+    roomCmd: (_p: { key: string; value: number | string }) => {},
   });
   pushRef.current = {
     // Push-based updates from the Rust config watcher — no polling. Ignored
@@ -3587,6 +3802,30 @@ function MainApp() {
     scopeHello: () => {
       emit("io-region", ioRegionRef.current ?? null);
       emit("spec-params", { win: specWin, floor: specFloor, linear: specLinear });
+      emit("room-state", {
+        tcDec,
+        specOn,
+        waveOn,
+        fftOn,
+        specWin,
+        specFloor,
+        specLinear,
+        mode: studioMode,
+        scrubTau,
+        scrubMax,
+      });
+    },
+    // A satellite's ⚙ menu made a change — main owns the state, applies it
+    // through the same pick functions, and rebroadcasts.
+    roomCmd: (p) => {
+      const num = typeof p.value === "number" ? p.value : Number(p.value);
+      if (p.key === "tcdec") pickTcDec(num);
+      else if (p.key === "scope") toggleScope(p.value as "spec" | "wave" | "fft");
+      else if (p.key === "specwin" || p.key === "specfloor" || p.key === "speclinear")
+        pickSpecParam(p.key, num);
+      else if (p.key === "mode") pickStudioMode(p.value === "eq" ? "eq" : "bypass");
+      else if (p.key === "scrubtau") commitScrub("tau", num);
+      else if (p.key === "scrubmax") commitScrub("max", num);
     },
     trackState: (p) => {
       const id = p.trackId as number;
@@ -3658,7 +3897,11 @@ function MainApp() {
       pushRef.current.scopeKey(e.payload),
     );
     const unlistenScopeHello = listen("scope-hello", () => pushRef.current.scopeHello());
+    const unlistenRoomCmd = listen<{ key: string; value: number | string }>("room-cmd", (e) =>
+      pushRef.current.roomCmd(e.payload),
+    );
     return () => {
+      unlistenRoomCmd.then((f) => f());
       unlistenScopeHello.then((f) => f());
       unlistenScopeClosed.then((f) => f());
       unlistenScopeKey.then((f) => f());
