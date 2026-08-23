@@ -517,13 +517,258 @@ fn ab_set(side: String) -> Result<EqState, String> {
 }
 
 /// Flip A/B (hotkey + tray path); emits `ab-changed` with the new side.
+/// During an ABX session the hotkey cycles the audition target instead.
 fn ab_flip(app: &tauri::AppHandle) {
     use tauri::Emitter;
+    {
+        let mut guard = ABX.lock().unwrap();
+        if let Some(session) = guard.as_mut() {
+            let next = match session.audition.as_str() {
+                "a" => "b",
+                "b" => "x",
+                _ => "a",
+            };
+            if abx_apply_audition(session, next).is_ok() {
+                let _ = app.emit("abx-audition", next);
+            }
+            return;
+        }
+    }
     let next = if ab_side() == "a" { "b" } else { "a" };
     if apply_side(next).is_ok() {
         set_ab_side(next);
         let _ = app.emit("ab-changed", next);
     }
+}
+
+// ---------------- ABX: the trial room engine ----------------
+//
+// The session lives server-side only; X assignments never reach the UI while
+// the session runs (that's the blinding). Everything is journaled and the
+// finished session persists with full labels for replay (Q-05).
+
+struct AbxSession {
+    id: String,
+    a_name: String,
+    planned: usize,
+    assignments: Vec<bool>, // per trial: X is A
+    answers: Vec<bool>,     // per answered trial: user said "X is A"
+    stats_viewed: Vec<usize>,
+    audition: String, // "a" | "b" | "x"
+    started_ms: u64,
+}
+
+static ABX: std::sync::Mutex<Option<AbxSession>> = std::sync::Mutex::new(None);
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Write the config for what the listener should hear right now.
+fn abx_apply_audition(session: &mut AbxSession, target: &str) -> Result<(), String> {
+    let trial = session.answers.len();
+    let hear_a = match target {
+        "a" => true,
+        "b" => false,
+        _ => *session.assignments.get(trial).unwrap_or(&true),
+    };
+    apply_side(if hear_a { "a" } else { "b" })?;
+    session.audition = target.to_string();
+    Ok(())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AbxState {
+    active: bool,
+    a_name: String,
+    planned: usize,
+    answered: usize,
+    audition: String,
+    /// Correct count so far — present only after an explicit reveal (TB-24).
+    running_correct: Option<usize>,
+}
+
+fn abx_state_of(session: &AbxSession, revealed: bool) -> AbxState {
+    AbxState {
+        active: true,
+        a_name: session.a_name.clone(),
+        planned: session.planned,
+        answered: session.answers.len(),
+        audition: session.audition.clone(),
+        running_correct: if revealed {
+            Some(abx_correct(session))
+        } else {
+            None
+        },
+    }
+}
+
+fn abx_correct(session: &AbxSession) -> usize {
+    session
+        .answers
+        .iter()
+        .zip(&session.assignments)
+        .filter(|(ans, actual)| ans == actual)
+        .count()
+}
+
+#[tauri::command]
+fn abx_start(trials: usize) -> Result<AbxState, String> {
+    let chain = active_chain();
+    if chain.iter().filter(|f| f.enabled).count() == 0 {
+        return Err("activate a preset with at least one enabled filter first — A and B would sound identical".into());
+    }
+    let trials = trials.clamp(4, 100);
+    let mut rng = fletcher_core::stats::Xorshift::new(now_ms() | 1);
+    let mut session = AbxSession {
+        id: format!("abx-{}", now_ms()),
+        a_name: active_preset().unwrap_or_else(|| "Fletcher chain".into()),
+        planned: trials,
+        assignments: (0..trials).map(|_| rng.next_bool()).collect(),
+        answers: Vec::new(),
+        stats_viewed: Vec::new(),
+        audition: "a".into(),
+        started_ms: now_ms(),
+    };
+    abx_apply_audition(&mut session, "a")?;
+    let state = abx_state_of(&session, false);
+    *ABX.lock().unwrap() = Some(session);
+    Ok(state)
+}
+
+#[tauri::command]
+fn abx_audition(target: String) -> Result<AbxState, String> {
+    let mut guard = ABX.lock().unwrap();
+    let session = guard.as_mut().ok_or("no session running")?;
+    let target = match target.as_str() {
+        "a" | "b" | "x" => target,
+        _ => return Err("unknown target".into()),
+    };
+    abx_apply_audition(session, &target)?;
+    Ok(abx_state_of(session, false))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AbxTrialLog {
+    x_was_a: bool,
+    answered_a: bool,
+    correct: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AbxResult {
+    id: String,
+    a_name: String,
+    trials: usize,
+    correct: usize,
+    p_value: f64,
+    stats_viewed: Vec<usize>,
+    log: Vec<AbxTrialLog>,
+    started_ms: u64,
+}
+
+fn abx_result_of(session: &AbxSession) -> AbxResult {
+    let correct = abx_correct(session);
+    AbxResult {
+        id: session.id.clone(),
+        a_name: session.a_name.clone(),
+        trials: session.answers.len(),
+        correct,
+        p_value: fletcher_core::stats::binomial_p_one_sided(
+            correct as u32,
+            session.answers.len() as u32,
+        ),
+        stats_viewed: session.stats_viewed.clone(),
+        log: session
+            .answers
+            .iter()
+            .zip(&session.assignments)
+            .map(|(ans, actual)| AbxTrialLog {
+                x_was_a: *actual,
+                answered_a: *ans,
+                correct: ans == actual,
+            })
+            .collect(),
+        started_ms: session.started_ms,
+    }
+}
+
+fn sessions_dir() -> PathBuf {
+    data_dir().join("sessions")
+}
+
+/// Vote for the current trial. Returns the final result on the last trial.
+#[tauri::command]
+fn abx_vote(x_is_a: bool) -> Result<serde_json::Value, String> {
+    let mut guard = ABX.lock().unwrap();
+    let session = guard.as_mut().ok_or("no session running")?;
+    if session.answers.len() >= session.planned {
+        return Err("session already complete".into());
+    }
+    session.answers.push(x_is_a);
+
+    if session.answers.len() == session.planned {
+        let result = abx_result_of(session);
+        let _ = std::fs::create_dir_all(sessions_dir());
+        let json = serde_json::to_string_pretty(&result).map_err(|e| e.to_string())?;
+        let _ = fsx::write_atomic(&sessions_dir().join(format!("{}.json", result.id)), &json);
+        let _ = apply_side("a");
+        set_ab_side("a");
+        *guard = None;
+        Ok(
+            serde_json::json!({ "done": true, "result": serde_json::from_str::<serde_json::Value>(&json).unwrap() }),
+        )
+    } else {
+        // Next trial opens auditioning X (its fresh mystery assignment).
+        abx_apply_audition(session, "x")?;
+        Ok(
+            serde_json::json!({ "done": false, "state": serde_json::to_value(abx_state_of(session, false)).unwrap() }),
+        )
+    }
+}
+
+/// Reveal the running score mid-session — recorded in provenance (TB-24).
+#[tauri::command]
+fn abx_reveal() -> Result<AbxState, String> {
+    let mut guard = ABX.lock().unwrap();
+    let session = guard.as_mut().ok_or("no session running")?;
+    let at = session.answers.len();
+    if !session.stats_viewed.contains(&at) {
+        session.stats_viewed.push(at);
+    }
+    Ok(abx_state_of(session, true))
+}
+
+#[tauri::command]
+fn abx_cancel() -> Result<(), String> {
+    *ABX.lock().unwrap() = None;
+    let _ = apply_side("a");
+    set_ab_side("a");
+    Ok(())
+}
+
+/// Past sessions, newest first.
+#[tauri::command]
+fn abx_sessions() -> Vec<serde_json::Value> {
+    let mut out: Vec<serde_json::Value> = std::fs::read_dir(sessions_dir())
+        .map(|rd| {
+            rd.filter_map(|e| {
+                let text = std::fs::read_to_string(e.ok()?.path()).ok()?;
+                serde_json::from_str(&text).ok()
+            })
+            .collect()
+        })
+        .unwrap_or_default();
+    out.sort_by_key(|v| {
+        std::cmp::Reverse(v.get("startedMs").and_then(|m| m.as_u64()).unwrap_or(0))
+    });
+    out
 }
 
 #[tauri::command]
@@ -800,7 +1045,13 @@ pub fn run() {
             ab_info,
             ab_set,
             devices_list,
-            device_set_default
+            device_set_default,
+            abx_start,
+            abx_audition,
+            abx_vote,
+            abx_reveal,
+            abx_cancel,
+            abx_sessions
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

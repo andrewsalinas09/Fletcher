@@ -100,6 +100,33 @@ type PresetsState = { presets: string[]; active: string | null };
 type AbInfo = { side: string; matchDb: number };
 type Device = { id: string; name: string; isDefault: boolean };
 
+type AbxState = {
+  active: boolean;
+  aName: string;
+  planned: number;
+  answered: number;
+  audition: string;
+  runningCorrect: number | null;
+};
+type AbxTrial = { xWasA: boolean; answeredA: boolean; correct: boolean };
+type AbxResult = {
+  id: string;
+  aName: string;
+  trials: number;
+  correct: number;
+  pValue: number;
+  statsViewed: number[];
+  log: AbxTrial[];
+  startedMs: number;
+};
+
+const fmtP = (p: number) => (p < 0.001 ? "< 0.001" : `= ${p.toFixed(3)}`);
+const fmtWhen = (ms: number) => new Date(ms).toLocaleString([], { dateStyle: "short", timeStyle: "short" });
+const verdictOf = (r: AbxResult) =>
+  r.pValue <= 0.05
+    ? { text: `you heard it — ${r.correct}/${r.trials} correct · p ${fmtP(r.pValue)}`, good: true }
+    : { text: `couldn't reliably tell — ${r.correct}/${r.trials} · p ${fmtP(r.pValue)} (guessing gets there ${Math.round(r.pValue * 100)}% of the time)`, good: false };
+
 // Deep teaching copy for the tooltip layer. A lot of detail, gated behind a
 // deliberate 1.5 s still-hover so it never gets in the way.
 const TYPE_INFO: Record<string, { name: string; desc: string }> = {
@@ -223,6 +250,84 @@ export default function App() {
   const [devices, setDevices] = useState<Device[]>([]);
   const [deviceMenu, setDeviceMenu] = useState(false);
 
+  // ---- Listening Lab state ----
+  const [view, setView] = useState<"eq" | "lab">("eq");
+  const [abx, setAbx] = useState<AbxState | null>(null);
+  const abxRef = useRef<AbxState | null>(null);
+  abxRef.current = abx;
+  const [abxResult, setAbxResult] = useState<AbxResult | null>(null);
+  const [sessions, setSessions] = useState<AbxResult[]>([]);
+  const [trials, setTrials] = useState(16);
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  const loadSessions = () =>
+    invoke<AbxResult[]>("abx_sessions").then(setSessions).catch(() => {});
+
+  const startAbx = (n?: number) => {
+    invoke<AbxState>("abx_start", { trials: n ?? trials })
+      .then((s) => {
+        setAbx(s);
+        setAbxResult(null);
+      })
+      .catch((e) => showNotice(String(e)));
+  };
+
+  const abxAudition = (target: "a" | "b" | "x") => {
+    invoke<AbxState>("abx_audition", { target })
+      .then(setAbx)
+      .catch((e) => showNotice(String(e)));
+  };
+
+  const abxVote = (xIsA: boolean) => {
+    invoke<{ done: boolean; state?: AbxState; result?: AbxResult }>("abx_vote", { xIsA })
+      .then((r) => {
+        if (r.done && r.result) {
+          setAbx(null);
+          setAbxResult(r.result);
+          loadSessions();
+          refresh();
+        } else if (r.state) {
+          setAbx(r.state);
+        }
+      })
+      .catch((e) => showNotice(String(e)));
+  };
+
+  const abxReveal = () => {
+    invoke<AbxState>("abx_reveal").then(setAbx).catch(() => {});
+  };
+
+  const abxCancel = () => {
+    invoke("abx_cancel").finally(() => {
+      setAbx(null);
+      refresh();
+    });
+  };
+
+  // Trial-room keyboard: a/b/x audition, arrows vote, Esc leaves.
+  useEffect(() => {
+    if (!abx) return;
+    const onKey = (e: KeyboardEvent) => {
+      const k = e.key.toLowerCase();
+      if (k === "a" || k === "b" || k === "x") {
+        e.preventDefault();
+        abxAudition(k as "a" | "b" | "x");
+      } else if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        abxVote(true);
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        abxVote(false);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        abxCancel();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [abx != null]);
+
   const openDeviceMenu = () => {
     invoke<Device[]>("devices_list").then(setDevices).catch(() => {});
     setDeviceMenu((o) => !o);
@@ -257,9 +362,15 @@ export default function App() {
     const unlistenAb = listen<string>("ab-changed", (e) => {
       setAb((cur) => ({ ...cur, side: e.payload }));
     });
+    // During a session the hotkey cycles the audition target.
+    const unlistenAbx = listen<string>("abx-audition", (e) => {
+      setAbx((cur) => (cur ? { ...cur, audition: e.payload } : cur));
+    });
+    loadSessions();
     return () => {
       unlisten.then((f) => f());
       unlistenAb.then((f) => f());
+      unlistenAbx.then((f) => f());
     };
   }, []);
 
@@ -625,8 +736,8 @@ export default function App() {
       <header>
         <span className="wordmark">FLETCHER</span>
         <nav>
-          <span className="tab active">EQ</span>
-          <span className="tab disabled" title="Blind tests and statistics — coming with the test engine">LISTENING LAB</span>
+          <span className={`tab ${view === "eq" ? "active" : ""}`} onClick={() => setView("eq")}>EQ</span>
+          <span className={`tab ${view === "lab" ? "active" : ""}`} onClick={() => setView("lab")}>LISTENING LAB</span>
           <span className="tab disabled" title="Annotate tracks, build clip libraries — coming with the track engine">CLIP STUDIO</span>
           <span className="tab advanced" title="Measure and match headphones. Advanced: needs a measurement microphone.">FINGERPRINTS</span>
           <span className="tab disabled" title="Coming soon">SETTINGS</span>
@@ -680,6 +791,89 @@ export default function App() {
           <span className="dim-sm"> · dismiss</span>
         </div>
       )}
+
+      {abx &&
+        createPortal(
+          <div className="trial-room">
+            <div className="trial-top mono">
+              <span className="ink">ABX</span>
+              <span>{`${abx.aName} vs Flat`}</span>
+              <span className="spacer" />
+              <span>{`trial ${Math.min(abx.answered + 1, abx.planned)} of ${abx.planned}`}</span>
+              <span className="trial-leave" onClick={abxCancel}>esc · leave</span>
+            </div>
+            <div className="trial-center">
+              <div className="trial-q">Listen freely. Then answer: <b>which one is X?</b></div>
+              <div className="trial-targets">
+                {(["a", "b", "x"] as const).map((t) => (
+                  <div
+                    key={t}
+                    className={`target ${t === "x" ? "mystery" : ""} ${abx.audition === t ? "playing" : ""}`}
+                    onClick={() => abxAudition(t)}
+                  >
+                    <span className="target-letter">{t.toUpperCase()}</span>
+                    <span className="mono target-sub">
+                      {abx.audition === t ? "● playing" : t === "x" ? "the mystery" : " "}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <span className="mono dim-sm">press A · B · X to switch — seamless, level-matched · Ctrl·Shift·A cycles</span>
+              <div className="trial-vote">
+                <button className="vote-btn" onClick={() => abxVote(true)}>X is A <span className="mono dim-sm">←</span></button>
+                <button className="vote-btn" onClick={() => abxVote(false)}>X is B <span className="mono dim-sm">→</span></button>
+              </div>
+              <div className="trial-dots">
+                {Array.from({ length: abx.planned }, (_, i) => (
+                  <span key={i} className={`t-dot ${i < abx.answered ? "done" : i === abx.answered ? "now" : ""}`} />
+                ))}
+              </div>
+            </div>
+            <div className="trial-foot mono">
+              <span className="ok-text">● levels matched</span>
+              <span>every trial recorded — replay with labels afterwards</span>
+              <span className="spacer" />
+              {abx.runningCorrect != null ? (
+                <span>{`running score ${abx.runningCorrect}/${abx.answered}`}</span>
+              ) : (
+                <span className="reveal-link" onClick={abxReveal}>
+                  show running score — viewing interim results can bias your remaining trials
+                </span>
+              )}
+            </div>
+          </div>,
+          document.body,
+        )}
+
+      {abxResult &&
+        createPortal(
+          <div className="trial-room">
+            <div className="trial-center result-center">
+              <span className="mono dim-sm">SESSION COMPLETE</span>
+              <div className={`result-verdict ${verdictOf(abxResult).good ? "good" : "meh"}`}>
+                {verdictOf(abxResult).good ? "You heard it." : "You couldn't reliably tell."}
+              </div>
+              <div className="mono result-stats">
+                {`${abxResult.correct}/${abxResult.trials} correct · p ${fmtP(abxResult.pValue)}`}
+              </div>
+              <p className="result-note">
+                {verdictOf(abxResult).good
+                  ? "Guessing alone would score this well less than 5% of the time — the difference is real to your ears."
+                  : "This result is within the range of guessing. That's not failure — it's information most listeners never get."}
+              </p>
+              <div className="trial-vote">
+                <button onClick={() => { setAbxResult(null); setExpanded(abxResult.id); setView("lab"); }}>
+                  Replay labeled
+                </button>
+                <button onClick={() => { const n = abxResult.trials; setAbxResult(null); startAbx(n); }}>
+                  {`Run again · ${abxResult.trials}`}
+                </button>
+                <button className="primary" onClick={() => { setAbxResult(null); setView("lab"); }}>Done</button>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
 
       {typeMenu &&
         state &&
@@ -749,7 +943,98 @@ export default function App() {
         </section>
       )}
 
-      {state && (
+      {view === "lab" && (
+        <div className="lab">
+          <div className="lab-setup">
+            <span className="mono lab-label">NEW TEST</span>
+            <div className="lab-field">
+              <span className="mono lab-key">A</span>
+              <span className="lab-val">{presets.active ?? "no preset active"}</span>
+            </div>
+            <div className="lab-field">
+              <span className="mono lab-key">B</span>
+              <span className="lab-val">{`Flat · matched ${fmtGain(ab.matchDb)} dB`}</span>
+            </div>
+            <div className="lab-field">
+              <span className="mono lab-key">TRIALS</span>
+              <div className="trials-ctl">
+                {[8, 16, 24].map((n) => (
+                  <span key={n} className={`scale-opt ${trials === n ? "on" : ""}`} onClick={() => setTrials(n)}>
+                    {n}
+                  </span>
+                ))}
+                <input
+                  className="trials-input mono"
+                  type="number"
+                  min={4}
+                  max={100}
+                  value={trials}
+                  onChange={(e) => setTrials(Math.max(4, Math.min(100, +e.target.value || 16)))}
+                />
+              </div>
+            </div>
+            <p className="dim-sm lab-note">
+              You'll hear A, B, and a mystery X — switch freely, then answer which one X is.
+              {" "}{trials} trials; the score stays hidden until the end unless you ask.
+            </p>
+            <span className="spacer" />
+            <button
+              className="primary lab-begin"
+              disabled={!presets.active}
+              title={presets.active ? undefined : "activate a preset first"}
+              onClick={() => startAbx()}
+            >
+              Begin — enters focus mode
+            </button>
+          </div>
+
+          <div className="lab-record">
+            <span className="mono lab-label">THE RECORD</span>
+            {sessions.length === 0 && (
+              <p className="dim-sm">No sessions yet. Your first blind test writes history here.</p>
+            )}
+            {sessions.map((r) => {
+              const v = verdictOf(r);
+              return (
+                <div key={r.id} className="session">
+                  <div className="session-head" onClick={() => setExpanded(expanded === r.id ? null : r.id)}>
+                    <span className="mono badge-abx">ABX</span>
+                    <div className="session-main">
+                      <div className="session-title">{`${r.aName} vs Flat`}</div>
+                      <div className={`session-verdict ${v.good ? "good" : "meh"}`}>{v.text}</div>
+                      {r.statsViewed.length > 0 && (
+                        <div className="dim-sm">{`score viewed mid-session at trial ${r.statsViewed.join(", ")}`}</div>
+                      )}
+                    </div>
+                    <span className="mono dim-sm">{fmtWhen(r.startedMs)}</span>
+                  </div>
+                  {expanded === r.id && (
+                    <div className="session-detail">
+                      <div className="trial-grid">
+                        {r.log.map((t, i) => (
+                          <span key={i} className={`trial-chip ${t.correct ? "hit" : "miss"}`}
+                            title={`trial ${i + 1}: X was ${t.xWasA ? "A" : "B"}, you said ${t.answeredA ? "A" : "B"}`}>
+                            {`${i + 1}·X=${t.xWasA ? "A" : "B"} ${t.correct ? "✓" : "✗"}`}
+                          </span>
+                        ))}
+                      </div>
+                      <div className="session-actions">
+                        <span className="dim-sm">listen again, labels on:</span>
+                        <button onClick={() => setSide("a")}>{`A · ${r.aName}`}</button>
+                        <button onClick={() => setSide("b")}>B · Flat</button>
+                        <span className="spacer" />
+                        <button onClick={() => startAbx(r.trials)}>{`Run again · ${r.trials} trials`}</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {state && view === "eq" && (
         <>
           <div className="preset-line">
             <span className="preset-wrap">

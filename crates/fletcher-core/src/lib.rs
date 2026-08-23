@@ -12,3 +12,4 @@ pub mod dsp;
 pub mod fsx;
 pub mod peace;
 pub mod presets;
+pub mod stats;
