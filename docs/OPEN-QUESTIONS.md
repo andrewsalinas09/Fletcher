@@ -13,8 +13,8 @@ One UI for everyone; advanced features greyed with hover explainers, never hidde
 ## Q-03 · Coexistence with Peace / existing configs — **Resolved (wiring) → ADR-0007**
 One `Include: fletcher.txt` line; Fletcher owns only its own file. Residual open: importing Peace presets (`.peace` files) and raw APO configs into Fletcher's preset store.
 
-## Q-04 · Track-mode output path: how does in-app playback bypass APO? — **Open**
-Candidates: (a) WASAPI exclusive mode (bypasses APO but hijacks the device), (b) temporarily write a bypass/empty config for that device during the session (restore guarantees needed — TB-11), (c) route to a device APO isn't installed on. Each has failure modes; needs a research spike.
+## Q-04 · Track-mode output path — **Resolved → ADR-0009**
+Spike-verified: WASAPI exclusive bypasses APO. Ships as the default mode, with journaled config-blank as a selectable second mode / automatic fallback.
 
 ## Q-05 · Test protocols and statistics design — **Open**
 Two distinct test types are now in scope: **discrimination** (ABX — has a correct answer; binomial p-value) and **preference** (blind A/B vote — no correct answer; preference proportion vs. 50% null, needs its own stats treatment, TB-15). Design: trial counts fixed vs. sequential; what's reported; per-clip/per-band breakdowns from the clip battery (Q-11); history per user / per headphone / per preset pair; ear-training/gamification. Guard against misleading small-N (TB-10).
