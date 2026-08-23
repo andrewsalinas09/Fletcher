@@ -539,10 +539,17 @@ export default function App() {
     }
     setSelected(i);
     dragging.current = true;
-    setDragRange(dbRange); // freeze the scale for the whole drag
+    // No mid-drag rescaling, ever: grant generous headroom up front instead.
+    // Scale = auto-fit or current value + 12 dB, whichever is larger, frozen
+    // for the whole gesture. Nothing changes under your hand.
+    const roomy = Math.min(
+      48,
+      Math.max(autoRange, Math.ceil((Math.abs(f.gainDb) + 12) / 3) * 3),
+    );
+    setDragRange(roomy);
     (e.target as Element).setPointerCapture(e.pointerId);
-    // Cursor and dot are one: snap the cursor to the dot's center on grab.
-    warpCursorTo(xOf(f.fcHz), yOf(f.gainDb));
+    // One safe warp at grab: cursor starts on the dot and stays there 1:1.
+    warpCursorTo(xOf(f.fcHz), yOfR(f.gainDb, roomy));
   };
 
   const onDragMove = (i: number) => (e: React.PointerEvent) => {
@@ -552,13 +559,6 @@ export default function App() {
     const f = fOf(x);
     const db = dbOfR(p.y, dbRange);
     const clamped = Math.max(-dbRange, Math.min(dbRange, db));
-    if (Math.abs(clamped) >= dbRange * 0.65 && dbRange < 48) {
-      // Double the scale; the value stays continuous and the CURSOR follows
-      // the dot to its position in the new scale.
-      const newRange = dbRange * 2;
-      setDragRange(newRange);
-      warpCursorTo(x, yOfR(clamped, newRange));
-    }
     mutateFilter(i, {
       fcHz: +f.toFixed(f < 100 ? 1 : 0),
       gainDb: +clamped.toFixed(1),
