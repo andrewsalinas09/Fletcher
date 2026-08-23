@@ -1563,6 +1563,148 @@ fn signal_preview(app: tauri::AppHandle, spec: Option<SigSpec>) -> Result<u64, S
     Ok(my_gen)
 }
 
+/// Import from a URL via yt-dlp (M7): audio extracted to m4a in the managed
+/// media dir, metadata from the info JSON, provenance kept in `source_url`.
+/// Progress goes out as "ytdlp-progress" events (percent).
+#[tauri::command]
+async fn track_import_url(app: tauri::AppHandle, url: String) -> Result<LibraryState, String> {
+    let url = url.trim().to_string();
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err("that doesn't look like a link (it should start with http)".into());
+    }
+    {
+        let conn = library_db()?;
+        let dup: Option<String> = conn
+            .query_row(
+                "SELECT title FROM tracks WHERE source_url = ?1",
+                rusqlite::params![url],
+                |r| r.get(0),
+            )
+            .ok();
+        if let Some(t) = dup {
+            return Err(format!("already in the library as \"{t}\""));
+        }
+    }
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        use std::io::BufRead;
+        use tauri::Emitter;
+        let ytdlp = tools::find_tool(&data_dir(), "yt-dlp")
+            .ok_or("yt-dlp is not installed — install it from this dialog first")?;
+        let ffmpeg = tools::find_tool(&data_dir(), "ffmpeg")
+            .ok_or("ffmpeg is not installed — install it from this dialog first")?;
+        let media = data_dir().join("media");
+        std::fs::create_dir_all(&media).map_err(|e| e.to_string())?;
+        let mut child = std::process::Command::new(&ytdlp)
+            .args([
+                "--no-playlist",
+                "-f",
+                "bestaudio/best",
+                "-x",
+                "--audio-format",
+                "m4a",
+                "--newline",
+                "--print-json",
+                "--ffmpeg-location",
+            ])
+            .arg(&ffmpeg)
+            .arg("-o")
+            .arg(media.join("%(id)s.%(ext)s"))
+            .arg(&url)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("could not run yt-dlp: {e}"))?;
+        // Drain stderr on its own thread — a full pipe buffer would deadlock.
+        let err_buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let stderr_handle = {
+            let mut se = child.stderr.take();
+            let buf = err_buf.clone();
+            std::thread::spawn(move || {
+                use std::io::Read;
+                if let Some(se) = se.as_mut() {
+                    let mut s = String::new();
+                    let _ = se.read_to_string(&mut s);
+                    *buf.lock().unwrap() = s;
+                }
+            })
+        };
+        let stdout = child.stdout.take().ok_or("yt-dlp gave no output stream")?;
+        let mut json_line = String::new();
+        for line in std::io::BufReader::new(stdout)
+            .lines()
+            .map_while(Result::ok)
+        {
+            if line.starts_with('{') {
+                json_line = line;
+                continue;
+            }
+            if let Some(rest) = line.strip_prefix("[download]") {
+                if let Some(pct) = rest
+                    .trim()
+                    .split('%')
+                    .next()
+                    .and_then(|s| s.trim().parse::<f64>().ok())
+                {
+                    let _ = app.emit("ytdlp-progress", pct);
+                }
+            }
+        }
+        let status = child.wait().map_err(|e| e.to_string())?;
+        let _ = stderr_handle.join();
+        if !status.success() {
+            let err = err_buf.lock().unwrap();
+            let last = err
+                .lines()
+                .rev()
+                .find(|l| l.contains("ERROR"))
+                .or_else(|| err.lines().last())
+                .unwrap_or("yt-dlp failed")
+                .trim()
+                .to_string();
+            return Err(format!("download failed: {last}"));
+        }
+        let info: serde_json::Value =
+            serde_json::from_str(&json_line).map_err(|_| "yt-dlp returned no metadata")?;
+        let vid = info
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or("no id in the metadata")?;
+        let title = info
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Untitled")
+            .to_string();
+        let artist = info
+            .get("uploader")
+            .or_else(|| info.get("channel"))
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let duration = info.get("duration").and_then(|v| v.as_f64());
+        let path = media.join(format!("{vid}.m4a"));
+        if !path.is_file() {
+            return Err("yt-dlp finished but the audio file is missing".into());
+        }
+        let conn = library_db()?;
+        conn.execute(
+            "INSERT INTO tracks (kind, title, artist, path, source_url, duration_s, added_ms)
+             VALUES ('url', ?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                title,
+                artist,
+                path.display().to_string(),
+                url,
+                duration,
+                now_ms() as i64
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    library_state_now()
+}
+
 #[tauri::command]
 fn track_delete(id: i64) -> Result<LibraryState, String> {
     {
@@ -1814,7 +1956,11 @@ async fn track_play(app: tauri::AppHandle, id: i64) -> Result<(), String> {
         let session = engine::TrackSession::new(id, mode, rate, (pcm.len() / 2) as u64, 0);
         let (app_start, app_end, app_pos) = (app.clone(), app.clone(), app.clone());
         let stop_end = session.stop.clone();
-        let (shared_pos, stop_pos) = (session.shared.clone(), session.stop.clone());
+        let (shared_pos, stop_pos, done_pos) = (
+            session.shared.clone(),
+            session.stop.clone(),
+            session.done.clone(),
+        );
         session.spawn_audio(
             pcm,
             10f64.powf(gain_db / 20.0),
@@ -1843,10 +1989,14 @@ async fn track_play(app: tauri::AppHandle, id: i64) -> Result<(), String> {
                 );
             },
         );
-        // ~10 Hz transport position for the UI; dies with the session.
+        // ~10 Hz transport position for the UI; dies with the session. It
+        // must watch `done` too: a NATURALLY finished track raises done but
+        // never stop, and an immortal emitter here made every later session's
+        // clock flash between two times (the bug the user caught with a 30 s
+        // mix that ran to its end).
         std::thread::spawn(move || {
             use std::sync::atomic::Ordering::Relaxed;
-            while !stop_pos.load(Relaxed) {
+            while !stop_pos.load(Relaxed) && !done_pos.load(Relaxed) {
                 let _ = app_pos.emit(
                     "track-pos",
                     serde_json::json!({
@@ -3055,6 +3205,7 @@ pub fn run() {
             signal_create,
             signal_preview,
             signal_validate,
+            track_import_url,
             track_stop,
             track_waveform,
             track_samples,

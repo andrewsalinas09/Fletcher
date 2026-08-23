@@ -2066,6 +2066,15 @@ button.ghost {
   white-space: pre-wrap;
 }
 
+.url-input {
+  width: 100%;
+  font-size: 12px;
+  border: 1px solid var(--line-strong);
+  background: var(--paper);
+  color: var(--ink);
+  padding: 7px 10px;
+}
+
 /* library rail: IMPORTED / CREATED section labels */
 .rail-sec {
   display: block;

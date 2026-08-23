@@ -3152,6 +3152,46 @@ function MainApp() {
       })
       .catch((e) => setGenErr(String(e)));
   };
+
+  // URL import (M7): paste a link, yt-dlp extracts the audio into the
+  // managed media dir, provenance kept on the track row.
+  const [urlOpen, setUrlOpen] = useState(false);
+  const [urlText, setUrlText] = useState("");
+  const [urlBusy, setUrlBusy] = useState<number | null>(null);
+  useEffect(() => {
+    if (!urlOpen) return;
+    const un = listen<number>("ytdlp-progress", (e) => setUrlBusy(e.payload));
+    return () => {
+      un.then((f) => f());
+    };
+  }, [urlOpen]);
+  const openUrl = () => {
+    setUrlText("");
+    setUrlBusy(null);
+    setUrlOpen(true);
+    // Prefill when the clipboard already holds a link — the paste flow.
+    navigator.clipboard
+      ?.readText?.()
+      .then((t) => {
+        if (/^https?:\/\//.test(t.trim())) setUrlText(t.trim());
+      })
+      .catch(() => {});
+  };
+  const importUrl = () => {
+    if (urlBusy != null || !urlText.trim()) return;
+    setUrlBusy(0);
+    invoke<LibraryState>("track_import_url", { url: urlText.trim() })
+      .then((l) => {
+        setLibrary(l);
+        setUrlOpen(false);
+        setUrlBusy(null);
+        showNotice("added to the library — audio extracted, source link kept");
+      })
+      .catch((e) => {
+        setUrlBusy(null);
+        showNotice(String(e));
+      });
+  };
   const closeGen = () => {
     if (genPreviewRef.current) genPreviewSet(null);
     setGenOpen(false);
@@ -5098,6 +5138,9 @@ function MainApp() {
             </div>
             <div className="clips-rail-foot">
               <button onClick={importTrack}>+ Import track</button>
+              <button onClick={openUrl} title="paste any link — yt-dlp extracts the audio into the library">
+                ⇓ From link
+              </button>
               <button onClick={() => setGenOpen(true)} title="build a signal from primitives — it lands in the library like any track">
                 ∿ Generate
               </button>
@@ -5386,6 +5429,77 @@ function MainApp() {
                     </div>
                   </div>
                   )}
+                </div>
+              </>
+            )}
+            {urlOpen && (
+              <>
+                <div className="hist-backdrop" onClick={() => urlBusy == null && setUrlOpen(false)} />
+                <div className="hist-panel gen-panel">
+                  <div className="hist-head">
+                    <span className="mono hist-title">IMPORT FROM LINK</span>
+                    <span className="spacer" />
+                    <span className="row-act" onClick={() => setUrlOpen(false)}>
+                      ×
+                    </span>
+                  </div>
+                  <div className="gen-body">
+                    {tools?.ytdlp && tools?.ffmpeg ? (
+                      <>
+                        <input
+                          className="url-input mono"
+                          placeholder="paste a link — YouTube, SoundCloud, most anywhere"
+                          value={urlText}
+                          autoFocus
+                          onChange={(e) => setUrlText(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") importUrl();
+                          }}
+                        />
+                        <p className="dim-sm gen-note">
+                          yt-dlp extracts the audio (m4a) into Fletcher's media folder and the
+                          source link stays on the track. One item only — never a whole playlist.
+                        </p>
+                        <div className="gen-actions">
+                          {urlBusy != null && (
+                            <span className="mono dim-sm">{`downloading… ${Math.round(urlBusy)}%`}</span>
+                          )}
+                          <span className="spacer" />
+                          <button
+                            className="primary"
+                            disabled={urlBusy != null || !urlText.trim()}
+                            onClick={importUrl}
+                          >
+                            {urlBusy != null ? "working…" : "Add to library"}
+                          </button>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <p className="dim-sm gen-note">
+                          {`Link import needs ${!tools?.ytdlp ? "yt-dlp" : ""}${
+                            !tools?.ytdlp && !tools?.ffmpeg ? " and " : ""
+                          }${!tools?.ffmpeg ? "ffmpeg" : ""} — fetched on demand into Fletcher's tools folder, never touching your system.`}
+                        </p>
+                        <div className="gen-actions">
+                          {!tools?.ytdlp && (
+                            <button onClick={() => installTool("yt-dlp")} disabled={toolsProg != null}>
+                              {toolsProg?.which === "yt-dlp"
+                                ? `yt-dlp… ${toolsProg.pct ?? 0}%`
+                                : "Install yt-dlp"}
+                            </button>
+                          )}
+                          {!tools?.ffmpeg && (
+                            <button onClick={() => installTool("ffmpeg")} disabled={toolsProg != null}>
+                              {toolsProg?.which === "ffmpeg"
+                                ? `ffmpeg… ${toolsProg.pct ?? 0}%`
+                                : "Install ffmpeg"}
+                            </button>
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </div>
                 </div>
               </>
             )}

@@ -96,10 +96,27 @@ pub fn spectrogram(
     Spectrogram { cols, rows, data }
 }
 
+/// 4-term Blackman-Harris: −92 dB sidelobes. The FFT pane displays an 80 dB
+/// range, so Hann's −31 dB sidelobe skirt smeared a pure sine across the
+/// whole pane; BH4 keeps the skirt below the display floor.
+fn blackman_harris(n: usize) -> Vec<f64> {
+    (0..n)
+        .map(|i| {
+            let x = 2.0 * std::f64::consts::PI * i as f64 / n as f64;
+            0.35875 - 0.48829 * x.cos() + 0.14128 * (2.0 * x).cos() - 0.01168 * (3.0 * x).cos()
+        })
+        .collect()
+}
+
+/// BH4 coherent gain — the sine-peak normalization factor.
+const BH4_CG: f64 = 0.35875;
+
 /// Instantaneous spectrum at time `t_s`: `points` log-spaced dB values
-/// 20 Hz – 20 kHz from a 4096-sample window (the FFT pane).
+/// 20 Hz – 20 kHz (the FFT pane). 16k window (~3 Hz resolution, ~340 ms of
+/// signal) + Blackman-Harris so pure tones read as spikes, not smears — the
+/// pane favors frequency truth over time snap.
 pub fn spectrum_at(pcm: &Arc<Vec<f32>>, rate: u32, t_s: f64, points: usize) -> Vec<f64> {
-    const WIN: usize = 4096;
+    const WIN: usize = 16384;
     let frames = pcm.len() / 2;
     let center = ((t_s * rate as f64) as usize).min(frames);
     let start = center
@@ -107,7 +124,7 @@ pub fn spectrum_at(pcm: &Arc<Vec<f32>>, rate: u32, t_s: f64, points: usize) -> V
         .min(frames.saturating_sub(WIN.min(frames)));
     let mut planner = RealFftPlanner::<f64>::new();
     let fft = planner.plan_fft_forward(WIN);
-    let window = hann(WIN);
+    let window = blackman_harris(WIN);
     let mut input = fft.make_input_vec();
     let mut output = fft.make_output_vec();
     for i in 0..WIN {
@@ -137,7 +154,7 @@ pub fn spectrum_at(pcm: &Arc<Vec<f32>>, rate: u32, t_s: f64, points: usize) -> V
                     peak = m;
                 }
             }
-            let amp = peak.sqrt() * 2.0 / (WIN as f64 / 2.0);
+            let amp = peak.sqrt() * 2.0 / (WIN as f64 * BH4_CG);
             (20.0 * amp.max(1e-12).log10()).max(SPEC_DB_MIN)
         })
         .collect()
