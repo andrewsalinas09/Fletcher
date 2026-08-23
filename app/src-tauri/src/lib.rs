@@ -41,6 +41,15 @@ fn set_active_preset(name: Option<&str>) {
     write_state_field("activePreset", serde_json::json!(name));
 }
 
+/// The global reference loudness (dB) everything is normalized to.
+/// Default −8; Settings' noise-calibration flow will own this (Q-16).
+fn reference_db() -> f64 {
+    read_state()
+        .get("referenceDb")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(-8.0)
+}
+
 fn ab_side() -> String {
     read_state()
         .get("abSide")
@@ -217,17 +226,8 @@ fn set_fletcher_chain(filters: Vec<FilterIn>) -> Result<EqState, String> {
         })
         .collect::<Result<_, String>>()?;
 
-    let specs: Vec<FilterSpec> = chain
-        .iter()
-        .filter(|f| f.enabled)
-        .map(|f| FilterSpec {
-            kind: f.kind,
-            fc_hz: f.fc_hz,
-            gain_db: f.gain_db,
-            q: f.q,
-        })
-        .collect();
-    let preamp = auto_preamp_db(&specs, FS);
+    let specs = specs_of(&chain);
+    let preamp = matched_preamp(&specs);
 
     let text = render_fletcher_file(preamp, &chain);
     fsx::write_atomic(&install.config_path.join("fletcher.txt"), &text)
@@ -246,17 +246,8 @@ fn set_fletcher_chain(filters: Vec<FilterIn>) -> Result<EqState, String> {
 /// Rewrite fletcher.txt from a chain (with fresh auto-preamp).
 fn activate_chain(chain: &[ChainFilter]) -> Result<(), String> {
     let install = apo::detect().map_err(|e| e.to_string())?;
-    let specs: Vec<FilterSpec> = chain
-        .iter()
-        .filter(|f| f.enabled)
-        .map(|f| FilterSpec {
-            kind: f.kind,
-            fc_hz: f.fc_hz,
-            gain_db: f.gain_db,
-            q: f.q,
-        })
-        .collect();
-    let preamp = auto_preamp_db(&specs, FS);
+    let specs = specs_of(chain);
+    let preamp = matched_preamp(&specs);
     fsx::write_atomic(
         &install.config_path.join("fletcher.txt"),
         &render_fletcher_file(preamp, chain),
@@ -323,17 +314,8 @@ fn preset_create(name: String, from_live: bool) -> Result<EqState, String> {
         return Err(format!("a preset named {name:?} already exists"));
     }
     let chain = if from_live { live_chain()? } else { Vec::new() };
-    let specs: Vec<FilterSpec> = chain
-        .iter()
-        .filter(|f| f.enabled)
-        .map(|f| FilterSpec {
-            kind: f.kind,
-            fc_hz: f.fc_hz,
-            gain_db: f.gain_db,
-            q: f.q,
-        })
-        .collect();
-    st.save(&name, auto_preamp_db(&specs, FS), &chain)
+    let specs = specs_of(&chain);
+    st.save(&name, matched_preamp(&specs), &chain)
         .map_err(|e| e.to_string())?;
     activate_chain(&chain)?;
     set_active_preset(Some(&name));
@@ -435,19 +417,22 @@ fn specs_of(chain: &[ChainFilter]) -> Vec<FilterSpec> {
         .collect()
 }
 
-/// Level-matching offset for the flat side: the chain's mean response over a
-/// log-frequency grid (≈ pink-noise weighting — equal energy per octave).
-/// First implementation of Q-06's estimation method; clamped to never boost.
-fn flat_match_db(chain: &[ChainFilter]) -> f64 {
-    let specs = specs_of(chain);
+/// The preamp that lands a chain at the global reference loudness (its mean
+/// response over a log grid ≈ pink-noise weighting hits `reference_db`),
+/// tightened to the clip-safe preamp when the reference can't be reached
+/// without exceeding 0 dB peak (TB-06). Everything — flat, every preset,
+/// mid-edit chains — normalizes to the same reference (Q-06/ADR-0003).
+fn matched_preamp(specs: &[FilterSpec]) -> f64 {
+    let clip_safe = auto_preamp_db(specs, FS);
+    let reference = reference_db().min(0.0);
     if specs.is_empty() {
-        return 0.0;
+        return (reference * 10.0).round() / 10.0;
     }
-    let preamp = auto_preamp_db(&specs, FS);
     let freqs = log_freqs(20.0, 20000.0, 200);
-    let resp = chain_response_db(&specs, preamp, FS, &freqs);
+    let resp = chain_response_db(specs, 0.0, FS, &freqs);
     let mean = resp.iter().sum::<f64>() / resp.len() as f64;
-    ((mean * 10.0).round() / 10.0).clamp(-30.0, 0.0)
+    let to_reference = reference - mean;
+    ((to_reference.min(clip_safe) * 10.0).round() / 10.0).clamp(-30.0, 0.0)
 }
 
 /// Write fletcher.txt for the given side: A = the active chain; B = flat,
@@ -459,7 +444,7 @@ fn apply_side(side: &str) -> Result<(), String> {
             let install = apo::detect().map_err(|e| e.to_string())?;
             fsx::write_atomic(
                 &install.config_path.join("fletcher.txt"),
-                &render_fletcher_file(flat_match_db(&chain), &[]),
+                &render_fletcher_file(matched_preamp(&[]), &[]),
             )
             .map_err(|e| e.to_string())
         }
@@ -699,7 +684,7 @@ struct AbInfo {
 fn ab_info() -> AbInfo {
     AbInfo {
         side: ab_side(),
-        match_db: flat_match_db(&active_chain()),
+        match_db: matched_preamp(&[]),
     }
 }
 
