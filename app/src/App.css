@@ -289,30 +289,102 @@ nav {
 }
 
 .hist-menu {
-  min-width: 250px;
+  min-width: 300px;
 }
 
-.hist-row {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 5px 12px;
-  font-size: 11.5px;
+.hist-viewport {
+  max-height: 58vh;
+  max-width: 420px;
+  overflow: auto;
+}
+
+.hist-graph {
+  position: relative;
+  overflow: hidden;
+}
+
+.hist-scale {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+}
+
+.hist-hint {
+  font-size: 9px;
+  color: var(--dim);
+  padding: 6px 12px;
+  border-top: 1px solid var(--line);
+}
+
+.hist-svg {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.hist-edge {
+  fill: none;
+  stroke: var(--line-mid);
+  stroke-width: 1.5;
+}
+
+.hist-edge.on {
+  stroke: var(--ink);
+}
+
+.hist-node {
+  fill: var(--panel);
+  stroke: var(--line-strong);
+  stroke-width: 1.5;
+}
+
+.hist-node.on {
+  stroke: var(--ink);
+}
+
+.hist-node.current {
+  fill: var(--ink);
+  stroke: var(--ink);
+}
+
+.tree-g {
   cursor: pointer;
-  border-bottom: 1px solid var(--line);
 }
 
-.hist-row:hover {
-  background: var(--panel-alt);
+.tree-g.off {
+  opacity: 0.55;
 }
 
-.hist-row.current {
-  background: var(--ink);
-  color: var(--paper);
+.tree-label {
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 9.5px;
+  fill: var(--ink);
+  text-anchor: middle;
 }
 
-.hist-row.off-path {
-  opacity: 0.6;
+.tree-time {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 7.5px;
+  fill: var(--dim);
+  text-anchor: middle;
+}
+
+.tree-del {
+  font-size: 13px;
+  fill: var(--dim);
+  visibility: hidden;
+  cursor: pointer;
+}
+
+.tree-g:hover .tree-del {
+  visibility: visible;
+}
+
+.tree-del:hover {
+  fill: var(--boost);
 }
 
 .warn-chip {
