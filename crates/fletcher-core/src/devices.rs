@@ -110,6 +110,11 @@ mod policy_config {
         unsafe fn SetDefaultEndpoint(&self, dev: PCWSTR, role: u32) -> HRESULT;
         unsafe fn SetEndpointVisibility(&self, dev: PCWSTR, visible: i32) -> HRESULT;
     }
+
+    /// Public shim: the macro-generated methods are private to this module.
+    pub fn set_default_endpoint(policy: &IPolicyConfig, dev: PCWSTR, role: u32) -> HRESULT {
+        unsafe { policy.SetDefaultEndpoint(dev, role) }
+    }
 }
 use policy_config::IPolicyConfig;
 
@@ -121,7 +126,7 @@ pub fn set_default_render_device(id: &str) -> Result<(), String> {
     let wide: Vec<u16> = id.encode_utf16().chain(std::iter::once(0)).collect();
     // eConsole = 0, eMultimedia = 1, eCommunications = 2
     for role in [0u32, 1, 2] {
-        unsafe { policy.SetDefaultEndpoint(PCWSTR(wide.as_ptr()), role) }
+        policy_config::set_default_endpoint(&policy, PCWSTR(wide.as_ptr()), role)
             .ok()
             .map_err(|e| format!("could not set default device: {e}"))?;
     }
