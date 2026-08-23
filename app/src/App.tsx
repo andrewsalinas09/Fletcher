@@ -1494,6 +1494,22 @@ function ScopeRoomMenu() {
         <div className="preset-menu device-menu room-menu">
           <span className="mono lab-label">CLIP STUDIO VIEW</span>
           <div className="room-row">
+            <span
+              className="room-key"
+              title="One-click view setups. Melody: 8k window, spectrogram solo, log axis, ~10 s zoom at the playhead — pitch lines read like the tune. Standard: all scopes, 2k window, whole track."
+            >
+              View preset
+            </span>
+            <div className="seg seg-sm">
+              <span className="seg-opt" onClick={() => cmd("viewpreset", "melody")}>
+                Melody
+              </span>
+              <span className="seg-opt" onClick={() => cmd("viewpreset", "standard")}>
+                Standard
+              </span>
+            </div>
+          </div>
+          <div className="room-row">
             <span className="room-key">Timecode decimals</span>
             <div className="seg seg-sm">
               {[1, 2, 3].map((v) => (
@@ -3156,6 +3172,33 @@ function MainApp() {
     }
   }, [scrubTau, scrubMax]);
 
+  // View presets — one-click setups of the whole scope stack. "Melody" is
+  // the user's discovery (2026-08-23): 8k window + spectrogram solo + a tight
+  // time zoom turns vocal lines into readable pitch traces — "the lines
+  // literally look like the song".
+  const applyViewPreset = (which: "melody" | "standard") => {
+    if (which === "melody") {
+      if (!specOn) toggleScope("spec");
+      if (waveOn) toggleScope("wave");
+      if (fftOn) toggleScope("fft");
+      pickSpecParam("specwin", 8192);
+      pickSpecParam("speclinear", 0); // pitch is log-natural
+      const dur = trackSessRef.current?.durationS ?? 0;
+      if (dur > 0) {
+        const span = Math.min(10, dur);
+        const start = Math.max(0, Math.min(trackPosRef.current.posS - span / 2, dur - span));
+        emit("scope-view", { start, span, src: "preset" });
+      }
+    } else {
+      if (!specOn) toggleScope("spec");
+      if (!waveOn) toggleScope("wave");
+      if (!fftOn) toggleScope("fft");
+      pickSpecParam("specwin", 2048);
+      const dur = trackSessRef.current?.durationS ?? 0;
+      if (dur > 0) emit("scope-view", { start: 0, span: dur, src: "preset" });
+    }
+  };
+
   // The satellites' ⚙ menus mirror this state — rebroadcast on any change.
   useEffect(() => {
     emit("room-state", {
@@ -3842,6 +3885,7 @@ function MainApp() {
       else if (p.key === "mode") pickStudioMode(p.value === "eq" ? "eq" : "bypass");
       else if (p.key === "scrubtau") commitScrub("tau", num);
       else if (p.key === "scrubmax") commitScrub("max", num);
+      else if (p.key === "viewpreset") applyViewPreset(p.value === "melody" ? "melody" : "standard");
     },
     trackState: (p) => {
       const id = p.trackId as number;
@@ -5924,6 +5968,22 @@ function MainApp() {
                 {clipsMenu && (
                   <div className="preset-menu device-menu room-menu">
                     <span className="mono lab-label">CLIP STUDIO VIEW</span>
+                    <div className="room-row">
+                      <span
+                        className="room-key"
+                        title="One-click view setups. Melody: 8k window, spectrogram solo, log axis, ~10 s zoom at the playhead — pitch lines read like the tune. Standard: all scopes, 2k window, whole track."
+                      >
+                        View preset
+                      </span>
+                      <div className="seg seg-sm">
+                        <span className="seg-opt" onClick={() => applyViewPreset("melody")}>
+                          Melody
+                        </span>
+                        <span className="seg-opt" onClick={() => applyViewPreset("standard")}>
+                          Standard
+                        </span>
+                      </div>
+                    </div>
                     <div className="room-row">
                       <span className="room-key">Timecode decimals</span>
                       <div className="seg seg-sm">
