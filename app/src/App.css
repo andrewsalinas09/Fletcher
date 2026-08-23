@@ -1906,6 +1906,11 @@ button.ghost {
   flex-direction: column;
   padding: 14px 16px;
   gap: 10px;
+  /* The panes are fixed-height: on a short window they'd otherwise overflow
+     visibly and paint across the A/B bar. Clip at the border; scroll to
+     reach what doesn't fit. */
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .clips-viewer .clips-empty {

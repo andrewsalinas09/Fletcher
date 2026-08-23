@@ -1459,9 +1459,8 @@ type RoomState = {
 /**
  * The Clip Studio ⚙ menu, satellite edition: the SAME menu as the main
  * window, but the state has one owner — main feeds it over "room-state" and
- * every change goes back over "room-cmd". Note: typing in the number fields
- * may be dead here (Q-20: satellites get no DOM keys); the spinners and segs
- * are clicks and always work.
+ * every change goes back over "room-cmd". Typed input works here (Q-20
+ * refinement: focused inputs get keys; only document-level handlers don't).
  */
 function ScopeRoomMenu() {
   const [open, setOpen] = useState(false);
