@@ -1996,6 +1996,11 @@ button.ghost {
   gap: 5px;
 }
 
+/* frequency fields hold five digits — the 52px trials default clips them */
+.gen-num .trials-input {
+  width: 84px;
+}
+
 .gen-note {
   margin: 2px 0 0;
   line-height: 1.45;

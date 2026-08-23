@@ -1417,29 +1417,35 @@ fn signal_create(spec: SigSpec) -> Result<LibraryState, String> {
     library_state_now()
 }
 
+/// Monotonic preview serial: a replaced preview's "ended" must never clobber
+/// its successor's UI state (the exact bug the track sessions solved).
+static PREVIEW_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Audition a spec before adding it: loops through the SHARED path (your
 /// volume knob stays live) on the calibration aux stream — one aux stream
 /// ever; track playback and ABX interlocks already stop it. `None` stops.
+/// Returns this preview's serial; "sig-preview-ended" carries it back.
 #[tauri::command]
-fn signal_preview(app: tauri::AppHandle, spec: Option<SigSpec>) -> Result<(), String> {
+fn signal_preview(app: tauri::AppHandle, spec: Option<SigSpec>) -> Result<u64, String> {
     use std::sync::{atomic::AtomicBool, Arc};
     if ABX.lock().unwrap().is_some() {
         return Err("a blind test is running — finish or cancel it first".into());
     }
     let Some(spec) = spec else {
         stop_cal_noise();
-        return Ok(());
+        return Ok(PREVIEW_GEN.load(std::sync::atomic::Ordering::Relaxed));
     };
     let kind = sig_kind_of(&spec)?;
     let amp = sig_amp(&spec);
     stop_cal_noise();
+    let my_gen = PREVIEW_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
     let stop = Arc::new(AtomicBool::new(false));
     *CAL_NOISE.lock().unwrap() = Some(stop.clone());
     std::thread::spawn(move || {
         use fletcher_core::{playback, signal};
         let mut src =
             playback::SignalSource::new(move |fs| signal::Signal::new(kind, amp, fs, 1), None);
-        let result = playback::play(playback::OutputMode::Shared, &mut src, 1.0, &stop, |_| {});
+        let _ = playback::play(playback::OutputMode::Shared, &mut src, 1.0, &stop, |_| {});
         let mut guard = CAL_NOISE.lock().unwrap();
         if let Some(cur) = guard.as_ref() {
             if Arc::ptr_eq(cur, &stop) {
@@ -1448,9 +1454,9 @@ fn signal_preview(app: tauri::AppHandle, spec: Option<SigSpec>) -> Result<(), St
         }
         drop(guard);
         use tauri::Emitter;
-        let _ = app.emit("sig-preview-ended", result.err().map(|e| e.to_string()));
+        let _ = app.emit("sig-preview-ended", my_gen);
     });
-    Ok(())
+    Ok(my_gen)
 }
 
 #[tauri::command]

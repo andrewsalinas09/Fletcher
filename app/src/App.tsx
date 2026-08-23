@@ -1846,8 +1846,8 @@ const sigSummary = (t: TrackRow): string => {
   try {
     const s = JSON.parse(t.signalParams ?? "") as SigSpec;
     const sweep =
-      s.kind === "sweepLog" || s.kind === "sweepLinear"
-        ? ` · ${s.sweepS ?? s.seconds} s per sweep`
+      (s.kind === "sweepLog" || s.kind === "sweepLinear") && s.sweepS != null
+        ? ` · repeats every ${s.sweepS} s`
         : "";
     return `${s.levelDb} dB peak${sweep}`;
   } catch {
@@ -3016,9 +3016,15 @@ function MainApp() {
   const [genPreview, setGenPreview] = useState(false);
   const genPreviewRef = useRef(genPreview);
   genPreviewRef.current = genPreview;
+  // The serial of the preview we most recently started: a replaced stream's
+  // "ended" event arrives late and must not flip the button off.
+  const genSerial = useRef(0);
   const genPreviewSet = (spec: SigSpec | null) => {
-    invoke("signal_preview", { spec })
-      .then(() => setGenPreview(!!spec))
+    invoke<number>("signal_preview", { spec })
+      .then((n) => {
+        genSerial.current = n ?? 0;
+        setGenPreview(!!spec);
+      })
       .catch((e) => {
         setGenPreview(false);
         showNotice(String(e));
@@ -3028,7 +3034,13 @@ function MainApp() {
   const updateGen = (patch: Partial<SigSpec>) => {
     setGenSpec((cur) => {
       const next = { ...cur, ...patch };
-      if (genPreviewRef.current) invoke("signal_preview", { spec: next }).catch(() => {});
+      if (genPreviewRef.current) {
+        invoke<number>("signal_preview", { spec: next })
+          .then((n) => {
+            genSerial.current = n ?? 0;
+          })
+          .catch(() => {});
+      }
       return next;
     });
   };
@@ -3037,7 +3049,7 @@ function MainApp() {
       kind === "sine"
         ? { hz: genSpec.hz ?? 1000 }
         : kind === "sweepLog" || kind === "sweepLinear"
-          ? { fromHz: genSpec.fromHz ?? 20, toHz: genSpec.toHz ?? 20000, sweepS: genSpec.sweepS ?? 4 }
+          ? { fromHz: genSpec.fromHz ?? 20, toHz: genSpec.toHz ?? 20000 }
           : kind === "band"
             ? { loHz: genSpec.loHz ?? 500, hiHz: genSpec.hiHz ?? 2000 }
             : {};
@@ -3060,7 +3072,11 @@ function MainApp() {
   // preview thread ends and tells us — un-stick the button.
   useEffect(() => {
     if (!genOpen) return;
-    const un = listen("sig-preview-ended", () => setGenPreview(false));
+    const un = listen<number>("sig-preview-ended", (e) => {
+      // Only the CURRENT preview's ending un-sticks the button — a replaced
+      // stream's late "ended" is stale.
+      if ((e.payload ?? 0) >= genSerial.current) setGenPreview(false);
+    });
     return () => {
       un.then((f) => f());
     };
@@ -5040,10 +5056,37 @@ function MainApp() {
                           </div>
                         </div>
                         <div className="room-row">
-                          <span className="room-key" title="one pass of the sweep; it repeats for the whole duration">
-                            Sweep length
+                          <span
+                            className="room-key"
+                            title="One pass: the sweep takes the whole duration to cross the range once. Repeat: it crosses the range every N seconds, starting over until the duration runs out."
+                          >
+                            Pacing
                           </span>
-                          <GenNum value={genSpec.sweepS} min={0.1} max={600} unit="s" onCommit={(v) => updateGen({ sweepS: v })} />
+                          <div className="trials-ctl">
+                            <div className="seg seg-sm">
+                              <span
+                                className={`seg-opt ${genSpec.sweepS == null ? "on" : ""}`}
+                                onClick={() => updateGen({ sweepS: undefined })}
+                              >
+                                One pass
+                              </span>
+                              <span
+                                className={`seg-opt ${genSpec.sweepS != null ? "on" : ""}`}
+                                onClick={() => updateGen({ sweepS: Math.min(genSpec.seconds, 4) })}
+                              >
+                                Repeat
+                              </span>
+                            </div>
+                            {genSpec.sweepS != null && (
+                              <GenNum
+                                value={genSpec.sweepS}
+                                min={0.1}
+                                max={600}
+                                unit="s each"
+                                onCommit={(v) => updateGen({ sweepS: v })}
+                              />
+                            )}
+                          </div>
                         </div>
                       </>
                     )}
