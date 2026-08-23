@@ -1958,6 +1958,20 @@ button.ghost {
   flex-direction: column;
 }
 
+/* In the viewer the panes SHARE the column: each wrap gets a flex weight
+   (set inline by lane count) so removing/popping a plot lets the rest grow
+   to fill the space. */
+.clips-viewer .pane-wrap {
+  min-height: 90px;
+}
+
+.clips-viewer .pane-wrap > .timeline,
+.clips-viewer .pane-wrap > .fft-pane {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+}
+
 .pane-pop {
   position: absolute;
   top: 30px;

@@ -1170,7 +1170,15 @@ function FftView({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [spectrum, setSpectrum] = useState<number[] | null>(null);
   const [cur, setCur] = useState<{ x: number; y: number } | null>(null);
+  const [resizeTick, setResizeTick] = useState(0);
   const busy = useRef(false);
+  useEffect(() => {
+    const cv = canvasRef.current;
+    if (!cv || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => setResizeTick((t) => t + 1));
+    ro.observe(cv);
+    return () => ro.disconnect();
+  }, []);
 
   useEffect(() => {
     if (busy.current) return;
@@ -1294,7 +1302,7 @@ function FftView({
       ctx.fillStyle = "#55503f";
       ctx.fillText(label, 11, 15);
     }
-  }, [spectrum, eq, cur]);
+  }, [spectrum, eq, cur, resizeTick]);
 
   return (
     <canvas
@@ -2301,6 +2309,15 @@ function TimelineView({
   // Cursor readout: where the pointer is in data terms (time / amplitude /
   // frequency+level), drawn on the canvas so satellites get it for free.
   const [cur, setCur] = useState<{ x: number; y: number } | null>(null);
+  // The pane flexes now — redraw whenever the canvas box actually changes.
+  const [resizeTick, setResizeTick] = useState(0);
+  useEffect(() => {
+    const cv = canvasRef.current;
+    if (!cv || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => setResizeTick((t) => t + 1));
+    ro.observe(cv);
+    return () => ro.disconnect();
+  }, []);
 
   // Clamp the SPAN first, then anchor — clamping after anchoring made every
   // wheel notch at the zoom limit drift the view sideways.
@@ -2704,7 +2721,7 @@ function TimelineView({
       ctx.fillStyle = "#55503f";
       ctx.fillText(label, bx, by);
     }
-  }, [wave, view, win, posS, durationS, region, spec, showSpec, showWave, decimals, cur]);
+  }, [wave, view, win, posS, durationS, region, spec, showSpec, showWave, decimals, cur, resizeTick]);
 
   return (
     <canvas
@@ -6078,7 +6095,13 @@ function MainApp() {
             <div className="clips-viewer">
               {trackSess && !trackSess.phase ? (
                 <>
-                  <div className="pane-wrap">
+                  <div
+                    className="pane-wrap"
+                    style={{
+                      // Weight ∝ visible lanes; the whole column when FFT is away.
+                      flex: `${(specOn && !popped.spec ? 3 : 0) + (waveOn ? 2 : 0) || 1} 1 0`,
+                    }}
+                  >
                     <TimelineView
                       trackId={trackSess.id}
                       durationS={trackSess.durationS}
@@ -6096,9 +6119,6 @@ function MainApp() {
                       spec={specData}
                       showSpec={specOn && !popped.spec}
                       showWave={waveOn}
-                      heightPx={
-                        24 + (specOn && !popped.spec ? 216 : 0) + (waveOn ? 190 : 0) + 8 || 60
-                      }
                       decimals={tcDec}
                       syncKey="main"
                       focus={clipFocus}
@@ -6115,7 +6135,7 @@ function MainApp() {
                     )}
                   </div>
                   {fftOn && !popped.fft && (
-                    <div className="pane-wrap">
+                    <div className="pane-wrap" style={{ flex: "2 1 0" }}>
                       <FftView
                         trackId={trackSess.id}
                         posS={trackPos.posS}
