@@ -245,7 +245,7 @@ export default function App() {
   const sel = selected != null && state ? state.filters[selected] : null;
 
 
-  const dbRange = useMemo(() => {
+  const autoRange = useMemo(() => {
     if (!state) return 12;
     const peaks = [
       ...state.sumDb.map((db) => Math.abs(db - state.preampDb)),
@@ -254,6 +254,11 @@ export default function App() {
     const maxAbs = peaks.length ? Math.max(...peaks) : 0;
     return Math.max(12, Math.ceil((maxAbs + 3) / 3) * 3);
   }, [state]);
+
+  // While dragging the scale is frozen (no moving target); hitting the edge
+  // doubles it in one jump; releasing re-engages auto-fit.
+  const [dragRange, setDragRange] = useState<number | null>(null);
+  const dbRange = dragRange ?? autoRange;
 
   const yOf = (db: number) => GH / 2 - (db / dbRange) * (GH / 2 - 30);
   const dbOf = (y: number) => ((GH / 2 - y) / (GH / 2 - 30)) * dbRange;
@@ -298,21 +303,27 @@ export default function App() {
     }
     setSelected(i);
     dragging.current = true;
+    setDragRange(dbRange); // freeze the scale for the whole drag
     (e.target as Element).setPointerCapture(e.pointerId);
   };
 
   const onDragMove = (i: number) => (e: React.PointerEvent) => {
     if (!dragging.current || selected !== i) return;
     const { f, db } = graphPoint(e);
+    const clamped = Math.max(-dbRange, Math.min(dbRange, db));
+    if (Math.abs(clamped) >= dbRange * 0.95 && dbRange < 48) {
+      setDragRange(dbRange * 2); // hit the peak → double, in one jump
+    }
     mutateFilter(i, {
       fcHz: +f.toFixed(f < 100 ? 1 : 0),
-      gainDb: +Math.max(-dbRange, Math.min(dbRange, db)).toFixed(1),
+      gainDb: +clamped.toFixed(1),
     });
   };
 
   const endDrag = (_i: number) => () => {
     if (!dragging.current) return;
     dragging.current = false;
+    setDragRange(null); // release → auto-fit
     const cur = stateRef.current;
     if (cur) pushChain(cur.filters, true);
   };
