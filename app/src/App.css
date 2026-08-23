@@ -103,6 +103,17 @@ nav {
   border: 1px solid var(--line-mid);
   background: var(--panel);
   padding: 5px 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.device-chip:hover {
+  border-color: var(--ink);
+}
+
+.device-menu {
+  right: 0;
+  left: auto;
 }
 
 /* ---------- preset line ---------- */

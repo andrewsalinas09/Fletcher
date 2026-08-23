@@ -98,6 +98,7 @@ function GainGauge({ gainDb, dark }: { gainDb: number; dark?: boolean }) {
 
 type PresetsState = { presets: string[]; active: string | null };
 type AbInfo = { side: string; matchDb: number };
+type Device = { id: string; name: string; isDefault: boolean };
 
 // Deep teaching copy for the tooltip layer. A lot of detail, gated behind a
 // deliberate 1.5 s still-hover so it never gets in the way.
@@ -219,6 +220,22 @@ export default function App() {
       .catch((e) => setError(String(e)));
 
   const [ab, setAb] = useState<AbInfo>({ side: "a", matchDb: 0 });
+  const [devices, setDevices] = useState<Device[]>([]);
+  const [deviceMenu, setDeviceMenu] = useState(false);
+
+  const openDeviceMenu = () => {
+    invoke<Device[]>("devices_list").then(setDevices).catch(() => {});
+    setDeviceMenu((o) => !o);
+  };
+
+  const chooseDevice = (id: string) => {
+    invoke<EqState>("device_set_default", { id })
+      .then((s) => {
+        setState(s);
+        setDeviceMenu(false);
+      })
+      .catch((e) => showNotice(String(e)));
+  };
 
   const refreshPresets = () => {
     invoke<PresetsState>("presets_state").then(setPresets).catch(() => {});
@@ -615,12 +632,45 @@ export default function App() {
           <span className="tab disabled" title="Coming soon">SETTINGS</span>
         </nav>
         <span className="spacer" />
-        <span className="device-chip">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4">
-            <path d="M3 6v4h3l4 3V3L6 6H3z" />
-            <path d="M12 6c1 1 1 3 0 4" />
-          </svg>
-          {state?.deviceName ?? "no device"}
+        <span className="preset-wrap">
+          <span
+            className="device-chip"
+            onClick={openDeviceMenu}
+            {...tipProps(
+              <div>
+                <div className="t-title">Output device</div>
+                <p>
+                  The Windows default playback device — where all audio (and the EQ) goes.
+                  Click to switch. Equalizer APO must be installed on a device for EQ to
+                  apply there (APO's Configurator handles that).
+                </p>
+              </div>,
+            )}
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4">
+              <path d="M3 6v4h3l4 3V3L6 6H3z" />
+              <path d="M12 6c1 1 1 3 0 4" />
+            </svg>
+            {state?.deviceName ?? "no device"}
+            <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6">
+              <path d="M4 6l4 4 4-4" />
+            </svg>
+          </span>
+          {deviceMenu && (
+            <div className="preset-menu device-menu">
+              {devices.map((d) => (
+                <div
+                  key={d.id}
+                  className={`preset-row ${d.isDefault ? "current" : ""}`}
+                  onClick={() => chooseDevice(d.id)}
+                >
+                  <span>{d.name}</span>
+                  {d.isDefault && <span className="dim-sm">current</span>}
+                </div>
+              ))}
+              {devices.length === 0 && <div className="preset-row">no devices found</div>}
+            </div>
+          )}
         </span>
       </header>
 
@@ -1050,12 +1100,6 @@ export default function App() {
           {`matched · B ${fmtGain(ab.matchDb)} dB`}
         </span>
         <span className="spacer" />
-        <button className="ghost" disabled title="Track engine — Phase 3">
-          Load a track
-        </button>
-        <button className="primary" disabled title="Test engine — Phase 2">
-          Blind test
-        </button>
       </footer>
     </div>
   );

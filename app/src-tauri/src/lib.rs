@@ -469,6 +469,32 @@ fn apply_side(side: &str) -> Result<(), String> {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct DeviceDto {
+    id: String,
+    name: String,
+    is_default: bool,
+}
+
+#[tauri::command]
+fn devices_list() -> Vec<DeviceDto> {
+    devices::list_render_devices()
+        .into_iter()
+        .map(|d| DeviceDto {
+            id: d.id,
+            name: d.name,
+            is_default: d.is_default,
+        })
+        .collect()
+}
+
+#[tauri::command]
+fn device_set_default(id: String) -> Result<EqState, String> {
+    devices::set_default_render_device(&id)?;
+    eq_state()
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct AbInfo {
     side: String,
     match_db: f64,
@@ -772,7 +798,9 @@ pub fn run() {
             preset_duplicate,
             preset_delete,
             ab_info,
-            ab_set
+            ab_set,
+            devices_list,
+            device_set_default
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

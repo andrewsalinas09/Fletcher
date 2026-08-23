@@ -1019,6 +1019,8 @@ name = "fletcher-core"
 version = "0.1.0"
 dependencies = [
  "wasapi",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
  "winreg",
 ]
 
