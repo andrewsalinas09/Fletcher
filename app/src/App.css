@@ -213,6 +213,47 @@ nav {
   border-color: var(--ink);
 }
 
+.rename-input {
+  font: inherit;
+  font-size: 12.5px;
+  border: 1px solid var(--ink);
+  background: var(--paper);
+  padding: 2px 6px;
+  color: var(--ink);
+  min-width: 0;
+  flex: 1;
+}
+
+.aeq-block {
+  border-top: 2px solid var(--ink);
+  padding-top: 8px;
+}
+
+.aeq-label {
+  display: block;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: var(--dim);
+  padding: 0 12px 6px;
+}
+
+.aeq-input {
+  display: block;
+  width: calc(100% - 24px);
+  margin: 0 12px 6px;
+  font: inherit;
+  font-size: 12px;
+  border: 1px solid var(--line-mid);
+  background: var(--panel);
+  padding: 5px 8px;
+  color: var(--ink);
+}
+
+.aeq-input:focus {
+  outline: none;
+  border-color: var(--ink);
+}
+
 .warn-chip {
   font-size: 11px;
   color: var(--boost);

@@ -99,6 +99,7 @@ function GainGauge({ gainDb, dark }: { gainDb: number; dark?: boolean }) {
 type PresetsState = { presets: string[]; active: string | null };
 type AbInfo = { side: string; matchDb: number };
 type Device = { id: string; name: string; isDefault: boolean };
+type AutoeqEntry = { name: string; path: string; note: string };
 
 type AbxState = {
   active: boolean;
@@ -249,6 +250,55 @@ export default function App() {
   const [ab, setAb] = useState<AbInfo>({ side: "a", matchDb: 0 });
   const [devices, setDevices] = useState<Device[]>([]);
   const [deviceMenu, setDeviceMenu] = useState(false);
+  const [renaming, setRenaming] = useState<{ from: string; value: string } | null>(null);
+  const [aeq, setAeq] = useState("");
+  const [aeqResults, setAeqResults] = useState<AutoeqEntry[]>([]);
+  const [importing, setImporting] = useState(false);
+
+  const commitRename = () => {
+    if (!renaming) return;
+    const to = renaming.value.trim();
+    if (!to || to === renaming.from) {
+      setRenaming(null);
+      return;
+    }
+    invoke<PresetsState>("preset_rename", { from: renaming.from, to })
+      .then((p) => {
+        setPresets(p);
+        setRenaming(null);
+      })
+      .catch((e) => showNotice(String(e)));
+  };
+
+  // Debounced AutoEQ search (fetches the cached index; network only when stale).
+  useEffect(() => {
+    if (aeq.trim().length < 2) {
+      setAeqResults([]);
+      return;
+    }
+    const t = window.setTimeout(() => {
+      invoke<AutoeqEntry[]>("autoeq_search", { query: aeq })
+        .then(setAeqResults)
+        .catch((e) => showNotice(String(e)));
+    }, 300);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aeq]);
+
+  const importAeq = (entry: AutoeqEntry) => {
+    setImporting(true);
+    invoke<EqState>("autoeq_import", { name: entry.name, path: entry.path })
+      .then((s) => {
+        setState(s);
+        refreshPresets();
+        setMenuOpen(false);
+        setAeq("");
+        setAeqResults([]);
+        showNotice(`imported “${entry.name}” from AutoEQ — it's your active preset now`);
+      })
+      .catch((e) => showNotice(String(e)))
+      .finally(() => setImporting(false));
+  };
 
   // ---- Listening Lab state ----
   const [view, setView] = useState<"eq" | "lab">("eq");
@@ -1127,8 +1177,33 @@ export default function App() {
                         </div>,
                       )}
                     >
-                      <span>{p}</span>
+                      {renaming?.from === p ? (
+                        <input
+                          className="rename-input"
+                          autoFocus
+                          value={renaming.value}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={(e) => setRenaming({ from: p, value: e.target.value })}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") commitRename();
+                            if (e.key === "Escape") setRenaming(null);
+                          }}
+                          onBlur={commitRename}
+                        />
+                      ) : (
+                        <span>{p}</span>
+                      )}
                       <span className="spacer" />
+                      <span
+                        className="row-act"
+                        title="rename"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setRenaming({ from: p, value: p });
+                        }}
+                      >
+                        ✎
+                      </span>
                       <span
                         className="row-act"
                         onClick={(e) => {
@@ -1149,10 +1224,31 @@ export default function App() {
                       </span>
                     </div>
                   ))}
+                  <div className="aeq-block">
+                    <span className="mono aeq-label">GET A HEADPHONE PRESET — AUTOEQ</span>
+                    <input
+                      className="aeq-input"
+                      placeholder="search 5,000+ headphones… e.g. HD 650"
+                      value={aeq}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={(e) => setAeq(e.target.value)}
+                    />
+                    {importing && <div className="preset-row"><span className="dim-sm">importing…</span></div>}
+                    {!importing &&
+                      aeqResults.map((r) => (
+                        <div key={`${r.path}/${r.name}`} className="preset-row" onClick={() => importAeq(r)}>
+                          <span>{r.name}</span>
+                          <span className="spacer" />
+                          <span className="dim-sm">{r.note.replace(/^by /, "")}</span>
+                        </div>
+                      ))}
+                    {!importing && aeq.trim().length >= 2 && aeqResults.length === 0 && (
+                      <div className="preset-row"><span className="dim-sm">no matches</span></div>
+                    )}
+                  </div>
                   <div className="preset-new">
                     <input
                       placeholder="name (optional)…"
-                      autoFocus
                       value={newName}
                       onChange={(e) => setNewName(e.target.value)}
                       onKeyDown={(e) => e.key === "Enter" && createPreset(true)}

@@ -467,6 +467,201 @@ fn apply_side(side: &str) -> Result<(), String> {
     }
 }
 
+// ---------------- AutoEQ: fetch-on-demand headphone presets (ADR-0008) ----------------
+
+const AUTOEQ_BASE: &str = "https://raw.githubusercontent.com/jaakkopasanen/AutoEq/master/results";
+const INDEX_TTL_SECS: u64 = 7 * 24 * 3600;
+
+fn autoeq_dir() -> PathBuf {
+    data_dir().join("autoeq")
+}
+
+fn http_get(url: &str) -> Result<String, String> {
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("Fletcher-EQ (github.com/andrewsalinas09/Fletcher)")
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client
+        .get(url)
+        .send()
+        .map_err(|e| format!("network error: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("fetch failed ({}) for {url}", resp.status()));
+    }
+    resp.text().map_err(|e| e.to_string())
+}
+
+/// The AutoEq results index, cached; stale-if-error (ADR-0008: cache is
+/// mandatory, offline degrades to last known).
+fn autoeq_index() -> Result<String, String> {
+    let path = autoeq_dir().join("index.md");
+    let fresh = std::fs::metadata(&path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age.as_secs() < INDEX_TTL_SECS);
+    if fresh {
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            return Ok(text);
+        }
+    }
+    match http_get(&format!("{AUTOEQ_BASE}/INDEX.md")) {
+        Ok(text) => {
+            let _ = std::fs::create_dir_all(autoeq_dir());
+            let _ = fsx::write_atomic(&path, &text);
+            Ok(text)
+        }
+        Err(e) => std::fs::read_to_string(&path)
+            .map_err(|_| format!("{e} — and no cached index yet; connect once to fetch it")),
+    }
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct AutoeqEntry {
+    name: String,
+    /// URL-encoded directory path relative to results/, e.g. "oratory1990/over-ear/Sennheiser%20HD%20650"
+    path: String,
+    note: String,
+}
+
+fn parse_autoeq_index(text: &str) -> Vec<AutoeqEntry> {
+    text.lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            let rest = line.strip_prefix("- [")?;
+            let (name, rest) = rest.split_once("](")?;
+            let (link, tail) = rest.split_once(')')?;
+            let path = link.strip_prefix("./")?.to_string();
+            Some(AutoeqEntry {
+                name: name.to_string(),
+                path,
+                note: tail.trim().to_string(),
+            })
+        })
+        .collect()
+}
+
+fn autoeq_search_sync(query: &str) -> Result<Vec<AutoeqEntry>, String> {
+    let q = query.trim().to_lowercase();
+    if q.len() < 2 {
+        return Ok(Vec::new());
+    }
+    let tokens: Vec<&str> = q.split_whitespace().collect();
+    let index = autoeq_index()?;
+    Ok(parse_autoeq_index(&index)
+        .into_iter()
+        .filter(|e| {
+            let name = e.name.to_lowercase();
+            tokens.iter().all(|t| name.contains(t))
+        })
+        .take(40)
+        .collect())
+}
+
+#[tauri::command]
+async fn autoeq_search(query: String) -> Result<Vec<AutoeqEntry>, String> {
+    tauri::async_runtime::spawn_blocking(move || autoeq_search_sync(&query))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn autoeq_import_sync(name: &str, path: &str) -> Result<(), String> {
+    if path.contains("..") || name.contains("..") {
+        return Err("invalid entry".into());
+    }
+    let encoded_name = name
+        .replace('%', "%25")
+        .replace(' ', "%20")
+        .replace('#', "%23");
+    let url = format!("{AUTOEQ_BASE}/{path}/{encoded_name}%20ParametricEQ.txt");
+
+    // Cache per preset file, stale-if-error.
+    let cache = autoeq_dir().join("files").join(format!(
+        "{}.txt",
+        sanitize_name(name).unwrap_or_else(|| "preset".into())
+    ));
+    let text = match http_get(&url) {
+        Ok(t) => {
+            let _ = std::fs::create_dir_all(cache.parent().unwrap());
+            let _ = fsx::write_atomic(&cache, &t);
+            t
+        }
+        Err(e) => std::fs::read_to_string(&cache).map_err(|_| e)?,
+    };
+
+    let doc = ConfigDoc::parse(&text);
+    let mut preamp = 0.0;
+    let mut chain = Vec::new();
+    for d in doc.directives() {
+        match d {
+            Parsed::Preamp { db } => preamp += db,
+            Parsed::Filter {
+                enabled,
+                kind,
+                fc_hz,
+                gain_db,
+                q,
+                ..
+            } => chain.push(ChainFilter {
+                enabled: *enabled,
+                kind: *kind,
+                fc_hz: fc_hz.unwrap_or(1000.0),
+                gain_db: gain_db.unwrap_or(0.0),
+                q: q.unwrap_or(std::f64::consts::FRAC_1_SQRT_2),
+            }),
+            _ => {}
+        }
+    }
+    if chain.is_empty() {
+        return Err("that AutoEQ entry contained no parametric filters".into());
+    }
+
+    let st = store()?;
+    let base = sanitize_name(name).ok_or("unusable preset name")?;
+    let mut preset_name = base.clone();
+    let mut n = 2;
+    while st.exists(&preset_name) {
+        preset_name = format!("{base} {n}");
+        n += 1;
+    }
+    st.save(&preset_name, preamp, &chain)
+        .map_err(|e| e.to_string())?;
+    activate_chain(&chain)?;
+    set_active_preset(Some(&preset_name));
+    set_ab_side("a");
+    Ok(())
+}
+
+#[tauri::command]
+async fn autoeq_import(name: String, path: String) -> Result<EqState, String> {
+    tauri::async_runtime::spawn_blocking(move || autoeq_import_sync(&name, &path))
+        .await
+        .map_err(|e| e.to_string())??;
+    eq_state()
+}
+
+#[tauri::command]
+fn preset_rename(from: String, to: String) -> Result<PresetsState, String> {
+    let to = sanitize_name(&to).ok_or("invalid preset name")?;
+    let st = store()?;
+    if !st.exists(&from) {
+        return Err(format!("preset {from:?} not found"));
+    }
+    if st.exists(&to) {
+        return Err(format!("a preset named {to:?} already exists"));
+    }
+    let p = st.load(&from).ok_or("could not read preset")?;
+    st.save(&to, p.preamp_db, &p.filters)
+        .map_err(|e| e.to_string())?;
+    st.delete(&from).map_err(|e| e.to_string())?;
+    if active_preset().as_deref() == Some(from.as_str()) {
+        set_active_preset(Some(&to));
+    }
+    presets_state()
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DeviceDto {
@@ -1051,7 +1246,10 @@ pub fn run() {
             abx_vote,
             abx_reveal,
             abx_cancel,
-            abx_sessions
+            abx_sessions,
+            autoeq_search,
+            autoeq_import,
+            preset_rename
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
