@@ -12,6 +12,12 @@ Append-only session journal. Newest entry first.
 
 ---
 
+## 2026-08-22 — Development kickoff: ADR-0007/0008, license, both spikes done
+
+- **Did:** Kickoff decisions via user Q&A: include-line wiring (ADR-0007), AutoEQ fetch-on-demand (ADR-0008), spikes-first, CI-from-start; Apache 2.0 license added. Live spike results on the dev machine (APO 1.4.2 + Peace, HD650, Schiit Modi 3+): config dir writable without elevation (Users: FullControl); Fletcher wired in as `Include: fletcher.txt` alongside Peace's line; hot-reload through included files confirmed audibly — "basically 0 latency" at 1 s toggle cadence; WASAPI exclusive mode confirmed to bypass APO (Q-04) via first Rust code (`src/bin/spike_bypass.rs`, wasapi 0.24) — but it evicts other apps ungracefully (Apple Music "error playback", no auto-recover) and bypasses Windows volume (own gain stage mandatory, TB-20). GitHub Actions CI added (fmt/clippy/test, windows-latest).
+- **Learned:** Peace zeroes peace.txt when toggled off (TB-09 churn is real). Exclusive-mode format negotiation on Modi 3+: 24-bit int @ 48 kHz.
+- **Next:** Confirm ADR-0009 (exclusive-mode bypass as primary), then scaffold Phase 1 (Tauri app + config engine with round-trip tests).
+
 ## 2026-08-22 — Gap pass: profiles, loudness mode, history tree, safety
 
 - **Did:** Seven-gap review with the user, all filed: per-device profiles with device-level auto-switch (headphone-level is a manual quick-switcher — analog jacks are invisible to Windows); loudness-compensation mode, off by default, anchored-reference design (Q-16, TB-21); preset history as a branching jumpable tree with blind A/B between any two nodes (Q-17); per-channel EQ / L-R balance from day one; mic calibration import (UMIK-2 / iMM-6 / OmniMic formats — user's real cal files as fixtures); sweep ear-safety (TB-20); code signing deferred to Phase 5 by user. Scope note: headphones first, room correction deferred.
