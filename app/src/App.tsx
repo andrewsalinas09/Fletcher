@@ -901,6 +901,7 @@ function MainApp() {
       current: 0,
       next: 1,
     };
+    rail.current = [0];
     setHistVersion((v) => v + 1);
   };
 
@@ -922,6 +923,7 @@ function MainApp() {
     cur.children.push(node.id);
     h.nodes.set(node.id, node);
     h.current = node.id;
+    buildRail(node.id);
     setHistVersion((v) => v + 1);
   };
 
@@ -948,7 +950,34 @@ function MainApp() {
     pushChain(filters, true);
   };
 
-  const jumpTo = (id: number) => {
+  // The RAIL: clicking a node fixes the whole undo/redo track — its ancestry
+  // up to root, its descent to a leaf via latest-created children. Ctrl+Z/Y
+  // walk this fixed rail; only jumps and new gestures re-lay it.
+  const rail = useRef<number[]>([]);
+
+  const buildRail = (id: number) => {
+    const h = hist.current;
+    if (!h || !h.nodes.has(id)) return;
+    const up: number[] = [];
+    let c: number | null = id;
+    while (c != null) {
+      up.push(c);
+      c = h.nodes.get(c)?.parent ?? null;
+    }
+    up.reverse();
+    let cur = id;
+    for (;;) {
+      const kids = h.nodes.get(cur)?.children ?? [];
+      if (!kids.length) break;
+      const latest = kids[kids.length - 1];
+      up.push(latest);
+      cur = latest;
+    }
+    rail.current = up;
+  };
+
+  /** Move along the existing rail without re-laying it. */
+  const moveTo = (id: number) => {
     const h = hist.current;
     const node = h?.nodes.get(id);
     if (!h || !node) return;
@@ -957,18 +986,31 @@ function MainApp() {
     setHistVersion((v) => v + 1);
   };
 
-  const undo = () => {
+  /** A deliberate jump (click): move AND re-lay the rail through this node. */
+  const jumpTo = (id: number) => {
+    buildRail(id);
+    moveTo(id);
+  };
+
+  const railIndex = (): number => {
     const h = hist.current;
-    if (!h) return;
-    const parent = h.nodes.get(h.current)?.parent;
-    if (parent != null) jumpTo(parent);
+    if (!h) return -1;
+    let idx = rail.current.indexOf(h.current);
+    if (idx < 0) {
+      buildRail(h.current);
+      idx = rail.current.indexOf(h.current);
+    }
+    return idx;
+  };
+
+  const undo = () => {
+    const idx = railIndex();
+    if (idx > 0) moveTo(rail.current[idx - 1]);
   };
 
   const redo = () => {
-    const h = hist.current;
-    if (!h) return;
-    const kids = h.nodes.get(h.current)?.children ?? [];
-    if (kids.length) jumpTo(kids[kids.length - 1]); // most recent branch
+    const idx = railIndex();
+    if (idx >= 0 && idx < rail.current.length - 1) moveTo(rail.current[idx + 1]);
   };
 
   /** Delete a node and its whole subtree (a branch prune). Root is immortal. */
@@ -992,6 +1034,7 @@ function MainApp() {
       h.current = parent.id;
       applySnap(parent.snap);
     }
+    buildRail(h.current);
     setHistVersion((v) => v + 1);
   };
 
@@ -1034,6 +1077,7 @@ function MainApp() {
       const next = Math.max(...nodes.keys()) + 1;
       const current = nodes.has(d.current) ? d.current : 0;
       hist.current = { nodes, current, next };
+      buildRail(current);
       setHistVersion((v) => v + 1);
       return true;
     } catch {
@@ -1062,6 +1106,7 @@ function MainApp() {
             cur.children.push(node.id);
             h.nodes.set(node.id, node);
             h.current = node.id;
+            buildRail(node.id);
             setHistVersion((v) => v + 1);
           }
         } else {
