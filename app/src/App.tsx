@@ -188,7 +188,29 @@ export default function App() {
       .map(({ enabled, kind, fcHz, gainDb, q }) => ({ enabled, kind, fcHz, gainDb, q }));
     const send = () =>
       invoke<EqState>("set_fletcher_chain", { filters: own })
-        .then((s) => setState(s))
+        .then((s) => {
+          // Mid-drag, the response reflects an already-stale position; letting
+          // it win snaps the handle back and forth under the cursor. Keep the
+          // fresh local values for every filter, take the server's curves.
+          const local = stateRef.current;
+          if (dragging.current && local) {
+            setState({
+              ...s,
+              filters: s.filters.map((f, i) =>
+                local.filters[i]
+                  ? {
+                      ...f,
+                      fcHz: local.filters[i].fcHz,
+                      gainDb: local.filters[i].gainDb,
+                      q: local.filters[i].q,
+                    }
+                  : f,
+              ),
+            });
+          } else {
+            setState(s);
+          }
+        })
         .catch((e) => setError(String(e)));
     if (immediate) {
       if (pushTimer.current != null) window.clearTimeout(pushTimer.current);
@@ -202,9 +224,79 @@ export default function App() {
     }
   };
 
+  // ---- undo/redo: snapshots of Fletcher's own chain, gesture-coalesced ----
+  type ChainSnap = { enabled: boolean; kind: string; fcHz: number; gainDb: number; q: number }[];
+  const undoStack = useRef<ChainSnap[]>([]);
+  const redoStack = useRef<ChainSnap[]>([]);
+  const lastRecord = useRef(0);
+
+  const ownSnap = (): ChainSnap =>
+    (stateRef.current?.filters ?? [])
+      .filter((f) => f.sourceFile === OWN_FILE)
+      .map(({ enabled, kind, fcHz, gainDb, q }) => ({ enabled, kind, fcHz, gainDb, q }));
+
+  /** Record the pre-change state. Changes within 500 ms coalesce into one step. */
+  const recordHistory = (force = false) => {
+    const now = Date.now();
+    if (!force && now - lastRecord.current < 500) return;
+    lastRecord.current = now;
+    undoStack.current.push(ownSnap());
+    if (undoStack.current.length > 200) undoStack.current.shift();
+    redoStack.current = [];
+  };
+
+  const applySnap = (snap: ChainSnap) => {
+    const cur = stateRef.current;
+    if (!cur) return;
+    const foreign = cur.filters.filter((f) => f.sourceFile !== OWN_FILE);
+    const own: EqFilter[] = snap.map((s) => ({
+      ...s,
+      responseDb: [],
+      sourceFile: OWN_FILE,
+    }));
+    const filters = [...foreign, ...own];
+    setState({ ...cur, filters });
+    setSelected(null);
+    pushChain(filters, true);
+  };
+
+  const undo = () => {
+    const snap = undoStack.current.pop();
+    if (snap == null) return;
+    redoStack.current.push(ownSnap());
+    lastRecord.current = 0;
+    applySnap(snap);
+  };
+
+  const redo = () => {
+    const snap = redoStack.current.pop();
+    if (snap == null) return;
+    undoStack.current.push(ownSnap());
+    lastRecord.current = 0;
+    applySnap(snap);
+  };
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+      if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        undo();
+      } else if ((e.ctrlKey && e.key.toLowerCase() === "y") || (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "z")) {
+        e.preventDefault();
+        redo();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const mutateFilter = (i: number, patch: Partial<EqFilter>, immediate = false) => {
     const cur = stateRef.current;
     if (!cur) return;
+    if (cur.filters[i]?.sourceFile === OWN_FILE) recordHistory();
     const filters = cur.filters.map((f, j) => (j === i ? { ...f, ...patch } : f));
     setState({ ...cur, filters });
     pushChain(filters, immediate);
@@ -213,6 +305,7 @@ export default function App() {
   const deleteFilter = (i: number) => {
     const cur = stateRef.current;
     if (!cur) return;
+    recordHistory(true);
     const filters = cur.filters.filter((_, j) => j !== i);
     setState({ ...cur, filters });
     setSelected(null);
@@ -222,6 +315,7 @@ export default function App() {
   const addFilter = () => {
     const cur = stateRef.current;
     if (!cur) return;
+    recordHistory(true);
     const fresh: EqFilter = {
       enabled: true,
       kind: "PK",
