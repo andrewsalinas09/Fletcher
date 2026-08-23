@@ -1682,6 +1682,11 @@ async fn track_import_url(app: tauri::AppHandle, url: String) -> Result<LibraryS
                 "--audio-format",
                 "m4a",
                 "--newline",
+                // --print-json implies quiet, which silences the progress bar;
+                // --progress forces it back on — and in quiet mode it lands on
+                // STDERR (stdout stays clean for the JSON), so stderr is
+                // parsed for progress below, not just drained.
+                "--progress",
                 "--print-json",
                 "--ffmpeg-location",
             ])
@@ -1693,17 +1698,34 @@ async fn track_import_url(app: tauri::AppHandle, url: String) -> Result<LibraryS
             .stderr(std::process::Stdio::piped())
             .spawn()
             .map_err(|e| format!("could not run yt-dlp: {e}"))?;
-        // Drain stderr on its own thread — a full pipe buffer would deadlock.
+        // "[download]  42.3% of ..." → 42.3
+        fn dl_pct(line: &str) -> Option<f64> {
+            line.strip_prefix("[download]")?
+                .trim()
+                .split('%')
+                .next()?
+                .trim()
+                .parse::<f64>()
+                .ok()
+        }
+        // Parse stderr line-by-line on its own thread: progress lives there in
+        // quiet mode, and a drained pipe can never deadlock the child.
         let err_buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
         let stderr_handle = {
-            let mut se = child.stderr.take();
+            let se = child.stderr.take();
             let buf = err_buf.clone();
+            let app_err = app.clone();
             std::thread::spawn(move || {
-                use std::io::Read;
-                if let Some(se) = se.as_mut() {
-                    let mut s = String::new();
-                    let _ = se.read_to_string(&mut s);
-                    *buf.lock().unwrap() = s;
+                if let Some(se) = se {
+                    for line in std::io::BufReader::new(se).lines().map_while(Result::ok) {
+                        if let Some(pct) = dl_pct(&line) {
+                            let _ = app_err.emit("ytdlp-progress", pct);
+                        } else {
+                            let mut b = buf.lock().unwrap();
+                            b.push_str(&line);
+                            b.push('\n');
+                        }
+                    }
                 }
             })
         };
@@ -1717,15 +1739,8 @@ async fn track_import_url(app: tauri::AppHandle, url: String) -> Result<LibraryS
                 json_line = line;
                 continue;
             }
-            if let Some(rest) = line.strip_prefix("[download]") {
-                if let Some(pct) = rest
-                    .trim()
-                    .split('%')
-                    .next()
-                    .and_then(|s| s.trim().parse::<f64>().ok())
-                {
-                    let _ = app.emit("ytdlp-progress", pct);
-                }
+            if let Some(pct) = dl_pct(&line) {
+                let _ = app.emit("ytdlp-progress", pct);
             }
         }
         let status = child.wait().map_err(|e| e.to_string())?;
