@@ -529,6 +529,13 @@ export default function App() {
   const onDragMove = (i: number) => (e: React.PointerEvent) => {
     if (!dragging.current || selected !== i) return;
     const p = svgPoint(e);
+    // Rubber-band catch-up: any cursor↔dot offset (from an off-center grab or
+    // a scale doubling) decays away within a few movement events, so the dot
+    // converges onto the cursor without the value ever jumping.
+    grabOffset.current.dx *= 0.8;
+    grabOffset.current.dy *= 0.8;
+    if (Math.abs(grabOffset.current.dx) < 0.5) grabOffset.current.dx = 0;
+    if (Math.abs(grabOffset.current.dy) < 0.5) grabOffset.current.dy = 0;
     const x = Math.max(0, Math.min(GW, p.x + grabOffset.current.dx));
     const f = fOf(x);
     const db = dbOfR(p.y + grabOffset.current.dy, dbRange);
