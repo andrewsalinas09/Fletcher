@@ -627,6 +627,42 @@ async fn autoeq_import(name: String, path: String) -> Result<EqState, String> {
     eq_state()
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PastedFilter {
+    enabled: bool,
+    kind: &'static str,
+    fc_hz: f64,
+    gain_db: f64,
+    q: f64,
+}
+
+/// Parse clipboard text as APO filter lines (one or many — pasting a whole
+/// preset's worth of lines works). Non-filter lines are ignored.
+#[tauri::command]
+fn parse_filters(text: String) -> Vec<PastedFilter> {
+    ConfigDoc::parse(&text)
+        .directives()
+        .filter_map(|d| match d {
+            Parsed::Filter {
+                enabled,
+                kind,
+                fc_hz,
+                gain_db,
+                q,
+                ..
+            } => Some(PastedFilter {
+                enabled: *enabled,
+                kind: kind.code(),
+                fc_hz: fc_hz.unwrap_or(1000.0),
+                gain_db: gain_db.unwrap_or(0.0),
+                q: q.unwrap_or(std::f64::consts::FRAC_1_SQRT_2),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
 // ---------------- history persistence (Q-17: trees survive restarts) ----------------
 
 fn history_dir() -> PathBuf {
@@ -1266,6 +1302,7 @@ pub fn run() {
             autoeq_search,
             autoeq_import,
             preset_rename,
+            parse_filters,
             history_save,
             history_load,
             history_export,

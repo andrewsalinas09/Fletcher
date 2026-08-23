@@ -1191,16 +1191,72 @@ function MainApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [histVersion]);
 
+  // Filter clipboard: Ctrl+C writes the selected filter as a real APO line
+  // to the OS clipboard (shareable anywhere); Ctrl+V parses clipboard text
+  // through the engine — one filter, many lines, or a whole pasted preset.
+  const filterClipboard = useRef<{ enabled: boolean; kind: string; fcHz: number; gainDb: number; q: number } | null>(null);
+  const selectedRef = useRef<number | null>(null);
+  selectedRef.current = selected;
+
+  const copySelectedFilter = () => {
+    const cur = stateRef.current;
+    const i = selectedRef.current;
+    const f = i != null ? cur?.filters[i] : null;
+    if (!f) return;
+    filterClipboard.current = {
+      enabled: f.enabled,
+      kind: f.kind,
+      fcHz: f.fcHz,
+      gainDb: f.gainDb,
+      q: f.q,
+    };
+    const line = `Filter: ${f.enabled ? "ON" : "OFF"} ${f.kind} Fc ${f.fcHz} Hz Gain ${f.gainDb} dB Q ${f.q}`;
+    navigator.clipboard?.writeText(line).catch(() => {});
+    showNotice(`copied ${f.kind} ${fmtHz(f.fcHz)} Hz — Ctrl+V pastes it into any preset`);
+  };
+
+  const pasteFilters = async () => {
+    let pasted: { enabled: boolean; kind: string; fcHz: number; gainDb: number; q: number }[] = [];
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text?.trim()) {
+        pasted = await invoke("parse_filters", { text });
+      }
+    } catch {
+      /* clipboard unreadable — fall through to the internal copy */
+    }
+    if (pasted.length === 0 && filterClipboard.current) pasted = [filterClipboard.current];
+    if (pasted.length === 0) return;
+    const cur = stateRef.current;
+    if (!cur) return;
+    const fresh: EqFilter[] = pasted.map((p) => ({
+      ...p,
+      responseDb: [],
+      sourceFile: OWN_FILE,
+    }));
+    const filters = [...cur.filters, ...fresh];
+    setState({ ...cur, filters });
+    setSelected(filters.length - 1);
+    pushChain(filters, true);
+    window.setTimeout(() => commitGesture(pasted.length === 1 ? "paste filter" : `paste ${pasted.length} filters`), 0);
+    showNotice(`pasted ${pasted.length} filter${pasted.length > 1 ? "s" : ""}`);
+  };
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
-      if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === "z") {
+      const k = e.key.toLowerCase();
+      if (e.ctrlKey && !e.shiftKey && k === "z") {
         e.preventDefault();
         undo();
-      } else if ((e.ctrlKey && e.key.toLowerCase() === "y") || (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "z")) {
+      } else if ((e.ctrlKey && k === "y") || (e.ctrlKey && e.shiftKey && k === "z")) {
         e.preventDefault();
         redo();
+      } else if (e.ctrlKey && k === "c" && !window.getSelection()?.toString()) {
+        copySelectedFilter();
+      } else if (e.ctrlKey && k === "v") {
+        pasteFilters();
       }
     };
     window.addEventListener("keydown", onKey);
