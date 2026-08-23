@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow, PhysicalPosition } from "@tauri-apps/api/window";
 import "./App.css";
 
 type EqFilter = {
@@ -511,25 +510,7 @@ export default function App() {
     return { x: p.x, y: p.y };
   };
 
-  /** Warp the OS cursor to an SVG-user-space point (native shell privilege). */
-  const warpCursorTo = async (svgX: number, svgY: number) => {
-    try {
-      const ctm = svgRef.current?.getScreenCTM();
-      if (!ctm) return;
-      const client = new DOMPoint(svgX, svgY).matrixTransform(ctm);
-      const win = getCurrentWindow();
-      const inner = await win.innerPosition();
-      const scale = window.devicePixelRatio;
-      await win.setCursorPosition(
-        new PhysicalPosition(
-          Math.round(inner.x + client.x * scale),
-          Math.round(inner.y + client.y * scale),
-        ),
-      );
-    } catch {
-      // cursor warping is a nicety — dragging still works without it
-    }
-  };
+  const grabOffset = useRef({ dx: 0, dy: 0 });
 
   const startDrag = (i: number) => (e: React.PointerEvent) => {
     const f = state?.filters[i];
@@ -547,17 +528,19 @@ export default function App() {
       Math.max(autoRange, Math.ceil((Math.abs(f.gainDb) + 12) / 3) * 3),
     );
     setDragRange(roomy);
+    // Constant grab offset: wherever on the dot you grabbed, that relationship
+    // holds for the whole drag (a few px at most — no warping, no magic).
+    const p = svgPoint(e);
+    grabOffset.current = { dx: xOf(f.fcHz) - p.x, dy: yOfR(f.gainDb, roomy) - p.y };
     (e.target as Element).setPointerCapture(e.pointerId);
-    // One safe warp at grab: cursor starts on the dot and stays there 1:1.
-    warpCursorTo(xOf(f.fcHz), yOfR(f.gainDb, roomy));
   };
 
   const onDragMove = (i: number) => (e: React.PointerEvent) => {
     if (!dragging.current || selected !== i) return;
     const p = svgPoint(e);
-    const x = Math.max(0, Math.min(GW, p.x));
+    const x = Math.max(0, Math.min(GW, p.x + grabOffset.current.dx));
     const f = fOf(x);
-    const db = dbOfR(p.y, dbRange);
+    const db = dbOfR(p.y + grabOffset.current.dy, dbRange);
     const clamped = Math.max(-dbRange, Math.min(dbRange, db));
     mutateFilter(i, {
       fcHz: +f.toFixed(f < 100 ? 1 : 0),
