@@ -70,10 +70,8 @@ pub fn parse_peace(text: &str) -> Option<PeaceImport> {
                     types.insert(i, v);
                 }
             }
-            "General" => {
-                if key == "PreAmp" {
-                    preamp_db = value.parse().unwrap_or(0.0);
-                }
+            "General" if key == "PreAmp" => {
+                preamp_db = value.parse().unwrap_or(0.0);
             }
             _ => {}
         }
