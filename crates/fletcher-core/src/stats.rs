@@ -32,13 +32,22 @@ impl Xorshift {
         Xorshift(seed.max(1))
     }
 
-    pub fn next_bool(&mut self) -> bool {
+    pub fn next_u64(&mut self) -> u64 {
         let mut x = self.0;
         x ^= x << 13;
         x ^= x >> 7;
         x ^= x << 17;
         self.0 = x;
-        (x.wrapping_mul(0x2545F4914F6CDD1D) >> 63) == 1
+        x.wrapping_mul(0x2545F4914F6CDD1D)
+    }
+
+    pub fn next_bool(&mut self) -> bool {
+        (self.next_u64() >> 63) == 1
+    }
+
+    /// Uniform in [-1, 1) — the signal generator's white-noise source.
+    pub fn next_pm1(&mut self) -> f64 {
+        ((self.next_u64() >> 11) as f64 / (1u64 << 52) as f64) - 1.0
     }
 }
 

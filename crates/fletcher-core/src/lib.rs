@@ -11,5 +11,7 @@ pub mod devices;
 pub mod dsp;
 pub mod fsx;
 pub mod peace;
+pub mod playback;
 pub mod presets;
+pub mod signal;
 pub mod stats;

@@ -121,6 +121,63 @@ impl Biquad {
     }
 }
 
+/// Per-instance filter memory for realtime processing (direct form II
+/// transposed). `Biquad` itself stays stateless/`Copy` — response-math
+/// callers never pay for state they don't use.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BiquadState {
+    z1: f64,
+    z2: f64,
+}
+
+impl BiquadState {
+    #[inline]
+    pub fn process(&mut self, c: &Biquad, x: f64) -> f64 {
+        let y = c.b0 * x + self.z1;
+        self.z1 = c.b1 * x - c.a1 * y + self.z2;
+        self.z2 = c.b2 * x - c.a2 * y;
+        y
+    }
+}
+
+/// A realtime chain: preamp gain + biquad cascade with per-channel state.
+/// One instance per bus; stereo frames flow through `process_frame`.
+pub struct ChainProcessor {
+    coeffs: Vec<Biquad>,
+    state: Vec<[BiquadState; 2]>,
+    gain: f64,
+}
+
+impl ChainProcessor {
+    pub fn new(filters: &[FilterSpec], preamp_db: f64, fs: f64) -> Self {
+        ChainProcessor {
+            coeffs: filters.iter().map(|f| f.biquad(fs)).collect(),
+            state: vec![[BiquadState::default(); 2]; filters.len()],
+            gain: 10f64.powf(preamp_db / 20.0),
+        }
+    }
+
+    /// Swap coefficients mid-stream (live edits). Existing per-filter state is
+    /// kept where the cascade length allows — a tweak shouldn't reset the tail.
+    pub fn set_chain(&mut self, filters: &[FilterSpec], preamp_db: f64, fs: f64) {
+        self.coeffs = filters.iter().map(|f| f.biquad(fs)).collect();
+        self.state
+            .resize(self.coeffs.len(), [BiquadState::default(); 2]);
+        self.gain = 10f64.powf(preamp_db / 20.0);
+    }
+
+    #[inline]
+    pub fn process_frame(&mut self, l: f64, r: f64) -> (f64, f64) {
+        let mut l = l * self.gain;
+        let mut r = r * self.gain;
+        for (c, st) in self.coeffs.iter().zip(self.state.iter_mut()) {
+            l = st[0].process(c, l);
+            r = st[1].process(c, r);
+        }
+        (l, r)
+    }
+}
+
 /// One filter in a response chain.
 #[derive(Debug, Clone, Copy)]
 pub struct FilterSpec {
@@ -238,6 +295,79 @@ mod tests {
         }];
         let r = chain_response_db(&filters, -8.1, FS, &[1000.0]);
         assert!(close(r[0], -2.1, 0.02));
+    }
+
+    /// The realtime path validates against the already-trusted frequency-domain
+    /// path: a sine driven through `BiquadState` must settle to the RMS gain
+    /// `magnitude_db` predicts. No golden data — the two derivations must agree.
+    #[test]
+    fn time_domain_matches_frequency_response() {
+        // Frequencies chosen so the measurement window holds a whole number of
+        // cycles (f * 0.9 is an integer) — no leakage in the RMS.
+        for (kind, fc, gain, q, f) in [
+            (Peaking, 1000.0, 6.0, 1.0, 1000.0),
+            (Peaking, 100.0, -4.3, 2.0, 100.0),
+            (LowShelfC, 105.0, 6.4, 0.7, 30.0),
+            (HighShelfC, 8000.0, -3.0, 0.7, 16000.0),
+            (LowPass, 1000.0, 0.0, 0.0, 4000.0),
+        ] {
+            let b = Biquad::rbj(kind, FS, fc, gain, q);
+            let mut st = BiquadState::default();
+            let (n, settle) = (48000usize, 4800usize);
+            let (mut sum_in, mut sum_out) = (0.0f64, 0.0f64);
+            for i in 0..n {
+                let x = (2.0 * std::f64::consts::PI * f * i as f64 / FS).sin();
+                let y = st.process(&b, x);
+                assert!(y.is_finite(), "{kind:?} produced non-finite output");
+                if i >= settle {
+                    sum_in += x * x;
+                    sum_out += y * y;
+                }
+            }
+            let measured = 10.0 * (sum_out / sum_in).log10();
+            let predicted = b.magnitude_db(f, FS);
+            assert!(
+                close(measured, predicted, 0.1),
+                "{kind:?} @ {f} Hz: time {measured:.3} dB vs freq {predicted:.3} dB"
+            );
+        }
+    }
+
+    #[test]
+    fn chain_processor_applies_preamp_and_cascade() {
+        let filters = [
+            FilterSpec {
+                kind: Peaking,
+                fc_hz: 1000.0,
+                gain_db: 6.0,
+                q: 1.0,
+            },
+            FilterSpec {
+                kind: Peaking,
+                fc_hz: 1000.0,
+                gain_db: -2.0,
+                q: 1.0,
+            },
+        ];
+        let mut chain = ChainProcessor::new(&filters, -8.1, FS);
+        let f = 1000.0;
+        let (n, settle) = (48000usize, 4800usize);
+        let (mut sum_in, mut sum_out) = (0.0f64, 0.0f64);
+        for i in 0..n {
+            let x = (2.0 * std::f64::consts::PI * f * i as f64 / FS).sin();
+            let (l, r) = chain.process_frame(x, x);
+            assert!(close(l, r, 1e-12), "identical channels stay identical");
+            if i >= settle {
+                sum_in += x * x;
+                sum_out += l * l;
+            }
+        }
+        let measured = 10.0 * (sum_out / sum_in).log10();
+        let predicted = chain_response_db(&filters, -8.1, FS, &[f])[0];
+        assert!(
+            close(measured, predicted, 0.1),
+            "chain: time {measured:.3} dB vs freq {predicted:.3} dB"
+        );
     }
 
     #[test]

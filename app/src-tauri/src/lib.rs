@@ -750,6 +750,107 @@ fn preset_create_from_chain(name: String, filters: Vec<FilterIn>) -> Result<Stri
     Ok(name)
 }
 
+// ---------------- the track engine (Clip Studio, ADR-0009) ----------------
+
+/// M1 checkpoint, kept as the permanent output-path sanity check: open the
+/// device, ramp in (TB-20), play a quiet 2 s tone, release cleanly. Returns
+/// the negotiated format so the user sees the exact path their audio takes.
+#[tauri::command]
+fn engine_test_tone(mode: String) -> Result<String, String> {
+    use fletcher_core::{playback, signal};
+    if ABX.lock().unwrap().is_some() {
+        return Err("a blind test is running — finish or cancel it first".into());
+    }
+    let mode = if mode == "shared" {
+        playback::OutputMode::Shared
+    } else {
+        playback::OutputMode::Exclusive
+    };
+    std::thread::spawn(move || {
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let mut src = playback::SignalSource::new(
+            |fs| {
+                signal::Signal::new(
+                    signal::SignalKind::Sine { hz: 440.0 },
+                    signal::DEFAULT_AMP,
+                    fs,
+                    1,
+                )
+            },
+            Some(2.0),
+        );
+        let mut started: Option<playback::StreamInfo> = None;
+        playback::play(mode, &mut src, 1.0, &stop, |i| started = Some(i.clone()))
+            .map_err(|e| e.to_string())?;
+        let i = started.ok_or("stream never started")?;
+        Ok(format!(
+            "{} · {} · {} bit {} @ {} Hz",
+            i.device,
+            match i.mode {
+                playback::OutputMode::Exclusive => "exclusive (APO bypassed)",
+                playback::OutputMode::Shared => "shared (APO applies)",
+            },
+            i.bits,
+            i.sample_type,
+            i.rate
+        ))
+    })
+    .join()
+    .map_err(|_| "engine thread panicked".to_string())?
+}
+
+/// The reference-leveling noise (Q-16, first half): pink noise through the
+/// SHARED path — the level-matched chain applies and the user's volume
+/// controls stay live, so "adjust your volume until comfortable" means
+/// exactly what it says. Stopping fades out (engine guarantee).
+static CAL_NOISE: std::sync::Mutex<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>> =
+    std::sync::Mutex::new(None);
+
+fn stop_cal_noise() {
+    if let Some(stop) = CAL_NOISE.lock().unwrap().take() {
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+#[tauri::command]
+fn calibration_noise(app: tauri::AppHandle, on: bool) -> Result<(), String> {
+    use std::sync::{atomic::AtomicBool, Arc};
+    if ABX.lock().unwrap().is_some() {
+        return Err("a blind test is running — finish or cancel it first".into());
+    }
+    let mut guard = CAL_NOISE.lock().unwrap();
+    if !on {
+        if let Some(stop) = guard.take() {
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        return Ok(());
+    }
+    if guard.is_some() {
+        return Ok(());
+    }
+    let stop = Arc::new(AtomicBool::new(false));
+    *guard = Some(stop.clone());
+    drop(guard);
+    std::thread::spawn(move || {
+        use fletcher_core::{playback, signal};
+        let mut src = playback::SignalSource::new(
+            |fs| signal::Signal::new(signal::SignalKind::Pink, 0.2, fs, 42),
+            None,
+        );
+        let result = playback::play(playback::OutputMode::Shared, &mut src, 1.0, &stop, |_| {});
+        let mut guard = CAL_NOISE.lock().unwrap();
+        if let Some(cur) = guard.as_ref() {
+            if Arc::ptr_eq(cur, &stop) {
+                *guard = None;
+            }
+        }
+        drop(guard);
+        use tauri::Emitter;
+        let _ = app.emit("cal-noise-ended", result.err().map(|e| e.to_string()));
+    });
+    Ok(())
+}
+
 // ---------------- Settings (v1: the approved artboard) ----------------
 
 #[derive(Serialize)]
@@ -1041,6 +1142,8 @@ fn abx_start(
         }
         _ => return Err("provide both chains or neither".into()),
     };
+    // Leveling noise and blind trials must never overlap (TB-26 class).
+    stop_cal_noise();
     // Two chains that level-match to the same response leave nothing to test.
     // Comparing responses, not filter lists, catches differently-written but
     // audibly identical chains.
@@ -1582,6 +1685,8 @@ pub fn run() {
             settings_state,
             set_reference_db,
             set_level_matching,
+            engine_test_tone,
+            calibration_noise,
             history_save,
             history_load,
             history_export,

@@ -1649,6 +1649,23 @@ function MainApp() {
   const [view, setView] = useState<"eq" | "lab" | "settings">("eq");
   const [settings, setSettings] = useState<SettingsState | null>(null);
   const [autostart, setAutostart] = useState<boolean | null>(null);
+  const [calNoise, setCalNoise] = useState(false);
+  const toggleCalNoise = () => {
+    const next = !calNoise;
+    setCalNoise(next);
+    invoke("calibration_noise", { on: next }).catch((e) => {
+      showNotice(String(e));
+      setCalNoise(false);
+    });
+  };
+  const [testingTone, setTestingTone] = useState(false);
+  const testTone = (mode: "exclusive" | "shared") => {
+    setTestingTone(true);
+    invoke<string>("engine_test_tone", { mode })
+      .then((info) => showNotice(`track engine OK — ${info}`))
+      .catch((e) => showNotice(String(e)))
+      .finally(() => setTestingTone(false));
+  };
   const loadSettings = () => invoke<SettingsState>("settings_state").then(setSettings).catch(() => {});
   const loadAutostart = () =>
     import("@tauri-apps/plugin-autostart")
@@ -1832,7 +1849,12 @@ function MainApp() {
   // Trampoline (dev law, Q-20): fast-refresh never re-runs []-effects, so
   // registered callbacks are permanent — they dispatch through this ref,
   // whose body is refreshed every render.
-  const pushRef = useRef({ config: () => {}, ab: (_s: string) => {}, abx: (_t: string) => {} });
+  const pushRef = useRef({
+    config: () => {},
+    ab: (_s: string) => {},
+    abx: (_t: string) => {},
+    calEnded: (_e: string | null) => {},
+  });
   pushRef.current = {
     // Push-based updates from the Rust config watcher — no polling. Ignored
     // mid-drag (our own writes fire it; the drag state is fresher).
@@ -1846,6 +1868,11 @@ function MainApp() {
     ab: (side: string) => setAb((cur) => ({ ...cur, side })),
     // During a session the hotkey cycles the audition target.
     abx: (target: string) => setAbx((cur) => (cur ? { ...cur, audition: target } : cur)),
+    // The leveling noise stopped (finished fading, was preempted, or errored).
+    calEnded: (err: string | null) => {
+      setCalNoise(false);
+      if (err) showNotice(err);
+    },
   };
   useEffect(() => {
     refresh();
@@ -1856,10 +1883,12 @@ function MainApp() {
     const unlisten = listen("apo-config-changed", () => pushRef.current.config());
     const unlistenAb = listen<string>("ab-changed", (e) => pushRef.current.ab(e.payload));
     const unlistenAbx = listen<string>("abx-audition", (e) => pushRef.current.abx(e.payload));
+    const unlistenCal = listen<string | null>("cal-noise-ended", (e) => pushRef.current.calEnded(e.payload));
     return () => {
       unlisten.then((f) => f());
       unlistenAb.then((f) => f());
       unlistenAbx.then((f) => f());
+      unlistenCal.then((f) => f());
     };
   }, []);
 
@@ -3306,10 +3335,21 @@ function MainApp() {
                   onCommit={(v) => setReference(Math.max(-30, Math.min(0, v)))}
                 />
               </div>
+              <div className="set-row">
+                <span className="set-key">Set your volume</span>
+                <button onClick={toggleCalNoise}>{calNoise ? "■ stop noise" : "▶ pink noise"}</button>
+                <span className="set-live dim-sm">
+                  {calNoise
+                    ? "playing — adjust your volume until this sits comfortably"
+                    : "plays through the normal path, level-matched like everything else"}
+                </span>
+              </div>
               <span className="set-note">
-                Everything — flat, every preset, chains mid-edit — is normalized to this loudness. A guided
-                calibration (adjust your volume against generated noise, press accept) arrives with Clip
-                Studio's signal generator.
+                Everything — flat, every preset, chains mid-edit — is normalized to this loudness. Play the
+                pink noise and set your physical volume so it sits where you like listening: that knob
+                position is your reference, and it absorbs the digital number entirely. −8 dB is a headroom
+                budget, not a taste choice: a boosted chain can only be level-matched if its peaks fit under
+                0 dBFS, so raising this toward 0 breaks matching. Volume anchoring comes later (Q-16).
               </span>
             </div>
 
@@ -3326,6 +3366,18 @@ function MainApp() {
                 <span className="set-key">A/B hotkey</span>
                 <span className="mono set-kbd">Ctrl + Shift + A</span>
               </div>
+              <div className="set-row">
+                <span className="set-key">Track engine</span>
+                <button onClick={() => testTone("exclusive")} disabled={testingTone}>
+                  {testingTone ? "playing…" : "play test tone"}
+                </button>
+                <span className="set-live dim-sm">quiet 2 s tone, exclusive path — other audio pauses</span>
+              </div>
+              <span className="set-note">
+                Proves the direct device path Clip Studio's track engine uses: Equalizer APO and Windows
+                volume are bypassed, so the tone starts silent and ramps in. Other apps' audio stops and
+                may need a manual restart afterwards.
+              </span>
             </div>
           </div>
 
