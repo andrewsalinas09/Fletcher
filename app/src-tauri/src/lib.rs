@@ -1258,12 +1258,27 @@ const SIG_MAX_LAYERS: usize = 16;
 /// Build the signal stack a spec describes: one primitive, or a mix's layers
 /// (decorrelated seeds per layer so stacked noises don't sum coherently).
 /// Layers inherit the parent's duration for one-pass sweep pacing.
+///
+/// A mix whose worst-case sum (Σ layer peaks) exceeds the −12 dBFS cap is
+/// AUTO-TRIMMED — every layer scaled by the same factor so the sum can never
+/// reach the cap. Trimming beats clamping: the hard clamp distorted audibly
+/// at beat crests (two −12 dB sines sum to −6). The clamp downstream stays
+/// as a backstop but never engages.
 fn sig_build(
     spec: &SigSpec,
     fs: f64,
     seed: u64,
 ) -> Result<Vec<fletcher_core::signal::Signal>, String> {
-    use fletcher_core::signal::Signal;
+    sig_build_scaled(spec, fs, seed, 1.0)
+}
+
+fn sig_build_scaled(
+    spec: &SigSpec,
+    fs: f64,
+    seed: u64,
+    scale: f64,
+) -> Result<Vec<fletcher_core::signal::Signal>, String> {
+    use fletcher_core::signal::{Signal, MAX_AMP};
     if spec.kind == "mix" {
         let layers = spec.layers.as_deref().unwrap_or(&[]);
         if layers.is_empty() {
@@ -1272,6 +1287,12 @@ fn sig_build(
         if layers.len() > SIG_MAX_LAYERS {
             return Err(format!("a mix holds at most {SIG_MAX_LAYERS} layers"));
         }
+        let total: f64 = layers.iter().map(|l| sig_amp(l).min(MAX_AMP)).sum();
+        let trim = if total > MAX_AMP {
+            MAX_AMP / total
+        } else {
+            1.0
+        };
         let mut out = Vec::new();
         for (i, l) in layers.iter().enumerate() {
             if l.kind == "mix" {
@@ -1279,16 +1300,17 @@ fn sig_build(
             }
             let mut lay = l.clone();
             lay.seconds = spec.seconds;
-            out.extend(sig_build(
+            out.extend(sig_build_scaled(
                 &lay,
                 fs,
                 seed.wrapping_add(0x9E37_79B9_7F4A_7C15u64.wrapping_mul(i as u64 + 1)),
+                scale * trim,
             )?);
         }
         Ok(out)
     } else {
         let kind = sig_kind_of(spec)?;
-        let mut s = Signal::new(kind, sig_amp(spec), fs, seed);
+        let mut s = Signal::new(kind, sig_amp(spec) * scale, fs, seed);
         if let (Some(r), Some(d)) = (spec.am_hz, spec.am_depth) {
             s = s.with_am(r, d);
         }
@@ -1507,6 +1529,63 @@ fn signal_create(spec: SigSpec) -> Result<LibraryState, String> {
         rusqlite::params![title, params, spec.seconds, now_ms() as i64],
     )
     .map_err(|e| e.to_string())?;
+    library_state_now()
+}
+
+/// Edit a created signal in place: the recipe replaces the old one, every
+/// derived artifact (PCM cache, waveform, spectrogram, memo, stored LUFS —
+/// the level may have changed) is invalidated, and a session playing it is
+/// stopped: it would otherwise keep playing audio the library no longer
+/// describes.
+#[tauri::command]
+fn signal_update(id: i64, spec: SigSpec) -> Result<LibraryState, String> {
+    sig_validate(&spec)?;
+    let conn = library_db()?;
+    let kind: String = conn
+        .query_row(
+            "SELECT kind FROM tracks WHERE id = ?1",
+            rusqlite::params![id],
+            |r| r.get(0),
+        )
+        .map_err(|_| "track not found".to_string())?;
+    if kind != "signal" {
+        return Err("only created signals can be edited".into());
+    }
+    let title = sig_title(&spec);
+    let params = serde_json::to_string(&spec).map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE tracks SET title = ?1, signal_params = ?2, duration_s = ?3, lufs_flat = NULL
+         WHERE id = ?4",
+        rusqlite::params![title, params, spec.seconds, id],
+    )
+    .map_err(|e| e.to_string())?;
+    drop(conn);
+    {
+        let guard = TRACK.lock().unwrap();
+        if guard.as_ref().is_some_and(|s| s.track_id == id) {
+            drop(guard);
+            track_stop_inner();
+        }
+    }
+    WAVES.lock().unwrap().remove(&id);
+    SPECS.lock().unwrap().retain(|k, _| k.0 != id);
+    {
+        let mut memo = PCM_MEMO.lock().unwrap();
+        if memo.as_ref().is_some_and(|(mid, _, _)| *mid == id) {
+            *memo = None;
+        }
+    }
+    let cache = data_dir().join("cache").join("pcm");
+    if let Ok(rd) = std::fs::read_dir(&cache) {
+        for e in rd.flatten() {
+            if e.file_name()
+                .to_string_lossy()
+                .starts_with(&format!("{id}-"))
+            {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
     library_state_now()
 }
 
@@ -3203,6 +3282,7 @@ pub fn run() {
             track_scrub,
             track_scrub_params,
             signal_create,
+            signal_update,
             signal_preview,
             signal_validate,
             track_import_url,

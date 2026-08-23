@@ -3192,16 +3192,41 @@ function MainApp() {
         showNotice(String(e));
       });
   };
+  // Editing an existing created signal reuses the whole modal; saving
+  // replaces the recipe and invalidates every derived artifact.
+  const [genEditId, setGenEditId] = useState<number | null>(null);
+  const openGenEdit = (t: TrackRow) => {
+    try {
+      const spec = JSON.parse(t.signalParams ?? "") as SigSpec;
+      setGenSpec(spec);
+      setSelLayer(0);
+      setGenText(null);
+      setGenErr(null);
+      setGenEditId(t.id);
+      setGenOpen(true);
+    } catch {
+      showNotice("this signal's recipe is unreadable — delete and recreate it");
+    }
+  };
   const closeGen = () => {
     if (genPreviewRef.current) genPreviewSet(null);
     setGenOpen(false);
+    setGenEditId(null);
   };
   const addSignal = () => {
-    invoke<LibraryState>("signal_create", { spec: genSpec })
+    const editing = genEditId != null;
+    (editing
+      ? invoke<LibraryState>("signal_update", { id: genEditId, spec: genSpec })
+      : invoke<LibraryState>("signal_create", { spec: genSpec })
+    )
       .then((l) => {
         setLibrary(l);
         closeGen();
-        showNotice("added to the library — it synthesizes the first time you play it");
+        showNotice(
+          editing
+            ? "signal updated — it re-renders the next time it plays"
+            : "added to the library — it synthesizes the first time you play it",
+        );
       })
       .catch((e) => showNotice(String(e)));
   };
@@ -5086,6 +5111,18 @@ function MainApp() {
                           }`}
                         </span>
                       </div>
+                      {t.kind === "signal" && (
+                        <span
+                          className="row-act"
+                          title="edit this signal's recipe"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openGenEdit(t);
+                          }}
+                        >
+                          ✎
+                        </span>
+                      )}
                       <span
                         className="row-act"
                         title="remove from library, clips included (the file itself is untouched)"
@@ -5150,7 +5187,9 @@ function MainApp() {
                 <div className="hist-backdrop" onClick={closeGen} />
                 <div className="hist-panel gen-panel">
                   <div className="hist-head">
-                    <span className="mono hist-title">SIGNAL GENERATOR</span>
+                    <span className="mono hist-title">
+                      {genEditId != null ? "EDIT SIGNAL" : "SIGNAL GENERATOR"}
+                    </span>
                     <span className="spacer" />
                     <span
                       className={`scale-opt mono ${genText != null ? "on" : ""}`}
@@ -5246,6 +5285,17 @@ function MainApp() {
                           <button className="gen-add-layer" onClick={addLayer}>
                             + Add layer
                           </button>
+                          {(() => {
+                            const sum = (genSpec.layers ?? []).reduce(
+                              (a, l) => a + 10 ** (Math.min(l.levelDb, -12) / 20),
+                              0,
+                            );
+                            return sum > 0.25 ? (
+                              <span className="dim-sm">
+                                {`auto-trim ${(20 * Math.log10(0.25 / sum)).toFixed(1)} dB — every layer scaled together so the sum stays under the −12 dBFS cap`}
+                              </span>
+                            ) : null;
+                          })()}
                         </div>
                       </div>
                     )}
@@ -5415,8 +5465,11 @@ function MainApp() {
                     </div>
                     <p className="dim-sm gen-note">
                       The same recipe always renders the exact same audio — that's its provenance.
-                      Peak is hard-capped at −12 dBFS{isMix ? " on the summed mix" : ""}. Preview loops
-                      through the shared path, so your volume knob stays live; edits retune it as it plays.
+                      {isMix
+                        ? " A hot mix auto-trims all layers together so the sum stays under −12 dBFS — no clipping, ratios kept."
+                        : " Peak is hard-capped at −12 dBFS."}{" "}
+                      Preview loops through the shared path, so your volume knob stays live; edits
+                      retune it as it plays.
                     </p>
                     <div className="gen-actions">
                       <button onClick={() => (genPreview ? genPreviewSet(null) : genPreviewSet(genSpec))}>
@@ -5424,7 +5477,7 @@ function MainApp() {
                       </button>
                       <span className="spacer" />
                       <button className="primary" onClick={addSignal}>
-                        Add to library
+                        {genEditId != null ? "Save changes" : "Add to library"}
                       </button>
                     </div>
                   </div>
