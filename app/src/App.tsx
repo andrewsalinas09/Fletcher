@@ -820,8 +820,10 @@ function HistoryTree({
                 const nodeR = r.isCurrent ? 28 : 24;
                 const gi = group.indexOf(r.id);
                 // Long (renamed) labels overflow the circle — truncate on the
-                // canvas; the full name lives on hover and in the inspector.
-                const shortLabel = r.label.length > 12 ? `${r.label.slice(0, 11)}…` : r.label;
+                // canvas to what the circle actually fits (the current node is
+                // larger); the full name lives on hover and in the inspector.
+                const cap = r.isCurrent ? 12 : 9;
+                const shortLabel = r.label.length > cap ? `${r.label.slice(0, cap - 1)}…` : r.label;
                 const note = map.get(r.id)?.note;
                 return (
                   <g
