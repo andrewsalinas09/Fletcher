@@ -1405,7 +1405,7 @@ function PopoutDiff() {
 }
 
 type PresetsState = { presets: string[]; active: string | null };
-type AbInfo = { side: string; matchDb: number };
+type AbInfo = { side: string; matchDb: number; shortfallDb: number };
 type Device = { id: string; name: string; isDefault: boolean };
 type AutoeqEntry = { name: string; path: string; note: string };
 
@@ -1442,6 +1442,39 @@ type AbxResult = {
   statsViewed: number[];
   log: AbxTrial[];
   startedMs: number;
+};
+
+type TrackRow = {
+  id: number;
+  kind: string;
+  title: string;
+  artist: string | null;
+  genre: string | null;
+  path: string | null;
+  sourceUrl: string | null;
+  durationS: number | null;
+  addedMs: number;
+};
+type LibraryState = { tracks: TrackRow[] };
+type ToolsState = { ffmpeg: string | null; ytdlp: string | null };
+type TrackSess = {
+  id: number;
+  sess: number;
+  title: string;
+  durationS: number;
+  mode: string; // "bypass" | "eq"
+  exclusive?: boolean;
+  gainDb?: number;
+  device?: string;
+  rate?: number;
+  bits?: number;
+  phase?: "decoding";
+};
+
+const fmtTime = (s: number) => {
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return `${m}:${sec.toString().padStart(2, "0")}`;
 };
 
 const fmtP = (p: number) => (p < 0.001 ? "< 0.001" : `= ${p.toFixed(3)}`);
@@ -1589,7 +1622,7 @@ function MainApp() {
       })
       .catch((e) => setError(String(e)));
 
-  const [ab, setAb] = useState<AbInfo>({ side: "a", matchDb: 0 });
+  const [ab, setAb] = useState<AbInfo>({ side: "a", matchDb: 0, shortfallDb: 0 });
   const [devices, setDevices] = useState<Device[]>([]);
   const [deviceMenu, setDeviceMenu] = useState(false);
   const [renaming, setRenaming] = useState<{ from: string; value: string } | null>(null);
@@ -1645,8 +1678,80 @@ function MainApp() {
       .finally(() => setImporting(false));
   };
 
+  // ---- Clip Studio (M2: library + track engine transport) ----
+  const [view, setView] = useState<"eq" | "lab" | "settings" | "clips">("eq");
+  const [library, setLibrary] = useState<LibraryState | null>(null);
+  const libraryRef = useRef<LibraryState | null>(null);
+  libraryRef.current = library;
+  const [tools, setTools] = useState<ToolsState | null>(null);
+  const [toolsProg, setToolsProg] = useState<{ which: string; pct: number | null } | null>(null);
+  const [trackSess, setTrackSess] = useState<TrackSess | null>(null);
+  const trackSessRef = useRef<TrackSess | null>(null);
+  trackSessRef.current = trackSess;
+  const [trackPos, setTrackPos] = useState<{ posS: number; paused: boolean }>({ posS: 0, paused: false });
+  const [studioMode, setStudioMode] = useState<"bypass" | "eq">("bypass");
+  const loadStudioMode = () =>
+    invoke<{ mode: string }>("studio_state")
+      .then((s) => setStudioMode(s.mode === "eq" ? "eq" : "bypass"))
+      .catch(() => {});
+  const pickStudioMode = (m: "bypass" | "eq") => {
+    setStudioMode(m);
+    invoke("set_studio_mode", { mode: m }).catch(() => {});
+  };
+  const playPending = useRef(false);
+
+  const loadLibrary = () =>
+    invoke<LibraryState>("library_state").then(setLibrary).catch((e) => showNotice(String(e)));
+  const loadTools = () => invoke<ToolsState>("tools_state").then(setTools).catch(() => {});
+  const titleOf = (id: number) =>
+    libraryRef.current?.tracks.find((t) => t.id === id)?.title ?? `track #${id}`;
+
+  const importTrack = async () => {
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const path = await open({
+        multiple: false,
+        filters: [
+          {
+            name: "Audio",
+            extensions: ["mp3", "flac", "wav", "m4a", "aac", "ogg", "opus", "wma", "aiff", "webm", "mp4", "mkv"],
+          },
+        ],
+      });
+      if (typeof path !== "string") return;
+      setLibrary(await invoke<LibraryState>("track_import", { path }));
+    } catch (e) {
+      showNotice(String(e));
+    }
+  };
+
+  const playTrack = async (t: TrackRow) => {
+    if (playPending.current) return; // one handoff at a time — no stream overlap
+    playPending.current = true;
+    try {
+      await invoke("track_play", { id: t.id });
+    } catch (e) {
+      showNotice(String(e));
+    } finally {
+      playPending.current = false;
+    }
+  };
+
+  const installTool = (which: "ffmpeg" | "yt-dlp") => {
+    setToolsProg({ which, pct: 0 });
+    invoke<ToolsState>("tools_install", { which })
+      .then((t) => {
+        setTools(t);
+        setToolsProg(null);
+        showNotice(`${which} installed — it lives in Fletcher's tools folder and never touches your system`);
+      })
+      .catch((e) => {
+        setToolsProg(null);
+        showNotice(String(e));
+      });
+  };
+
   // ---- Settings (v1: the approved artboard) ----
-  const [view, setView] = useState<"eq" | "lab" | "settings">("eq");
   const [settings, setSettings] = useState<SettingsState | null>(null);
   const [autostart, setAutostart] = useState<boolean | null>(null);
   const [calNoise, setCalNoise] = useState(false);
@@ -1854,6 +1959,9 @@ function MainApp() {
     ab: (_s: string) => {},
     abx: (_t: string) => {},
     calEnded: (_e: string | null) => {},
+    toolsProgress: (_p: { which: string; pct: number | null }) => {},
+    trackState: (_p: Record<string, unknown>) => {},
+    trackPos: (_p: { posS: number; paused: boolean }) => {},
   });
   pushRef.current = {
     // Push-based updates from the Rust config watcher — no polling. Ignored
@@ -1873,6 +1981,39 @@ function MainApp() {
       setCalNoise(false);
       if (err) showNotice(err);
     },
+    toolsProgress: (p) => setToolsProg(p),
+    trackState: (p) => {
+      const id = p.trackId as number;
+      const sess = (p.sess as number) ?? 0;
+      if (p.event === "decoding") {
+        setTrackSess({ id, sess, title: titleOf(id), durationS: 0, mode: "", phase: "decoding" });
+      } else if (p.event === "started") {
+        setTrackSess({
+          id,
+          sess,
+          title: titleOf(id),
+          durationS: p.durationS as number,
+          mode: p.mode as string,
+          exclusive: p.exclusive as boolean,
+          gainDb: p.gainDb as number,
+          device: p.device as string,
+          rate: p.rate as number,
+          bits: p.bits as number,
+        });
+        loadLibrary(); // duration got written
+      } else if (p.event === "ended") {
+        // A superseded session's death must not clobber its successor.
+        const cur = trackSessRef.current;
+        if (cur && cur.sess !== sess) {
+          if (p.error) showNotice(String(p.error));
+          return;
+        }
+        setTrackSess(null);
+        setTrackPos({ posS: 0, paused: false });
+        if (p.error) showNotice(String(p.error));
+      }
+    },
+    trackPos: (p) => setTrackPos(p),
   };
   useEffect(() => {
     refresh();
@@ -1884,11 +2025,23 @@ function MainApp() {
     const unlistenAb = listen<string>("ab-changed", (e) => pushRef.current.ab(e.payload));
     const unlistenAbx = listen<string>("abx-audition", (e) => pushRef.current.abx(e.payload));
     const unlistenCal = listen<string | null>("cal-noise-ended", (e) => pushRef.current.calEnded(e.payload));
+    const unlistenTools = listen<{ which: string; pct: number | null }>("tools-progress", (e) =>
+      pushRef.current.toolsProgress(e.payload),
+    );
+    const unlistenTrackState = listen<Record<string, unknown>>("track-state", (e) =>
+      pushRef.current.trackState(e.payload),
+    );
+    const unlistenTrackPos = listen<{ posS: number; paused: boolean }>("track-pos", (e) =>
+      pushRef.current.trackPos(e.payload),
+    );
     return () => {
       unlisten.then((f) => f());
       unlistenAb.then((f) => f());
       unlistenAbx.then((f) => f());
       unlistenCal.then((f) => f());
+      unlistenTools.then((f) => f());
+      unlistenTrackState.then((f) => f());
+      unlistenTrackPos.then((f) => f());
     };
   }, []);
 
@@ -2940,7 +3093,17 @@ function MainApp() {
         <nav>
           <span className={`tab ${view === "eq" ? "active" : ""}`} onClick={() => setView("eq")}>EQ</span>
           <span className={`tab ${view === "lab" ? "active" : ""}`} onClick={() => setView("lab")}>LISTENING LAB</span>
-          <span className="tab disabled" title="Annotate tracks, build clip libraries — coming with the track engine">CLIP STUDIO</span>
+          <span
+            className={`tab ${view === "clips" ? "active" : ""}`}
+            onClick={() => {
+              setView("clips");
+              loadLibrary();
+              loadTools();
+              loadStudioMode();
+            }}
+          >
+            CLIP STUDIO
+          </span>
           <span
             className={`tab ${uiMode === "advanced" ? "disabled" : "advanced"}`}
             title={
@@ -2957,6 +3120,7 @@ function MainApp() {
               setView("settings");
               loadSettings();
               loadAutostart();
+              loadTools();
             }}
           >
             SETTINGS
@@ -3278,6 +3442,108 @@ function MainApp() {
         </div>
       )}
 
+      {view === "clips" && (
+        <div className="clips">
+          <div className="clips-rail">
+            <span className="mono lab-label rail-pad">LIBRARY</span>
+            {tools && !tools.ffmpeg && (
+              <div className="tool-banner">
+                <p>
+                  The track engine decodes with <b>ffmpeg</b> — fetched on demand into Fletcher's own
+                  tools folder (~180 MB, BtbN's official build), never installed system-wide.
+                </p>
+                {toolsProg?.which === "ffmpeg" ? (
+                  <span className="mono dim-sm">{`downloading… ${toolsProg.pct ?? 0}%`}</span>
+                ) : (
+                  <button onClick={() => installTool("ffmpeg")}>Install ffmpeg</button>
+                )}
+              </div>
+            )}
+            <div className="clips-tracks">
+              {library?.tracks.length === 0 && (
+                <p className="dim-sm rail-pad">No tracks yet — import one below.</p>
+              )}
+              {library?.tracks.map((t) => (
+                <div
+                  key={t.id}
+                  className={`clips-track ${trackSess?.id === t.id ? "playing" : ""}`}
+                  onClick={() => playTrack(t)}
+                  title="play through the track engine"
+                >
+                  <div className="ct-main">
+                    <span className="ct-title">{t.title}</span>
+                    {t.artist && <span className="dim-sm">{t.artist}</span>}
+                  </div>
+                  <span className="mono dim-sm">{t.durationS ? fmtTime(t.durationS) : ""}</span>
+                  <span
+                    className="row-act"
+                    title="remove from library (the file itself is untouched)"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      invoke<LibraryState>("track_delete", { id: t.id })
+                        .then(setLibrary)
+                        .catch((e2) => showNotice(String(e2)));
+                    }}
+                  >
+                    ×
+                  </span>
+                </div>
+              ))}
+            </div>
+            <div className="clips-rail-foot">
+              <button onClick={importTrack}>+ Import track</button>
+            </div>
+          </div>
+          <div className="clips-main">
+            <div className="clips-toolbar">
+              {trackSess ? (
+                <>
+                  <span className="ct-title">{trackSess.title}</span>
+                  {trackSess.phase ? (
+                    <span className="mono dim-sm">decoding…</span>
+                  ) : (
+                    <span className="mono dim-sm">
+                      {`${trackSess.mode === "bypass" ? (trackSess.exclusive ? "bypass · exclusive" : "bypass unavailable · shared") : "through your EQ · shared"}${
+                        trackSess.device ? ` · ${trackSess.device}` : ""
+                      }${trackSess.rate ? ` · ${trackSess.bits} bit @ ${trackSess.rate} Hz` : ""}${
+                        trackSess.mode === "bypass" && trackSess.exclusive
+                          ? ` · level ${(trackSess.gainDb ?? 0).toFixed(1)} dB`
+                          : ""
+                      }`}
+                    </span>
+                  )}
+                </>
+              ) : (
+                <span className="dim-sm">no track playing</span>
+              )}
+              <span className="spacer" />
+              <div className="seg seg-sm">
+                <span
+                  className={`seg-opt ${studioMode === "bypass" ? "on" : ""}`}
+                  onClick={() => pickStudioMode("bypass")}
+                  title="Curation: the track itself — exclusive device, no EQ, level-matched toward the reference. Other apps' audio pauses. Takes effect on the next play."
+                >
+                  Bypass
+                </span>
+                <span
+                  className={`seg-opt ${studioMode === "eq" ? "on" : ""}`}
+                  onClick={() => pickStudioMode("eq")}
+                  title="A regular player: the normal shared path — Equalizer APO applies your EQ and the level-matched A/B, like any other stream. Takes effect on the next play."
+                >
+                  Through EQ
+                </span>
+              </div>
+            </div>
+            <div className="clips-viewer">
+              <p className="dim-sm clips-empty">
+                The viewer lands here next — waveform, timeline, in/out clips (M4), spectrogram, FFT
+                and moments (M5).
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {view === "settings" && settings && (
         <div className="settings">
           <div className="set-col">
@@ -3418,20 +3684,43 @@ function MainApp() {
             </div>
 
             <div className="set-sect">
-              <span className="mono set-head">EQUALIZER APO</span>
+              <span className="mono set-head">TOOL PATHS</span>
               <div className="set-row">
                 <span className={`apo-dot ${settings.apoInstallPath ? "ok" : "bad"}`} />
+                <span className="set-tool mono">Equalizer APO</span>
                 {settings.apoInstallPath ? (
-                  <span className="set-text">
-                    Installed · <span className="mono">{settings.apoInstallPath}</span>
-                  </span>
+                  <span className="set-path mono">{settings.apoInstallPath}</span>
                 ) : (
-                  <span className="set-text">Not detected — install from sourceforge.net/projects/equalizerapo</span>
+                  <span className="set-text">not detected — sourceforge.net/projects/equalizerapo</span>
+                )}
+              </div>
+              <div className="set-row">
+                <span className={`apo-dot ${tools?.ffmpeg ? "ok" : "bad"}`} />
+                <span className="set-tool mono">ffmpeg</span>
+                {tools?.ffmpeg ? (
+                  <span className="set-path mono">{tools.ffmpeg}</span>
+                ) : toolsProg?.which === "ffmpeg" ? (
+                  <span className="mono dim-sm">{`downloading… ${toolsProg.pct ?? 0}%`}</span>
+                ) : (
+                  <button onClick={() => installTool("ffmpeg")}>Install</button>
+                )}
+              </div>
+              <div className="set-row">
+                <span className={`apo-dot ${tools?.ytdlp ? "ok" : "bad"}`} />
+                <span className="set-tool mono">yt-dlp</span>
+                {tools?.ytdlp ? (
+                  <span className="set-path mono">{tools.ytdlp}</span>
+                ) : toolsProg?.which === "yt-dlp" ? (
+                  <span className="mono dim-sm">{`downloading… ${toolsProg.pct ?? 0}%`}</span>
+                ) : (
+                  <button onClick={() => installTool("yt-dlp")}>Install</button>
                 )}
               </div>
               <span className="set-note">
-                Fletcher writes only fletcher.txt and one Include line. Peace and hand-written configs are never
-                touched.
+                Equalizer APO: Fletcher writes only fletcher.txt and one Include line — Peace and hand-written
+                configs are never touched. ffmpeg decodes everything the track engine plays; yt-dlp imports
+                audio from URLs. Managed tools are fetched on demand into Fletcher's own tools folder, never
+                installed system-wide.
               </span>
             </div>
           </div>
@@ -3922,6 +4211,58 @@ function MainApp() {
             B · Flat
           </span>
         </div>
+        {trackSess && (
+          <div className="transport">
+            <span
+              className="tr-btn"
+              title={trackPos.paused ? "play" : "pause"}
+              onClick={() => invoke("track_toggle").catch((e) => showNotice(String(e)))}
+            >
+              {trackPos.paused ? "▶" : "❚❚"}
+            </span>
+            <span
+              className="tr-btn"
+              title="stop and release the device"
+              onClick={() => invoke("track_stop").catch(() => {})}
+            >
+              ■
+            </span>
+            <input
+              type="range"
+              className="tr-seek"
+              min={0}
+              max={trackSess.durationS || 0}
+              step={0.1}
+              value={Math.min(trackPos.posS, trackSess.durationS || 0)}
+              onChange={(e) => invoke("track_seek", { seconds: +e.target.value }).catch(() => {})}
+            />
+            <span className="mono dim-sm">{`${fmtTime(trackPos.posS)} / ${fmtTime(trackSess.durationS)}`}</span>
+            {trackSess.mode === "bypass" ? (
+              trackSess.exclusive ? (
+                <span
+                  className="mono dim-sm tr-mode ok-text"
+                  title={`Curation: the track itself — exclusive device, no EQ, level ${(trackSess.gainDb ?? 0).toFixed(1)} dB toward the reference. Other apps' audio pauses; your amp knob is the volume.`}
+                >
+                  bypass · the track itself
+                </span>
+              ) : (
+                <span
+                  className="mono dim-sm tr-mode warn-text"
+                  title="The device refused exclusive mode, so this plays on the shared path — Equalizer APO still applies your EQ. Not a true bypass."
+                >
+                  bypass unavailable · via APO
+                </span>
+              )
+            ) : (
+              <span
+                className="mono dim-sm tr-mode"
+                title="A regular player: the normal shared path — your EQ and the level-matched A/B apply exactly as everywhere else."
+              >
+                through your EQ
+              </span>
+            )}
+          </div>
+        )}
         <span className="mono dim-sm">Ctrl·Shift·A</span>
         {settings?.levelMatching === false ? (
           <span
@@ -3930,6 +4271,14 @@ function MainApp() {
           >
             <span className="dot bad" />
             unmatched — louder side wins
+          </span>
+        ) : ab.shortfallDb > 0.05 ? (
+          <span
+            className="matched mono unmatched"
+            title={`This chain needs more headroom than clip safety allows: it sits ${ab.shortfallDb.toFixed(1)} dB above the reference, so the comparison is only imperfectly matched (TB-08). Lower the reference in Settings or trim boosts to fully match.`}
+          >
+            <span className="dot bad" />
+            {`matched — short ${ab.shortfallDb.toFixed(1)} dB (clip cap)`}
           </span>
         ) : (
           <span className="matched mono">

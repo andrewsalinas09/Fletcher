@@ -9,14 +9,13 @@ Equalizer APO watches its config files and hot-reloads on change, glitch-free. F
 ### Path 1 — system-wide (config swap)
 For EQing whatever the system is playing. Fletcher atomically rewrites (or re-points an `Include:` line in) the APO config; APO reloads instantly. A global hotkey flips between candidate configs. Blind mode randomizes the assignment. Cheap, glitch-free, works with any source app.
 
-### Path 2 — track mode (in-app engine)
-For "import a song and flip between EQ'd/bypass." **Trap:** anything Fletcher plays through the normal device is *also* processed by APO — toggling the config is not sample-accurate and double-processes. So track mode uses an in-app engine:
+### Path 2 — track mode (in-app engine) — *built 2026-08-23, ADR-0011*
+The engine (fletcher-core `playback.rs`/`signal.rs`/`dsp.rs` realtime layer + app `engine.rs`):
 
-- Decode: `symphonia` (FLAC/MP3/AAC/WAV/OGG).
-- DSP: same RBJ-cookbook biquads APO uses, implemented in Rust (needed anyway to draw the response curve).
-- Switch: shared playhead, short equal-power crossfade (~5–20 ms) between processed and bypass buses — seamless, position never jumps.
-- Output: WASAPI, with APO taken out of the loop for the session (mechanism TBD — Q-04: exclusive mode vs. temporarily blanking the device config vs. other).
-- Level matching: `ebur128` computes LUFS of both paths over the loop region; compensating gain applied before the test; matched levels shown to the user.
+- Decode: **ffmpeg** (managed tool, fetch-on-demand) → per-(track, rate) f32 PCM cache; flat LUFS measured once and stored (ADR-0011 superseded the symphonia sketch).
+- DSP: the same RBJ biquads as the curve renderer (`BiquadState`/`ChainProcessor`, cross-validated against `magnitude_db`).
+- Three play methods (ADR-0011): **bypass** (curation default — exclusive, no EQ, level-matched toward the reference), **through your EQ** (opt-in regular player — shared path, APO applies, normal A/B), **testing** (Lab phase ③ — dual buses always processed through identical buffering, ~15 ms equal-power crossfade, true-LUFS trim via `ebur128`; TB-12-clean).
+- Output: WASAPI exclusive (format ladder + aligned-period retry from the spike) or shared; every stream ramps in and fades out (TB-20, engine-enforced); sessions serialized so streams never overlap.
 
 ## Components (sketch)
 
@@ -48,7 +47,9 @@ subsystem owns one folder.
 | `history/<preset>.json` | undo graphs, one tree per preset (survive restarts; export/import = this file) | JSON `{version, current, nodes[]}` with full snapshots |
 | `sessions/<id>.json` | ABX session records — labeled trial logs, provenance | JSON |
 | `autoeq/` | cached AutoEQ index + fetched preset files | md / APO syntax |
-| `clips/` *(Phase 3)* | clip libraries: per-track folders for media references + annotations; queryable records in the database | folders + SQLite |
+| `tools/` | managed external tools (ffmpeg, ffprobe, yt-dlp), fetch-on-demand | exes (ADR-0011) |
+| `cache/pcm/` | decoded track PCM, per (track, rate); purgeable | raw f32le |
+| `clips/library.db` | the clip library: tracks (+ flat LUFS), clips/moments/tags/markers/batteries as they land | SQLite — the deliberate exception to the human-readable rule (ADR-0011) |
 | `fingerprints/` *(Phase 4)* | measured fingerprint library; the interchange files (Q-15) are these, exported | TBD by Q-15 (metadata-rich) |
 | `calibration/` *(Phase 4)* | mic calibration curves | freq/dB text |
 

@@ -138,6 +138,39 @@ impl Source for SignalSource {
     }
 }
 
+/// The spike's exclusive-mode candidate ladder, in preference order.
+fn exclusive_candidates() -> [WaveFormat; 4] {
+    [
+        WaveFormat::new(32, 32, &SampleType::Float, 48000, 2, None),
+        WaveFormat::new(24, 24, &SampleType::Int, 48000, 2, None),
+        WaveFormat::new(16, 16, &SampleType::Int, 48000, 2, None),
+        WaveFormat::new(16, 16, &SampleType::Int, 44100, 2, None),
+    ]
+}
+
+/// Probe which sample rate `mode` would negotiate, without initializing a
+/// stream — callers prepare PCM at the right rate before opening (TB-07).
+pub fn probe_rate(mode: OutputMode) -> Result<u32, PlaybackError> {
+    let _ = initialize_mta();
+    let dev = |e: String| PlaybackError::Device(e);
+    match mode {
+        OutputMode::Exclusive => {
+            let enumerator = DeviceEnumerator::new().map_err(|e| dev(e.to_string()))?;
+            let device = enumerator
+                .get_default_device(&Direction::Render)
+                .map_err(|e| dev(e.to_string()))?;
+            let audio_client = device.get_iaudioclient().map_err(|e| dev(e.to_string()))?;
+            exclusive_candidates()
+                .iter()
+                .find(|f| audio_client.is_supported_exclusive_with_quirks(f).is_ok())
+                .map(|f| f.get_samplespersec())
+                .ok_or(PlaybackError::NoFormat)
+        }
+        // Shared mode autoconverts; we always feed it f32 @ 48 kHz.
+        OutputMode::Shared => Ok(48000),
+    }
+}
+
 /// Open the default render device in `mode`, ramp in, and pull `source`
 /// until it is exhausted or `stop` is raised. Blocking — call it on a thread
 /// that owns the stream for its whole life. `on_start` fires once with the
@@ -162,13 +195,7 @@ pub fn play(
 
     let (format, stream_mode) = match mode {
         OutputMode::Exclusive => {
-            // The spike's ladder, in preference order.
-            let candidates = [
-                WaveFormat::new(32, 32, &SampleType::Float, 48000, 2, None),
-                WaveFormat::new(24, 24, &SampleType::Int, 48000, 2, None),
-                WaveFormat::new(16, 16, &SampleType::Int, 48000, 2, None),
-                WaveFormat::new(16, 16, &SampleType::Int, 44100, 2, None),
-            ];
+            let candidates = exclusive_candidates();
             let format = candidates
                 .iter()
                 .find(|f| audio_client.is_supported_exclusive_with_quirks(f).is_ok())

@@ -8,6 +8,9 @@ use fletcher_core::{apo, devices, dsp, fsx};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+mod engine;
+mod tools;
+
 fn data_dir() -> PathBuf {
     std::env::var_os("APPDATA")
         .map(PathBuf::from)
@@ -246,6 +249,7 @@ fn set_fletcher_chain(filters: Vec<FilterIn>) -> Result<EqState, String> {
     let text = render_fletcher_file(preamp, &chain);
     fsx::write_atomic(&install.config_path.join("fletcher.txt"), &text)
         .map_err(|e| e.to_string())?;
+    push_chain_to_track(&chain);
 
     // Edits persist into the active preset, so switching away and back keeps them.
     if let Some(name) = active_preset() {
@@ -257,7 +261,8 @@ fn set_fletcher_chain(filters: Vec<FilterIn>) -> Result<EqState, String> {
     eq_state()
 }
 
-/// Rewrite fletcher.txt from a chain (with fresh auto-preamp).
+/// Rewrite fletcher.txt from a chain (with fresh auto-preamp). Also feeds a
+/// running track session — the tuning loop and the engine share one truth.
 fn activate_chain(chain: &[ChainFilter]) -> Result<(), String> {
     let install = apo::detect().map_err(|e| e.to_string())?;
     let specs = specs_of(chain);
@@ -266,7 +271,9 @@ fn activate_chain(chain: &[ChainFilter]) -> Result<(), String> {
         &install.config_path.join("fletcher.txt"),
         &render_fletcher_file(preamp, chain),
     )
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    push_chain_to_track(chain);
+    Ok(())
 }
 
 /// Every filter currently reachable from config.txt, as an ownable chain —
@@ -437,21 +444,32 @@ fn specs_of(chain: &[ChainFilter]) -> Vec<FilterSpec> {
 /// without exceeding 0 dB peak (TB-06). Everything — flat, every preset,
 /// mid-edit chains — normalizes to the same reference (Q-06/ADR-0003).
 fn matched_preamp(specs: &[FilterSpec]) -> f64 {
+    matched_preamp_full(specs).0
+}
+
+/// (preamp, shortfall): shortfall > 0 means the clip-safe cap won the fight
+/// and the chain sits that many dB ABOVE the reference — the comparison is
+/// then only imperfectly matched, and the UI must say so (TB-08 v1).
+fn matched_preamp_full(specs: &[FilterSpec]) -> (f64, f64) {
     let clip_safe = auto_preamp_db(specs, FS);
     if !level_matching() {
         // Honesty switch off: clip safety only, no reference normalization —
         // every comparison is then louder-vs-quieter and the UI says so.
-        return (clip_safe.clamp(-30.0, 0.0) * 10.0).round() / 10.0;
+        return ((clip_safe.clamp(-30.0, 0.0) * 10.0).round() / 10.0, 0.0);
     }
     let reference = reference_db().min(0.0);
     if specs.is_empty() {
-        return (reference * 10.0).round() / 10.0;
+        return ((reference * 10.0).round() / 10.0, 0.0);
     }
     let freqs = log_freqs(20.0, 20000.0, 200);
     let resp = chain_response_db(specs, 0.0, FS, &freqs);
     let mean = resp.iter().sum::<f64>() / resp.len() as f64;
     let to_reference = reference - mean;
-    ((to_reference.min(clip_safe) * 10.0).round() / 10.0).clamp(-30.0, 0.0)
+    let shortfall = ((to_reference - clip_safe).max(0.0) * 10.0).round() / 10.0;
+    (
+        ((to_reference.min(clip_safe) * 10.0).round() / 10.0).clamp(-30.0, 0.0),
+        shortfall,
+    )
 }
 
 /// Write fletcher.txt for the given side: A = the active chain; B = flat,
@@ -851,6 +869,493 @@ fn calibration_noise(app: tauri::AppHandle, on: bool) -> Result<(), String> {
     Ok(())
 }
 
+// ---------------- Clip Studio: tools, library, track sessions (M2) ----------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ToolsState {
+    ffmpeg: Option<String>,
+    ytdlp: Option<String>,
+}
+
+fn tools_state_now() -> ToolsState {
+    ToolsState {
+        ffmpeg: tools::find_tool(&data_dir(), "ffmpeg").map(|p| p.display().to_string()),
+        ytdlp: tools::find_tool(&data_dir(), "yt-dlp").map(|p| p.display().to_string()),
+    }
+}
+
+#[tauri::command]
+fn tools_state() -> ToolsState {
+    tools_state_now()
+}
+
+/// Download a managed tool with consent already given in the UI (ADR-0008
+/// precedent: fetch on demand, never bundle). Progress goes out as events.
+#[tauri::command]
+async fn tools_install(app: tauri::AppHandle, which: String) -> Result<ToolsState, String> {
+    let w = which.clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        use tauri::Emitter;
+        let wp = w.clone();
+        let appc = app.clone();
+        let mut last_pct: i64 = -1;
+        let emit_p = move |done: u64, total: Option<u64>| {
+            let pct = total.map(|t| ((done as f64 / t.max(1) as f64) * 100.0) as i64);
+            if let Some(p) = pct {
+                if p != last_pct {
+                    last_pct = p;
+                    let _ = appc.emit(
+                        "tools-progress",
+                        serde_json::json!({ "which": wp, "pct": p }),
+                    );
+                }
+            }
+        };
+        match w.as_str() {
+            "ffmpeg" => tools::install_ffmpeg(&data_dir(), emit_p).map(|_| ()),
+            "yt-dlp" => tools::install_ytdlp(&data_dir(), emit_p).map(|_| ()),
+            _ => Err("unknown tool".into()),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(tools_state_now())
+}
+
+fn library_db() -> Result<rusqlite::Connection, String> {
+    let dir = data_dir().join("clips");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let conn = rusqlite::Connection::open(dir.join("library.db")).map_err(|e| e.to_string())?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS tracks (
+            id INTEGER PRIMARY KEY,
+            kind TEXT NOT NULL DEFAULT 'file',
+            title TEXT NOT NULL,
+            artist TEXT,
+            genre TEXT,
+            path TEXT,
+            source_url TEXT,
+            signal_params TEXT,
+            duration_s REAL,
+            lufs_flat REAL,
+            added_ms INTEGER NOT NULL
+        );",
+    )
+    .map_err(|e| e.to_string())?;
+    // Migration for databases created before lufs_flat existed.
+    let _ = conn.execute("ALTER TABLE tracks ADD COLUMN lufs_flat REAL", []);
+    Ok(conn)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TrackRow {
+    id: i64,
+    kind: String,
+    title: String,
+    artist: Option<String>,
+    genre: Option<String>,
+    path: Option<String>,
+    source_url: Option<String>,
+    duration_s: Option<f64>,
+    added_ms: i64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LibraryState {
+    tracks: Vec<TrackRow>,
+}
+
+fn library_state_now() -> Result<LibraryState, String> {
+    let conn = library_db()?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, kind, title, artist, genre, path, source_url, duration_s, added_ms
+             FROM tracks ORDER BY added_ms DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let tracks = stmt
+        .query_map([], |r| {
+            Ok(TrackRow {
+                id: r.get(0)?,
+                kind: r.get(1)?,
+                title: r.get(2)?,
+                artist: r.get(3)?,
+                genre: r.get(4)?,
+                path: r.get(5)?,
+                source_url: r.get(6)?,
+                duration_s: r.get(7)?,
+                added_ms: r.get(8)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(LibraryState { tracks })
+}
+
+#[tauri::command]
+fn library_state() -> Result<LibraryState, String> {
+    library_state_now()
+}
+
+/// Import a local audio file: referenced in place, never copied (data-dir
+/// rule). Title from the filename for now; richer metadata comes with ffprobe.
+#[tauri::command]
+fn track_import(path: String) -> Result<LibraryState, String> {
+    let p = PathBuf::from(&path);
+    if !p.is_file() {
+        return Err("file not found".into());
+    }
+    let title = p
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "track".into());
+    let conn = library_db()?;
+    conn.execute(
+        "INSERT INTO tracks (kind, title, path, added_ms) VALUES ('file', ?1, ?2, ?3)",
+        rusqlite::params![title, path, now_ms() as i64],
+    )
+    .map_err(|e| e.to_string())?;
+    library_state_now()
+}
+
+#[tauri::command]
+fn track_delete(id: i64) -> Result<LibraryState, String> {
+    {
+        let guard = TRACK.lock().unwrap();
+        if guard.as_ref().is_some_and(|s| s.track_id == id) {
+            drop(guard);
+            track_stop_inner();
+        }
+    }
+    let conn = library_db()?;
+    conn.execute("DELETE FROM tracks WHERE id = ?1", rusqlite::params![id])
+        .map_err(|e| e.to_string())?;
+    // Drop any decoded caches for this track.
+    let cache = data_dir().join("cache").join("pcm");
+    if let Ok(rd) = std::fs::read_dir(&cache) {
+        for e in rd.flatten() {
+            if e.file_name()
+                .to_string_lossy()
+                .starts_with(&format!("{id}-"))
+            {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+    library_state_now()
+}
+
+/// Clip Studio's play method (user ruling 2026-08-23): curation BYPASSES —
+/// exclusive device, the track itself, level-matched toward the reference,
+/// no EQ (you're studying the material, not the correction). "Through your
+/// EQ" (shared path, APO applies, a regular media player) is the opt-in.
+fn studio_mode() -> String {
+    read_state()
+        .get("studioMode")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .unwrap_or_else(|| "bypass".into())
+}
+
+#[tauri::command]
+fn studio_state() -> serde_json::Value {
+    serde_json::json!({ "mode": studio_mode() })
+}
+
+/// Takes effect on the next play.
+#[tauri::command]
+fn set_studio_mode(mode: String) {
+    let m = if mode == "eq" { "eq" } else { "bypass" };
+    write_state_field("studioMode", serde_json::json!(m));
+}
+
+/// One playback session at a time — the device is a singleton in exclusive
+/// mode (ABX-static pattern).
+static TRACK: std::sync::Mutex<Option<engine::TrackSession>> = std::sync::Mutex::new(None);
+
+/// Monotonic session serial: events carry it so a stale session's "ended"
+/// can never clobber the UI state of its successor.
+static TRACK_SESS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Stop the current session; returns its `done` flag so a handoff can wait
+/// for the fade-out + device release (streams must never overlap).
+fn track_stop_inner() -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
+    TRACK.lock().unwrap().take().map(|s| {
+        s.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        s.done.clone()
+    })
+}
+
+/// Live edits reach the engine's bus A (specs + fresh matched preamp). The
+/// true-LUFS trim from session start is kept: recomputing per drag-tick is
+/// too slow, and the config preamps already hold both buses near the
+/// reference — the trim is the measured residual.
+fn push_chain_to_track(chain: &[ChainFilter]) {
+    use std::sync::atomic::Ordering::Relaxed;
+    let guard = TRACK.lock().unwrap();
+    if let Some(s) = guard.as_ref() {
+        let specs = specs_of(chain);
+        let preamp_a = matched_preamp(&specs);
+        {
+            let mut bus = s.shared.bus.lock().unwrap();
+            bus.specs = specs;
+            bus.preamp_a_db = preamp_a;
+        }
+        s.shared.chain_gen.fetch_add(1, Relaxed);
+    }
+}
+
+/// While an exclusive track session runs, A/B lives inside the engine —
+/// config writes are irrelevant to what's playing. Returns true if handled.
+fn track_engine_side_set(side: &str) -> bool {
+    use std::sync::atomic::Ordering::Relaxed;
+    let guard = TRACK.lock().unwrap();
+    if let Some(s) = guard.as_ref() {
+        if s.shared.bus.lock().unwrap().in_engine_eq {
+            s.shared.side_b.store(side == "b", Relaxed);
+            return true;
+        }
+    }
+    false
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TrackState {
+    active: bool,
+    track_id: Option<i64>,
+    paused: bool,
+    pos_s: f64,
+    duration_s: f64,
+    mode: Option<&'static str>,
+}
+
+fn track_state_now() -> TrackState {
+    use std::sync::atomic::Ordering::Relaxed;
+    let guard = TRACK.lock().unwrap();
+    match guard.as_ref() {
+        Some(s) => TrackState {
+            active: true,
+            track_id: Some(s.track_id),
+            paused: s.shared.paused.load(Relaxed),
+            pos_s: s.shared.pos.load(Relaxed) as f64 / s.shared.rate as f64,
+            duration_s: s.shared.total_frames as f64 / s.shared.rate as f64,
+            mode: Some(match s.mode {
+                fletcher_core::playback::OutputMode::Exclusive => "exclusive",
+                fletcher_core::playback::OutputMode::Shared => "shared",
+            }),
+        },
+        None => TrackState {
+            active: false,
+            track_id: None,
+            paused: false,
+            pos_s: 0.0,
+            duration_s: 0.0,
+            mode: None,
+        },
+    }
+}
+
+/// Start playing a library track through the engine, per the studio play
+/// method: **bypass** (default — curation studies the track itself:
+/// exclusive device, no EQ, level-matched toward the reference via stored
+/// flat LUFS) or **eq** (a regular player: shared path, APO applies your
+/// chain and the normal A/B). Decode is cached per (track, rate).
+#[tauri::command]
+async fn track_play(app: tauri::AppHandle, id: i64) -> Result<(), String> {
+    use fletcher_core::playback::OutputMode;
+    if ABX.lock().unwrap().is_some() {
+        return Err("a blind test is running — finish or cancel it first".into());
+    }
+    stop_cal_noise();
+    let prior_done = track_stop_inner();
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        use std::sync::atomic::Ordering::Relaxed;
+        use tauri::Emitter;
+        // Never overlap streams: wait for the previous session's fade-out
+        // and device release before opening a new one.
+        if let Some(done) = prior_done {
+            let t0 = std::time::Instant::now();
+            while !done.load(Relaxed) && t0.elapsed() < std::time::Duration::from_secs(3) {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+        let ffmpeg = tools::find_tool(&data_dir(), "ffmpeg")
+            .ok_or("ffmpeg is not installed — use the banner in Clip Studio to set it up")?;
+        let conn = library_db()?;
+        let path: String = conn
+            .query_row(
+                "SELECT path FROM tracks WHERE id = ?1 AND path IS NOT NULL",
+                rusqlite::params![id],
+                |r| r.get(0),
+            )
+            .map_err(|_| "track not found".to_string())?;
+        drop(conn);
+
+        let bypass = studio_mode() != "eq";
+        let (mode, rate) = if bypass {
+            match fletcher_core::playback::probe_rate(OutputMode::Exclusive) {
+                Ok(r) => (OutputMode::Exclusive, r),
+                // Device refused exclusive — degrade to the shared path and
+                // say so (the chip shows "bypass unavailable").
+                Err(_) => (OutputMode::Shared, 48000),
+            }
+        } else {
+            (OutputMode::Shared, 48000)
+        };
+        let exclusive = mode == OutputMode::Exclusive;
+        let sess = TRACK_SESS.fetch_add(1, Relaxed) + 1;
+        let app_decode = app.clone();
+        let pcm_path = engine::ensure_pcm(
+            &ffmpeg,
+            &data_dir().join("cache").join("pcm"),
+            std::path::Path::new(&path),
+            id,
+            rate,
+            // Only a real ffmpeg run announces itself — cache hits play at once.
+            move || {
+                let _ = app_decode.emit(
+                    "track-state",
+                    serde_json::json!({ "event": "decoding", "trackId": id, "sess": sess }),
+                );
+            },
+        )?;
+        let pcm = engine::load_pcm(&pcm_path)?;
+        if pcm.is_empty() {
+            return Err("this file decoded to nothing — is it audio?".into());
+        }
+        let duration_s = (pcm.len() / 2) as f64 / rate as f64;
+        if let Ok(conn) = library_db() {
+            let _ = conn.execute(
+                "UPDATE tracks SET duration_s = ?1 WHERE id = ?2",
+                rusqlite::params![duration_s, id],
+            );
+        }
+
+        // The track's flat LUFS: measured once ever, stored, then reused —
+        // it's what bypass mode level-matches with, and Q-06 validation later.
+        let mut lufs_flat: Option<f64> = library_db().ok().and_then(|conn| {
+            conn.query_row(
+                "SELECT lufs_flat FROM tracks WHERE id = ?1",
+                rusqlite::params![id],
+                |r| r.get::<_, Option<f64>>(0),
+            )
+            .ok()
+            .flatten()
+        });
+        if lufs_flat.is_none() {
+            if let Ok(l) = engine::lufs_through(&pcm, rate, &[], 0.0) {
+                if l.is_finite() {
+                    lufs_flat = Some(l);
+                    if let Ok(conn) = library_db() {
+                        let _ = conn.execute(
+                            "UPDATE tracks SET lufs_flat = ?1 WHERE id = ?2",
+                            rusqlite::params![l, id],
+                        );
+                    }
+                }
+            }
+        }
+
+        // Bypass level match: bring the raw track toward the reference
+        // loudness (target scales with referenceDb; −16 LUFS at the −8
+        // default). Attenuate-only — a positive gain could clip (TB-06).
+        let gain_db = if bypass {
+            let target = -16.0 + (reference_db() + 8.0);
+            lufs_flat.map(|l| (target - l).min(0.0)).unwrap_or(0.0)
+        } else {
+            0.0
+        };
+
+        let session = engine::TrackSession::new(id, mode, rate, (pcm.len() / 2) as u64, 0);
+        let (app_start, app_end, app_pos) = (app.clone(), app.clone(), app.clone());
+        let stop_end = session.stop.clone();
+        let (shared_pos, stop_pos) = (session.shared.clone(), session.stop.clone());
+        session.spawn_audio(
+            pcm,
+            10f64.powf(gain_db / 20.0),
+            move |info| {
+                let _ = app_start.emit(
+                    "track-state",
+                    serde_json::json!({
+                        "event": "started", "trackId": id, "sess": sess, "durationS": duration_s,
+                        "mode": if bypass { "bypass" } else { "eq" },
+                        "exclusive": exclusive, "gainDb": gain_db,
+                        "device": info.device, "rate": info.rate, "bits": info.bits,
+                    }),
+                );
+            },
+            move |err| {
+                let mut guard = TRACK.lock().unwrap();
+                if let Some(cur) = guard.as_ref() {
+                    if std::sync::Arc::ptr_eq(&cur.stop, &stop_end) {
+                        *guard = None;
+                    }
+                }
+                drop(guard);
+                let _ = app_end.emit(
+                    "track-state",
+                    serde_json::json!({ "event": "ended", "trackId": id, "sess": sess, "error": err }),
+                );
+            },
+        );
+        // ~10 Hz transport position for the UI; dies with the session.
+        std::thread::spawn(move || {
+            use std::sync::atomic::Ordering::Relaxed;
+            while !stop_pos.load(Relaxed) {
+                let _ = app_pos.emit(
+                    "track-pos",
+                    serde_json::json!({
+                        "posS": shared_pos.pos.load(Relaxed) as f64 / shared_pos.rate as f64,
+                        "paused": shared_pos.paused.load(Relaxed),
+                    }),
+                );
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        });
+        *TRACK.lock().unwrap() = Some(session);
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn track_toggle() -> Result<TrackState, String> {
+    use std::sync::atomic::Ordering::Relaxed;
+    {
+        let guard = TRACK.lock().unwrap();
+        let s = guard.as_ref().ok_or("no track playing")?;
+        let now = !s.shared.paused.load(Relaxed);
+        s.shared.paused.store(now, Relaxed);
+    }
+    Ok(track_state_now())
+}
+
+#[tauri::command]
+fn track_seek(seconds: f64) -> Result<TrackState, String> {
+    use std::sync::atomic::Ordering::Relaxed;
+    {
+        let guard = TRACK.lock().unwrap();
+        let s = guard.as_ref().ok_or("no track playing")?;
+        let frame = (seconds.max(0.0) * s.shared.rate as f64) as u64;
+        s.shared
+            .pos
+            .store(frame.min(s.shared.total_frames), Relaxed);
+    }
+    Ok(track_state_now())
+}
+
+#[tauri::command]
+fn track_stop() -> TrackState {
+    track_stop_inner();
+    track_state_now()
+}
+
 // ---------------- Settings (v1: the approved artboard) ----------------
 
 #[derive(Serialize)]
@@ -979,19 +1484,28 @@ fn device_set_default(id: String) -> Result<EqState, String> {
 struct AbInfo {
     side: String,
     match_db: f64,
+    /// TB-08: dB by which the active chain sits ABOVE the reference because
+    /// the clip-safe cap won. 0 = fully matched.
+    shortfall_db: f64,
 }
 
 #[tauri::command]
 fn ab_info() -> AbInfo {
+    let (_, shortfall_db) = matched_preamp_full(&specs_of(&active_chain()));
     AbInfo {
         side: ab_side(),
         match_db: matched_preamp(&[]),
+        shortfall_db,
     }
 }
 
 #[tauri::command]
 fn ab_set(side: String) -> Result<EqState, String> {
     let side = if side == "b" { "b" } else { "a" };
+    if track_engine_side_set(side) {
+        set_ab_side(side);
+        return eq_state();
+    }
     apply_side(side)?;
     set_ab_side(side);
     eq_state()
@@ -1016,6 +1530,12 @@ fn ab_flip(app: &tauri::AppHandle) {
         }
     }
     let next = if ab_side() == "a" { "b" } else { "a" };
+    // Third branch: an exclusive track session flips inside the engine.
+    if track_engine_side_set(next) {
+        set_ab_side(next);
+        let _ = app.emit("ab-changed", next);
+        return;
+    }
     if apply_side(next).is_ok() {
         set_ab_side(next);
         let _ = app.emit("ab-changed", next);
@@ -1142,8 +1662,15 @@ fn abx_start(
         }
         _ => return Err("provide both chains or neither".into()),
     };
-    // Leveling noise and blind trials must never overlap (TB-26 class).
+    // Leveling noise and blind trials must never overlap (TB-26 class), and
+    // the track engine can't share the device with config-swap auditions.
     stop_cal_noise();
+    if TRACK.lock().unwrap().is_some() {
+        return Err(
+            "stop track playback first — blind tests and the track engine can't run together yet"
+                .into(),
+        );
+    }
     // Two chains that level-match to the same response leave nothing to test.
     // Comparing responses, not filter lists, catches differently-written but
     // audibly identical chains.
@@ -1687,6 +2214,17 @@ pub fn run() {
             set_level_matching,
             engine_test_tone,
             calibration_noise,
+            tools_state,
+            tools_install,
+            library_state,
+            track_import,
+            track_delete,
+            studio_state,
+            set_studio_mode,
+            track_play,
+            track_toggle,
+            track_seek,
+            track_stop,
             history_save,
             history_load,
             history_export,
