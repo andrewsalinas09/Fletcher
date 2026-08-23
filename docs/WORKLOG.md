@@ -18,6 +18,12 @@ Append-only session journal. Newest entry first.
 - **Learned:** The user's design taste is concrete and fast when given real candidates to react against; "show 3, iterate on reactions" works. Redundant views (rail duplicating graph) read as mess; amount-of-ink beats needle-angle for glanceability; every UI word must trace to FEATURES.md or it reads as hallucination.
 - **Next:** ADR-0010 (visual direction); port v5 into the app; design Listening Lab + Clip Studio artboards (resolves Q-21).
 
+## 2026-08-23 — The Listening Lab ships; first verified result
+
+- **Did:** Built the ABX engine end-to-end: exact binomial stats + xorshift in core (verified against hand-computed values); server-side-only session state (real blinding — the UI never holds X's assignments); audition/vote commands through the level-matched write path; provenance-journaled sessions with recorded mid-session score reveals (TB-24); persisted labeled logs; Lab home (prominent trial controls, the record with plain-language verdicts, labeled replay, run-again-same-N); full-window trial room (keyboard-first, hotkey cycles A/B/X, neutral dots, bias-cautioned reveal). Also: output-device switching via IPolicyConfig on the device chip; premature A/B-bar buttons removed.
+- **Learned:** **First real session, run by the user on their HD650 correction: 13/16, p = 0.011 — "You heard it."** Their debrief: genuinely hard ("took me 1.5 entire songs"); treble passages indistinguishable; bass "even just slightly" different. Every observation maps to planned machinery: content dependence → clip battery (short targeted loops instead of waiting for revealing passages); per-band audibility → per-tag statistics; effort → the whole reason honest testing needs tooling.
+- **Next:** Adaptive/sequential mode (proper corrections), preference voting, AutoEQ import, Settings tab. Phase 3 brings clips to the Lab.
+
 ## 2026-08-23 — Phase 1 closes; the thesis validates itself
 
 - **Did:** Tray + global Ctrl+Shift+A + level-matched A/B (Q-06 estimation v1: log-grid mean ≈ pink-noise weighting, applied as B's preamp). Close-to-tray, deterministic side restore at launch. Earlier same session: y-scale saga resolved by first principles — explicit interaction-inert scale control (auto/±6/±12/±18/±30); automation and direct manipulation must never share an axis. Custom type picker with glyphs + tooltips; deliberate-hover teaching layer; undo/redo; drag jitter, rename contention, and coordinate-mapping bugs all fixed through live user testing.
