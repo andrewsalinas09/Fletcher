@@ -5058,7 +5058,17 @@ function MainApp() {
       {view === "clips" && (
         <div className="clips">
           <div className="clips-rail">
-            <span className="mono lab-label rail-pad">LIBRARY</span>
+            <div className="rail-head">
+              <span className="mono lab-label rail-pad">LIBRARY</span>
+              <span className="spacer" />
+              <span
+                className="row-act"
+                title="open Fletcher's data folder — downloaded media, caches, the clip library"
+                onClick={() => invoke("open_data_dir").catch(() => {})}
+              >
+                📁
+              </span>
+            </div>
             {tools && !tools.ffmpeg && (
               <div className="tool-banner">
                 <p>
@@ -5176,7 +5186,7 @@ function MainApp() {
             <div className="clips-rail-foot">
               <button onClick={importTrack}>+ Import track</button>
               <button onClick={openUrl} title="paste any link — yt-dlp extracts the audio into the library">
-                ⇓ From link
+                + From link
               </button>
               <button onClick={() => setGenOpen(true)} title="build a signal from primitives — it lands in the library like any track">
                 ∿ Generate
@@ -5515,7 +5525,9 @@ function MainApp() {
                         </p>
                         <div className="gen-actions">
                           {urlBusy != null && (
-                            <span className="mono dim-sm">{`downloading… ${Math.round(urlBusy)}%`}</span>
+                            <span className="mono dim-sm">
+                              {urlBusy < 0 ? "extracting audio…" : `downloading… ${Math.round(urlBusy)}%`}
+                            </span>
                           )}
                           <span className="spacer" />
                           <button

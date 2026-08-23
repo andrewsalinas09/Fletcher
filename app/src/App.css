@@ -2066,6 +2066,12 @@ button.ghost {
   white-space: pre-wrap;
 }
 
+.rail-head {
+  display: flex;
+  align-items: center;
+  padding-right: 10px;
+}
+
 .url-input {
   width: 100%;
   font-size: 12px;

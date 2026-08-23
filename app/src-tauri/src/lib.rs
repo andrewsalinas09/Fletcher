@@ -1589,6 +1589,18 @@ fn signal_update(id: i64, spec: SigSpec) -> Result<LibraryState, String> {
     library_state_now()
 }
 
+/// Reveal Fletcher's data folder (media, caches, clip library) in Explorer.
+#[tauri::command]
+fn open_data_dir() -> Result<(), String> {
+    let dir = data_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::process::Command::new("explorer")
+        .arg(&dir)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Validate a recipe (the text editor's Apply): returns the auto title it
 /// would get in the library.
 #[tauri::command]
@@ -1682,12 +1694,15 @@ async fn track_import_url(app: tauri::AppHandle, url: String) -> Result<LibraryS
                 "--audio-format",
                 "m4a",
                 "--newline",
-                // --print-json implies quiet, which silences the progress bar;
-                // --progress forces it back on — and in quiet mode it lands on
-                // STDERR (stdout stays clean for the JSON), so stderr is
-                // parsed for progress below, not just drained.
+                // --print-json implies quiet, and the quiet progress printer
+                // only emits the first and last lines (the 0→100 jump the
+                // user saw). --no-quiet restores the full stream; the JSON
+                // still goes to stdout, and only '{'-lines are read as JSON,
+                // so the extra chatter (all '['-prefixed) is harmless. Both
+                // streams are parsed — where progress lands varies by phase.
                 "--progress",
                 "--print-json",
+                "--no-quiet",
                 "--ffmpeg-location",
             ])
             .arg(&ffmpeg)
@@ -1698,8 +1713,12 @@ async fn track_import_url(app: tauri::AppHandle, url: String) -> Result<LibraryS
             .stderr(std::process::Stdio::piped())
             .spawn()
             .map_err(|e| format!("could not run yt-dlp: {e}"))?;
-        // "[download]  42.3% of ..." → 42.3
+        // "[download]  42.3% of ..." → 42.3; extraction phase → −1 (the
+        // ffmpeg tail has no percentage, but silence reads as a hang).
         fn dl_pct(line: &str) -> Option<f64> {
+            if line.starts_with("[ExtractAudio]") || line.starts_with("[Merger]") {
+                return Some(-1.0);
+            }
             line.strip_prefix("[download]")?
                 .trim()
                 .split('%')
@@ -3298,6 +3317,7 @@ pub fn run() {
             track_scrub_params,
             signal_create,
             signal_update,
+            open_data_dir,
             signal_preview,
             signal_validate,
             track_import_url,
