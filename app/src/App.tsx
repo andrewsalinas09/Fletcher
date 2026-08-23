@@ -394,27 +394,44 @@ function HistoryTree({
 /** The pop-out window: renders the shared tree, fed by the main window over events. */
 function PopoutHistory() {
   const [data, setData] = useState<HistTreeData | null>(null);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  const handleKey = (e: { ctrlKey: boolean; shiftKey: boolean; key: string; preventDefault: () => void }) => {
+    const k = e.key.toLowerCase();
+    if (e.ctrlKey && !e.shiftKey && k === "z") {
+      e.preventDefault();
+      emitTo("main", "hist-cmd", { type: "undo", id: 0 });
+    } else if ((e.ctrlKey && k === "y") || (e.ctrlKey && e.shiftKey && k === "z")) {
+      e.preventDefault();
+      emitTo("main", "hist-cmd", { type: "redo", id: 0 });
+    }
+  };
+
   useEffect(() => {
     const un = listen<HistTreeData>("hist-sync", (e) => setData(e.payload));
     emitTo("main", "hist-hello", {});
-    const onKey = (e: KeyboardEvent) => {
-      const k = e.key.toLowerCase();
-      if (e.ctrlKey && !e.shiftKey && k === "z") {
-        e.preventDefault();
-        emitTo("main", "hist-cmd", { type: "undo", id: 0 });
-      } else if ((e.ctrlKey && k === "y") || (e.ctrlKey && e.shiftKey && k === "z")) {
-        e.preventDefault();
-        emitTo("main", "hist-cmd", { type: "redo", id: 0 });
-      }
-    };
-    window.addEventListener("keydown", onKey);
+    const onKey = (e: KeyboardEvent) => handleKey(e);
+    // Capture phase + document: maximum chance of delivery in a secondary webview.
+    document.addEventListener("keydown", onKey, true);
+    const grabFocus = () => rootRef.current?.focus();
+    window.addEventListener("focus", grabFocus);
+    grabFocus();
     return () => {
       un.then((f) => f());
-      window.removeEventListener("keydown", onKey);
+      document.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("focus", grabFocus);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   return (
-    <div className="hist-panel full">
+    <div
+      className="hist-panel full"
+      ref={rootRef}
+      tabIndex={0}
+      onKeyDown={handleKey}
+      onPointerDown={() => rootRef.current?.focus()}
+      style={{ outline: "none" }}
+    >
       <div className="hist-head">
         <span className="mono hist-title">HISTORY</span>
         <span className="spacer" />
