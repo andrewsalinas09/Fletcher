@@ -1210,6 +1210,7 @@ function MainApp() {
       const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
       const existing = await WebviewWindow.getByLabel("history");
       if (existing) {
+        await existing.show().catch(() => {});
         await existing.setFocus();
       } else {
         new WebviewWindow("history", {

@@ -10,6 +10,7 @@
     "core:window:allow-inner-position",
     "core:window:allow-create",
     "core:window:allow-set-focus",
+    "core:window:allow-show",
     "core:webview:allow-create-webview-window",
     "dialog:default"
   ]

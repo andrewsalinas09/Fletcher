@@ -1273,10 +1273,13 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Close hides to the tray: hotkeys and profiles keep working.
+            // Only the MAIN window hides to the tray (hotkeys keep working);
+            // satellite windows (history pop-out) genuinely close.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
+                if window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
