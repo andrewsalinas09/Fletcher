@@ -111,9 +111,10 @@ nav {
   border-color: var(--ink);
 }
 
-.device-menu {
+.preset-menu.device-menu {
   right: 0;
   left: auto;
+  min-width: 320px;
 }
 
 /* ---------- preset line ---------- */
