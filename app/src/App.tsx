@@ -1529,14 +1529,15 @@ export default function App() {
             onClick={() => setSide("b")}
             {...tipProps(
               <div>
-                <div className="t-title">B — flat, level-matched</div>
+                <div className="t-title">B — flat, at the reference level</div>
                 <p>
-                  No filters — but not naive bypass: B carries a preamp equal to your
-                  chain's average loudness across the spectrum (pink-noise weighted), so
-                  flipping compares tone, not volume. Louder always sounds better; matched
-                  is honest.
+                  No filters — but not naive bypass: everything in Fletcher (flat, every
+                  preset, your chain mid-edit) is normalized to one global reference
+                  loudness, so flipping compares tone, not volume. Louder always sounds
+                  better; matched is honest. The reference will be calibratable in
+                  Settings.
                 </p>
-                <p className="t-vals mono">{`match offset ${fmtGain(ab.matchDb)} dB`}</p>
+                <p className="t-vals mono">{`reference ${fmtGain(ab.matchDb)} dB`}</p>
               </div>,
             )}
           >
