@@ -52,5 +52,8 @@ The mode needs to know listening level, and an external amp's analog knob is inv
 ## Q-17 · Preset-history tree: data model and UX — **Open**
 Journal format (every edit recorded, ADR-0006), undo-stack depth, the branch-fork keybinding, tree visualization/jumping UX, and wiring "blind A/B any two tree nodes" into the test engine. Prior art for undo *trees*: Vim/Emacs (`undo-tree`); unseen in audio tooling.
 
+## Q-18 · Moment isolation and spectral similarity — **Open**
+Raised 2026-08-22 mid-development. (a) Isolation UX: band-solo/band-sweep while looping a moment ("what frequencies are the thing I love here?") — essentially an interactive band-pass explorer over a clip. (b) Similarity: what spectral signature to extract (band-energy profile? MFCC-like? spectral centroid/tilt over the moment) and how to search the user's clip library / tracks for matches. (c) The MCP agent hook builds on both — API surface deferred to the ecosystem phase.
+
 ## Q-14 · Tuning × testing fusion mechanics — **Open**
 "Move a slider and it goes through the clips to highlight specific stuff." How literally: does adjusting a bass filter auto-queue the bass-heavy clip? Replay the full battery on demand? A/B against the pre-tweak state per clip, with optional randomized voting? Define the interaction loop so tuning and testing share one engine.

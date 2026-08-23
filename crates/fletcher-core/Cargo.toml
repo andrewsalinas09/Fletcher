@@ -1,0 +1,9 @@
+[package]
+name = "fletcher-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Fletcher's engine: Equalizer APO config parsing, filter math, device layer"
+
+[dependencies]
+wasapi = "0.24.0"

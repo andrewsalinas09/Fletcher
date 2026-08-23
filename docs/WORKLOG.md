@@ -12,6 +12,12 @@ Append-only session journal. Newest entry first.
 
 ---
 
+## 2026-08-22 — Phase 1 opens: workspace, Tauri scaffold, config engine v1
+
+- **Did:** Restructured to a cargo workspace: `crates/fletcher-core` (engine lib; spike moved to examples) + `app/` (Tauri 2 + React/TS via create-tauri-app, product name Fletcher, identifier net.asal.fletcher). Built the config engine's first component: a lossless line-preserving APO config parser (`config.rs`) — raw bytes kept per line, parsing as a view, byte-for-byte round-trip guaranteed; parses Preamp/Filter (12 kinds)/Include/Device/Channel, everything else degrades to Unknown. 7 integration tests green against real fixtures copied from the live APO install (Peace HD650 preset, root config, REW exports, multichannel). CI updated for workspace + frontend build. Mid-session feature idea filed: moment isolation + spectral similarity + future MCP agent hook (Q-18).
+- **Learned:** REW exports (which APO reads and users Include) use European locale numbers — decimal commas and dot thousands-separators (`8.000` = 8000 Hz). Comma lines safely degrade to Unknown; the dot-thousands ambiguity needs REW-dialect detection before Fletcher ever interprets such files → TB-22.
+- **Next:** Tauri command surface: read APO config via fletcher-core and render it in the UI (first end-to-end slice), then device layer + fletcher.txt writer + hotkey A/B.
+
 ## 2026-08-22 — Development kickoff: ADR-0007/0008, license, both spikes done
 
 - **Did:** Kickoff decisions via user Q&A: include-line wiring (ADR-0007), AutoEQ fetch-on-demand (ADR-0008), spikes-first, CI-from-start; Apache 2.0 license added. Live spike results on the dev machine (APO 1.4.2 + Peace, HD650, Schiit Modi 3+): config dir writable without elevation (Users: FullControl); Fletcher wired in as `Include: fletcher.txt` alongside Peace's line; hot-reload through included files confirmed audibly — "basically 0 latency" at 1 s toggle cadence; WASAPI exclusive mode confirmed to bypass APO (Q-04) via first Rust code (`src/bin/spike_bypass.rs`, wasapi 0.24) — but it evicts other apps ungracefully (Apple Music "error playback", no auto-recover) and bypasses Windows volume (own gain stage mandatory, TB-20). GitHub Actions CI added (fmt/clippy/test, windows-latest).
