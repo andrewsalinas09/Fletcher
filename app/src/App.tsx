@@ -3821,6 +3821,86 @@ function MainApp() {
     }
   };
 
+  // ---- the Finder: search clips across every track, assemble batteries ----
+  const [finderQ, setFinderQ] = useState("");
+  const [finderSel, setFinderSel] = useState<Set<number>>(new Set());
+  const [batName, setBatName] = useState("");
+  const [batMenu, setBatMenu] = useState(false);
+  /** Query operators: `tag:lows genre:electronic note:"sub"` + free text. */
+  const finderMatches = (): ClipRow[] => {
+    const clips = library?.clips ?? [];
+    const tracks = library?.tracks ?? [];
+    const terms = { tag: [] as string[], genre: [] as string[], note: [] as string[], free: [] as string[] };
+    const re = /(tag|genre|note):"([^"]*)"|(tag|genre|note):(\S+)|(\S+)/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(finderQ.toLowerCase())) != null) {
+      if (m[1]) terms[m[1] as "tag" | "genre" | "note"].push(m[2]);
+      else if (m[3]) terms[m[3] as "tag" | "genre" | "note"].push(m[4]);
+      else if (m[5]) terms.free.push(m[5]);
+    }
+    return clips.filter((c) => {
+      const t = tracks.find((x) => x.id === c.trackId);
+      const hay = `${c.name} ${t?.title ?? ""} ${t?.artist ?? ""} ${c.tags.join(" ")}`.toLowerCase();
+      return (
+        terms.tag.every((q) => c.tags.some((x) => x.toLowerCase().includes(q))) &&
+        terms.genre.every((q) => (t?.genre ?? "").toLowerCase().includes(q)) &&
+        terms.note.every((q) => (c.note ?? "").toLowerCase().includes(q)) &&
+        terms.free.every((q) => hay.includes(q))
+      );
+    });
+  };
+  /** How many recorded sessions exercised this clip (from trial provenance). */
+  const testedCount = (clipId: number) =>
+    sessions.filter((s) => s.log.some((t) => t.clipId === clipId)).length;
+  const toggleFinderSel = (id: number) =>
+    setFinderSel((cur) => {
+      const next = new Set(cur);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  const saveBattery = () => {
+    const ids = [...finderSel];
+    if (!ids.length) return;
+    const name = batName.trim();
+    if (!name) {
+      showNotice("give the battery a name first");
+      return;
+    }
+    invoke<{ batteries: BatteryRow[] }>("battery_create", { name, clipIds: ids })
+      .then((s) => {
+        setBatteries(s.batteries);
+        setBatName("");
+        setBatMenu(false);
+        const made = s.batteries.find((b) => b.name === name);
+        if (made) setLabMaterial(made.id);
+        showNotice(`battery "${name}" saved — it's selected under MATERIAL`);
+      })
+      .catch((e) => showNotice(String(e)));
+  };
+  const overwriteBattery = (id: number) => {
+    invoke<{ batteries: BatteryRow[] }>("battery_set_clips", { id, clipIds: [...finderSel] })
+      .then((s) => {
+        setBatteries(s.batteries);
+        setBatMenu(false);
+        showNotice("battery updated");
+      })
+      .catch((e) => showNotice(String(e)));
+  };
+  const deleteBattery = (id: number) => {
+    invoke<{ batteries: BatteryRow[] }>("battery_delete", { id })
+      .then((s) => {
+        setBatteries(s.batteries);
+        if (labMaterial === id) setLabMaterial(null);
+      })
+      .catch((e) => showNotice(String(e)));
+  };
+  /** Load a battery's clips into the finder selection for editing. */
+  const editBattery = (b: BatteryRow) => {
+    setFinderSel(new Set(b.clipIds));
+    setBatName(b.name);
+  };
+
   /** Start from the full setup — the unified trial engine. */
   const beginTrial = async () => {
     try {
@@ -4100,6 +4180,7 @@ function MainApp() {
     refreshPresets();
     loadSessions();
     loadBatteries();
+    loadLibrary(); // the Lab's finder searches clips across every track
     loadSettings(); // the A/B bar's matched/unmatched state needs it
     loadAutostart();
     const unlisten = listen("apo-config-changed", () => pushRef.current.config());
@@ -5651,7 +5732,28 @@ function MainApp() {
                   onClick={() => setLabMaterial(b.id)}
                 >
                   {b.name}
-                  <span className="mono dim-sm">{`${b.clipIds.length} clip${b.clipIds.length === 1 ? "" : "s"} · in-engine, sample-accurate`}</span>
+                  <span className="mono dim-sm">{`${b.clipIds.length} clip${b.clipIds.length === 1 ? "" : "s"} · in-engine`}</span>
+                  <span className="spacer" />
+                  <span
+                    className="row-act"
+                    title="load into the finder to edit"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      editBattery(b);
+                    }}
+                  >
+                    ✎
+                  </span>
+                  <span
+                    className="row-act"
+                    title="delete this battery (clips stay)"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      deleteBattery(b.id);
+                    }}
+                  >
+                    ×
+                  </span>
                 </div>
               ))}
               {batteries.length === 0 && (
@@ -5709,6 +5811,94 @@ function MainApp() {
             <button className="primary lab-begin" onClick={() => beginTrial()}>
               Begin — enters focus mode
             </button>
+          </div>
+
+          <div className="lab-finder">
+            <span className="mono lab-label finder-pad">FINDER — build the battery</span>
+            <div className="finder-search-wrap">
+              <input
+                className="finder-search mono"
+                placeholder={'search clips — tag:lows genre:electronic note:"sub"'}
+                value={finderQ}
+                onChange={(e) => setFinderQ(e.target.value)}
+              />
+              <div className="finder-meta mono dim-sm">
+                <span>{`${finderMatches().length} clip${finderMatches().length === 1 ? "" : "s"} match`}</span>
+                <span className="spacer" />
+                {finderSel.size > 0 && (
+                  <span className="reveal-link" onClick={() => setFinderSel(new Set())}>
+                    clear selection
+                  </span>
+                )}
+              </div>
+            </div>
+            <div className="finder-list">
+              {finderMatches().length === 0 && (
+                <p className="dim-sm finder-pad">
+                  {library?.clips.length
+                    ? "nothing matches that query"
+                    : "no clips yet — cut some in Clip Studio first"}
+                </p>
+              )}
+              {finderMatches().map((c) => {
+                const t = library?.tracks.find((x) => x.id === c.trackId);
+                const n = testedCount(c.id);
+                const sel = finderSel.has(c.id);
+                return (
+                  <div
+                    key={c.id}
+                    className={`finder-row ${sel ? "sel" : ""}`}
+                    onClick={() => toggleFinderSel(c.id)}
+                  >
+                    <span className={`f-check ${sel ? "on" : ""}`}>{sel ? "✓" : ""}</span>
+                    {c.kind === "moment" ? (
+                      <span className="mono f-moment">▸</span>
+                    ) : (
+                      <span className="clip-dot" style={{ background: clipDotColor(c.tags) }} />
+                    )}
+                    <span className={`f-name ${sel ? "b" : ""}`}>{c.name}</span>
+                    <span className="dim-sm f-track">{`${t?.title ?? "?"} · ${fmtTime(Math.max(0, c.tOut - c.tIn))}`}</span>
+                    <span className="spacer" />
+                    <span className="mono dim-sm">{n > 0 ? `tested ${n}×` : "new"}</span>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="finder-foot">
+              <span className="dim-sm">{`${finderSel.size} selected`}</span>
+              <span className="spacer" />
+              <span style={{ position: "relative" }}>
+                <button disabled={finderSel.size === 0} onClick={() => setBatMenu((o) => !o)}>
+                  Save battery ▾
+                </button>
+                {batMenu && (
+                  <div className="preset-menu bat-menu">
+                    <div className="bat-new">
+                      <input
+                        className="trials-input mono bat-name"
+                        placeholder="battery name"
+                        value={batName}
+                        onChange={(e) => setBatName(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") saveBattery();
+                        }}
+                      />
+                      <button className="primary" onClick={saveBattery}>
+                        Save new
+                      </button>
+                    </div>
+                    {batteries.length > 0 && (
+                      <span className="mono lab-label c-sect">OVERWRITE</span>
+                    )}
+                    {batteries.map((b) => (
+                      <div key={b.id} className="c-opt" onClick={() => overwriteBattery(b.id)}>
+                        {`${b.name} · ${b.clipIds.length} → ${finderSel.size} clips`}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </span>
+            </div>
           </div>
 
           <div className="lab-record">
