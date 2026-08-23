@@ -292,10 +292,62 @@ nav {
   min-width: 300px;
 }
 
+.hist-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 590;
+  background: rgb(20 23 26 / 25%);
+}
+
+.hist-panel {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 84vw;
+  height: 80vh;
+  z-index: 600;
+  background: var(--paper);
+  border: 2px solid var(--ink);
+  box-shadow: 6px 6px 0 rgb(20 23 26 / 15%);
+  display: flex;
+  flex-direction: column;
+}
+
+.hist-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 18px;
+  border-bottom: 2px solid var(--ink);
+}
+
+.hist-title {
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  font-weight: 600;
+}
+
+.hist-close {
+  font-size: 18px;
+  color: var(--dim);
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.hist-close:hover {
+  color: var(--ink);
+}
+
 .hist-viewport {
-  max-height: 58vh;
-  max-width: 420px;
+  flex: 1;
   overflow: auto;
+  cursor: grab;
+  background: var(--panel);
+}
+
+.hist-viewport:active {
+  cursor: grabbing;
 }
 
 .hist-graph {
@@ -360,20 +412,29 @@ nav {
 
 .tree-label {
   font-family: "IBM Plex Sans", sans-serif;
-  font-size: 9.5px;
+  font-size: 10.5px;
+  font-weight: 500;
   fill: var(--ink);
   text-anchor: middle;
 }
 
 .tree-time {
   font-family: "IBM Plex Mono", monospace;
-  font-size: 7.5px;
+  font-size: 8px;
   fill: var(--dim);
   text-anchor: middle;
 }
 
+.tree-label.inv {
+  fill: var(--paper);
+}
+
+.tree-time.inv {
+  fill: var(--line-strong);
+}
+
 .tree-del {
-  font-size: 13px;
+  font-size: 17px;
   fill: var(--dim);
   visibility: hidden;
   cursor: pointer;
@@ -385,6 +446,22 @@ nav {
 
 .tree-del:hover {
   fill: var(--boost);
+}
+
+.tree-confirm {
+  cursor: pointer;
+}
+
+.tree-confirm rect {
+  fill: var(--boost);
+}
+
+.tree-confirm text {
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 10.5px;
+  font-weight: 600;
+  fill: var(--paper);
+  text-anchor: middle;
 }
 
 .warn-chip {

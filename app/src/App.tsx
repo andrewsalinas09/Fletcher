@@ -594,6 +594,85 @@ export default function App() {
   const [histVersion, setHistVersion] = useState(0);
   const [histOpen, setHistOpen] = useState(false);
   const [histZoom, setHistZoom] = useState(1);
+  const [armedDel, setArmedDel] = useState<{ id: number; count: number } | null>(null);
+  const armedTimer = useRef<number | null>(null);
+  const histVp = useRef<HTMLDivElement | null>(null);
+  const panState = useRef<{ x: number; y: number; sl: number; st: number } | null>(null);
+
+  const subtreeCount = (id: number): number => {
+    const h = hist.current;
+    if (!h) return 0;
+    let count = 0;
+    const stack = [id];
+    while (stack.length) {
+      const n = stack.pop()!;
+      count++;
+      stack.push(...(h.nodes.get(n)?.children ?? []));
+    }
+    return count;
+  };
+
+  const requestDelete = (id: number) => {
+    const count = subtreeCount(id);
+    if (count <= 1) {
+      deleteNode(id);
+      setArmedDel(null);
+      return;
+    }
+    if (armedDel?.id === id) {
+      deleteNode(id);
+      setArmedDel(null);
+      return;
+    }
+    setArmedDel({ id, count });
+    if (armedTimer.current != null) window.clearTimeout(armedTimer.current);
+    armedTimer.current = window.setTimeout(() => setArmedDel(null), 3000);
+  };
+
+  // Canvas navigation: plain wheel zooms at the cursor (non-passive listener —
+  // React's root wheel handlers are passive and can't preventDefault).
+  useEffect(() => {
+    const vp = histVp.current;
+    if (!histOpen || !vp) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const rect = vp.getBoundingClientRect();
+      const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+      setHistZoom((z) => {
+        const z2 = Math.max(0.3, Math.min(3, z * factor));
+        const ratio = z2 / z;
+        const ox = e.clientX - rect.left;
+        const oy = e.clientY - rect.top;
+        const sl = vp.scrollLeft;
+        const st = vp.scrollTop;
+        requestAnimationFrame(() => {
+          vp.scrollLeft = (sl + ox) * ratio - ox;
+          vp.scrollTop = (st + oy) * ratio - oy;
+        });
+        return z2;
+      });
+    };
+    vp.addEventListener("wheel", onWheel, { passive: false });
+    return () => vp.removeEventListener("wheel", onWheel);
+  }, [histOpen]);
+
+  const treePanDown = (e: React.PointerEvent) => {
+    if ((e.target as Element).closest(".tree-g")) return; // nodes stay clickable
+    const vp = histVp.current;
+    if (!vp) return;
+    panState.current = { x: e.clientX, y: e.clientY, sl: vp.scrollLeft, st: vp.scrollTop };
+    (e.currentTarget as Element).setPointerCapture(e.pointerId);
+  };
+  const treePanMove = (e: React.PointerEvent) => {
+    const p = panState.current;
+    const vp = histVp.current;
+    if (!p || !vp) return;
+    vp.scrollLeft = p.sl - (e.clientX - p.x);
+    vp.scrollTop = p.st - (e.clientY - p.y);
+  };
+  const treePanUp = () => {
+    panState.current = null;
+  };
   const wheelCommit = useRef<number | null>(null);
 
   const snapOf = (filters: EqFilter[]): ChainSnap =>
@@ -1459,13 +1538,14 @@ export default function App() {
                 {`⟲ ${histStats.edits}${histStats.branches ? ` · ⑂${histStats.branches}` : ""}`}
               </span>
               {histOpen &&
+                createPortal(
                 (() => {
                   const h = hist.current;
                   if (!h) return null;
                   const info = new Map(histRows.map((r) => [r.id, r]));
-                  const NODE_W = 84;
-                  const LEVEL_H = 62;
-                  const PAD = 40;
+                  const NODE_W = 130;
+                  const LEVEL_H = 130;
+                  const PAD = 90;
                   // Tidy family-tree layout: leaves get slots, parents center
                   // over their children.
                   let leaf = 0;
@@ -1484,89 +1564,112 @@ export default function App() {
                   };
                   assign(0, 0);
                   const maxDepth = histRows.reduce((m, r) => Math.max(m, r.depth), 0);
-                  const W = Math.max(leaf, 1) * NODE_W + PAD * 2 - NODE_W / 2;
-                  const H = (maxDepth + 1) * LEVEL_H + PAD + 26;
+                  const W = Math.max(Math.max(leaf, 1) * NODE_W + PAD * 2, 900);
+                  const H = Math.max((maxDepth + 1) * LEVEL_H + PAD * 2, 600);
                   return (
-                    <div className="preset-menu hist-menu">
-                      <div
-                        className="hist-viewport"
-                        onWheel={(e) => {
-                          if (!e.ctrlKey) return; // plain wheel scrolls/pans
-                          e.preventDefault();
-                          setHistZoom((z) =>
-                            Math.max(0.4, Math.min(2.5, z * (e.deltaY < 0 ? 1.15 : 1 / 1.15))),
-                          );
-                        }}
-                      >
-                        <div className="hist-graph" style={{ width: W * histZoom, height: H * histZoom }}>
-                          <div className="hist-scale" style={{ transform: `scale(${histZoom})`, width: W, height: H }}>
-                            <svg width={W} height={H}>
-                              {histRows.map((r) => {
-                                const n = h.nodes.get(r.id);
-                                if (!n || n.parent == null) return null;
-                                const p = pos.get(n.parent)!;
-                                const c = pos.get(r.id)!;
-                                const px = p.x + PAD;
-                                const py = p.y + PAD;
-                                const cxx = c.x + PAD;
-                                const cyy = c.y + PAD;
-                                return (
-                                  <path
-                                    key={`e${r.id}`}
-                                    d={`M ${px} ${py + 9} C ${px} ${py + 34}, ${cxx} ${cyy - 34}, ${cxx} ${cyy - 9}`}
-                                    className={`hist-edge ${r.onPath ? "on" : ""}`}
-                                  />
-                                );
-                              })}
-                              {histRows.map((r) => {
-                                const c = pos.get(r.id)!;
-                                const x = c.x + PAD;
-                                const y = c.y + PAD;
-                                const inf = info.get(r.id)!;
-                                return (
-                                  <g
-                                    key={`n${r.id}`}
-                                    className={`tree-g ${inf.onPath ? "on" : "off"}`}
-                                    onClick={() => jumpTo(r.id)}
-                                  >
-                                    <circle
-                                      cx={x}
-                                      cy={y}
-                                      r={inf.isCurrent ? 9 : 7}
-                                      className={`hist-node ${inf.isCurrent ? "current" : ""} ${inf.onPath ? "on" : ""}`}
+                    <>
+                      <div className="hist-backdrop" onClick={() => setHistOpen(false)} />
+                      <div className="hist-panel">
+                        <div className="hist-head">
+                          <span className="mono hist-title">{`HISTORY — ${presets.active ?? "chain"}`}</span>
+                          <span className="mono dim-sm">{`${histStats.edits} steps${histStats.branches ? ` · ${histStats.branches} branch points` : ""}`}</span>
+                          <span className="spacer" />
+                          <span className="hist-close" onClick={() => setHistOpen(false)}>×</span>
+                        </div>
+                        <div
+                          className="hist-viewport"
+                          ref={histVp}
+                          onPointerDown={treePanDown}
+                          onPointerMove={treePanMove}
+                          onPointerUp={treePanUp}
+                        >
+                          <div className="hist-graph" style={{ width: W * histZoom, height: H * histZoom }}>
+                            <div className="hist-scale" style={{ transform: `scale(${histZoom})`, width: W, height: H }}>
+                              <svg width={W} height={H}>
+                                {histRows.map((r) => {
+                                  const n = h.nodes.get(r.id);
+                                  if (!n || n.parent == null) return null;
+                                  const p = pos.get(n.parent)!;
+                                  const c = pos.get(r.id)!;
+                                  const px = p.x + PAD;
+                                  const py = p.y + PAD;
+                                  const cxx = c.x + PAD;
+                                  const cyy = c.y + PAD;
+                                  return (
+                                    <path
+                                      key={`e${r.id}`}
+                                      d={`M ${px} ${py + 26} C ${px} ${py + 70}, ${cxx} ${cyy - 70}, ${cxx} ${cyy - 26}`}
+                                      className={`hist-edge ${r.onPath ? "on" : ""}`}
                                     />
-                                    <text x={x} y={y + 22} className="tree-label">
-                                      {r.label}
-                                    </text>
-                                    <text x={x} y={y + 33} className="tree-time">
-                                      {new Date(r.ts).toLocaleTimeString([], { timeStyle: "short" })}
-                                    </text>
-                                    {r.id !== 0 && (
-                                      <text
-                                        x={x + 12}
-                                        y={y - 8}
-                                        className="tree-del"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          deleteNode(r.id);
-                                        }}
-                                      >
-                                        ×
+                                  );
+                                })}
+                                {histRows.map((r) => {
+                                  const c = pos.get(r.id)!;
+                                  const x = c.x + PAD;
+                                  const y = c.y + PAD;
+                                  const inf = info.get(r.id)!;
+                                  const armed = armedDel?.id === r.id;
+                                  return (
+                                    <g
+                                      key={`n${r.id}`}
+                                      className={`tree-g ${inf.onPath ? "on" : "off"}`}
+                                      onClick={() => jumpTo(r.id)}
+                                    >
+                                      {/* generous invisible hit area keeps hover alive en route to × */}
+                                      <circle cx={x} cy={y} r={44} fill="transparent" />
+                                      <circle
+                                        cx={x}
+                                        cy={y}
+                                        r={inf.isCurrent ? 28 : 24}
+                                        className={`hist-node ${inf.isCurrent ? "current" : ""} ${inf.onPath ? "on" : ""}`}
+                                      />
+                                      <text x={x} y={y - 1} className={`tree-label ${inf.isCurrent ? "inv" : ""}`}>
+                                        {r.label}
                                       </text>
-                                    )}
-                                  </g>
-                                );
-                              })}
-                            </svg>
+                                      <text x={x} y={y + 11} className={`tree-time ${inf.isCurrent ? "inv" : ""}`}>
+                                        {new Date(r.ts).toLocaleTimeString([], { timeStyle: "short" })}
+                                      </text>
+                                      {r.id !== 0 && !armed && (
+                                        <text
+                                          x={x + 26}
+                                          y={y - 22}
+                                          className="tree-del"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            requestDelete(r.id);
+                                          }}
+                                        >
+                                          ×
+                                        </text>
+                                      )}
+                                      {armed && (
+                                        <g
+                                          className="tree-confirm"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            requestDelete(r.id);
+                                          }}
+                                        >
+                                          <rect x={x - 52} y={y - 56} width={104} height={22} />
+                                          <text x={x} y={y - 41}>{`delete ${armedDel.count} steps?`}</text>
+                                        </g>
+                                      )}
+                                    </g>
+                                  );
+                                })}
+                              </svg>
+                            </div>
                           </div>
                         </div>
+                        <div className="hist-hint mono">
+                          click a node to jump (audibly) · scroll = zoom · drag empty space = pan · × prunes (asks first for whole branches)
+                        </div>
                       </div>
-                      <div className="hist-hint mono">
-                        click a node to jump (audibly) · ctrl+scroll zoom · scroll pans · × prunes a branch
-                      </div>
-                    </div>
+                    </>
                   );
-                })()}
+                })(),
+                document.body,
+              )}
             </span>
             <span className="dim-sm">
               drag handles · scroll for Q · locked filters: duplicate from live to edit
