@@ -430,24 +430,50 @@ export default function App() {
   const sel = selected != null && state ? state.filters[selected] : null;
 
 
-  const autoRange = useMemo(() => {
+  // ---- y scale: explicit and interaction-inert (the Pro-Q resolution) ----
+  // auto re-fits ONLY at non-interactive moments; a chosen scale never moves.
+  const SCALES = [
+    { label: "±6", v: 6 },
+    { label: "±12", v: 12 },
+    { label: "±18", v: 18 },
+    { label: "±30", v: 33 }, // margin so a ±30 dot isn't pinned to the pixel edge
+  ];
+  const [yScale, setYScale] = useState<number | "auto">(() => {
+    try {
+      const s = localStorage.getItem("fletcher.yscale");
+      return s === null || s === "auto" ? "auto" : Number(s);
+    } catch {
+      return "auto";
+    }
+  });
+  const pickScale = (v: number | "auto") => {
+    setYScale(v);
+    try {
+      localStorage.setItem("fletcher.yscale", String(v));
+    } catch {
+      /* per-viewer nicety only */
+    }
+  };
+
+  const autoFit = useMemo(() => {
     if (!state) return 12;
     const peaks = [
       ...state.sumDb.map((db) => Math.abs(db - state.preampDb)),
       ...state.filters.filter((f) => f.enabled).map((f) => Math.abs(f.gainDb)),
     ];
     const maxAbs = peaks.length ? Math.max(...peaks) : 0;
-    return Math.max(12, Math.ceil((maxAbs + 3) / 3) * 3);
+    return SCALES.find((s) => s.v >= maxAbs + 1.5)?.v ?? 33;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state]);
 
-  // While dragging the scale is frozen (no moving target); hitting the edge
-  // doubles it in one jump; releasing re-engages auto-fit.
-  const [dragRange, setDragRange] = useState<number | null>(null);
-  const dbRange = dragRange ?? autoRange;
+  // Freeze the mapping during a drag even in auto mode: the fit is only
+  // allowed to change while nothing is being held.
+  const frozenRange = useRef(12);
+  if (!dragging.current) frozenRange.current = yScale === "auto" ? autoFit : yScale;
+  const dbRange = frozenRange.current;
 
-  const yOfR = (db: number, r: number) => GH / 2 - (db / r) * (GH / 2 - 30);
   const dbOfR = (y: number, r: number) => ((GH / 2 - y) / (GH / 2 - 30)) * r;
-  const yOf = (db: number) => yOfR(db, dbRange);
+  const yOf = (db: number) => GH / 2 - (db / dbRange) * (GH / 2 - 30);
 
   const gridSteps = useMemo(() => {
     const minor: number[] = [];
@@ -520,18 +546,10 @@ export default function App() {
     }
     setSelected(i);
     dragging.current = true;
-    // No mid-drag rescaling, ever: grant generous headroom up front instead.
-    // Scale = auto-fit or current value + 12 dB, whichever is larger, frozen
-    // for the whole gesture. Nothing changes under your hand.
-    const roomy = Math.min(
-      48,
-      Math.max(autoRange, Math.ceil((Math.abs(f.gainDb) + 12) / 3) * 3),
-    );
-    setDragRange(roomy);
     // Constant grab offset: wherever on the dot you grabbed, that relationship
     // holds for the whole drag (a few px at most — no warping, no magic).
     const p = svgPoint(e);
-    grabOffset.current = { dx: xOf(f.fcHz) - p.x, dy: yOfR(f.gainDb, roomy) - p.y };
+    grabOffset.current = { dx: xOf(f.fcHz) - p.x, dy: yOf(f.gainDb) - p.y };
     (e.target as Element).setPointerCapture(e.pointerId);
   };
 
@@ -551,7 +569,6 @@ export default function App() {
   const endDrag = (_i: number) => () => {
     if (!dragging.current) return;
     dragging.current = false;
-    setDragRange(null); // release → auto-fit
     const cur = stateRef.current;
     if (cur) pushChain(cur.filters, true);
   };
@@ -805,6 +822,33 @@ export default function App() {
           </div>
 
           <div className="graph-panel">
+            <div className="scale-ctl">
+              <span
+                className={`scale-opt ${yScale === "auto" ? "on" : ""}`}
+                onClick={() => pickScale("auto")}
+                {...tipProps(
+                  <div>
+                    <div className="t-title">Auto scale</div>
+                    <p>
+                      Fits the view to your loudest filter or curve peak — but only re-fits
+                      between interactions, never while you're dragging. Pick a fixed scale
+                      when you want big sweeps: the mapping then never changes at all.
+                    </p>
+                  </div>,
+                )}
+              >
+                auto
+              </span>
+              {SCALES.map((s) => (
+                <span
+                  key={s.v}
+                  className={`scale-opt ${yScale === s.v ? "on" : ""}`}
+                  onClick={() => pickScale(s.v)}
+                >
+                  {s.label}
+                </span>
+              ))}
+            </div>
             <svg viewBox={`0 0 ${GW} ${GH}`} className="graph" ref={svgRef}>
               {gridSteps.minor.map((db) => (
                 <line key={`n${db}`} x1={0} x2={GW} y1={yOf(db)} y2={yOf(db)} className="grid-minor" />

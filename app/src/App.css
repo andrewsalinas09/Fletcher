@@ -253,6 +253,38 @@ button.ghost {
   flex: 1;
   min-height: 0;
   display: flex;
+  position: relative;
+}
+
+.scale-ctl {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  z-index: 5;
+  display: flex;
+  gap: 2px;
+}
+
+.scale-opt {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 9.5px;
+  padding: 2.5px 7px;
+  border: 1px solid var(--line-mid);
+  background: var(--panel);
+  color: var(--dim);
+  cursor: pointer;
+  user-select: none;
+}
+
+.scale-opt:hover {
+  border-color: var(--ink);
+  color: var(--ink);
+}
+
+.scale-opt.on {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
 }
 
 .graph {
