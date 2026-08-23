@@ -38,6 +38,8 @@ The full feature vision, captured from idea-mapping sessions. Tiering into v1-sp
 - **Moment isolation + similarity search** (Q-18): inside a loaded song, interactively sweep/filter to isolate *which frequencies make the part you love sound like that* — then search your library for material with a similar spectral character to test against. Turns "I like this, whatever it is" into a testable, named preference.
 - **Agent hook (future, MCP)**: expose Fletcher's analysis as an MCP server so an AI agent can be asked "at 2:53 the voice sounds amazing — what is that?" and answer with real spectral data (and mark the moment as a clip). Ecosystem phase.
 
+- **Signal generator** (in Clip Studio): create test signals as first-class library items — white/pink noise, sweeps (linear/log), sine tones, band-limited noise — taggable and battery-able like any clip. One generator feeds three features: ABX material that music can't provide, the Fingerprint Lab's measurement sweeps, and the mic-free hearing profile's band-noise pairs (Q-19). Generated at safe levels (TB-20).
+
 ## The Fingerprint Lab (own tab, advanced tier — Q-12, Q-15)
 
 Nothing on the market does this. Its own tab, visibly its own setup:
