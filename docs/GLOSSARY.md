@@ -24,6 +24,11 @@
 - **HpTF** — headphone transfer function; the response a specific headphone produces at your eardrum.
 - **Deconvolution** — removing a known transfer function from a signal by applying its inverse filter; numerically dangerous without regularization (TB-16).
 - **Reinsertion variance** — measurement-to-measurement spread caused by re-seating mics/headphones; the dominant error source in HpTF work (TB-14).
+- **Reference level** — the single global loudness (dB, default −8) every chain is normalized to via `matched_preamp`; makes all comparisons level-matched by construction (Q-06, ADR-0003).
+- **Undo graph / history tree** — branching record of completed gestures; nodes hold full chain snapshots; per-preset, persisted, exportable (Q-17).
+- **The rail** — the fixed undo/redo track laid when you click a node: its ancestry up to root plus its descent via latest-created children; Ctrl+Z/Shift+Z walk it without re-deriving.
+- **Trial room** — the full-window focus mode where an ABX session runs (A/B/X targets, neutral progress dots, hidden-by-default score).
+- **The Record** — the Lab's session history: plain-language verdicts, labeled replay, provenance (including mid-session score reveals).
 - **Fingerprint** — Fletcher's term for one measured headphone response at one person's ears: the coupled HpTF∘ear transfer function, with reseating statistics attached.
 - **Bridging** — transferring a fingerprint across people via a headphone both have measured: (X_on_them − shared_on_them) + shared_on_you ≈ X on your ears. Valid mainly below ~5–6 kHz (TB-18).
 - **Clip Studio** — the curation view (waveform + spectrogram + span marking + tags) where users build their clip libraries (ADR-0004).

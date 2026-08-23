@@ -55,6 +55,16 @@ subsystem owns one folder.
 Media itself (imported tracks) is referenced in place, never copied, unless
 the user asks; annotations and derived data live in Fletcher's folders.
 
+## Implementation state (2026-08-23)
+
+**Command surface** (`app/src-tauri/src/lib.rs`): `eq_state` (live config → filters + computed responses, per-source ownership), `set_fletcher_chain` (chain → matched preamp → atomic write; saves into active preset; lands on A), preset suite (`presets_state/switch/create/copy_from_source/duplicate/delete/rename`), `autoeq_search/import`, `devices_list/device_set_default` (IPolicyConfig), `ab_info/ab_set`, ABX suite (`abx_start/audition/vote/reveal/cancel/sessions` — X assignments never leave Rust), `parse_filters` (clipboard paste), `history_save/load/export/import`. Level law: `matched_preamp` normalizes every chain's log-grid mean response to the global reference (`referenceDb`, default −8), tightened to clip-safe (TB-06).
+
+**Event channels**: `apo-config-changed` (Rust watcher → UI refresh, suppressed mid-drag), `ab-changed` (hotkey/tray flips), `abx-audition` (hotkey cycling in sessions), `hist-sync` (main → pop-out tree), `hist-cmd` (pop-out/Rust shortcuts → main: jump/del/undo/redo).
+
+**Frontend anatomy** (`app/src/App.tsx`): `App` routes by `?view=history` → `PopoutHistory` else `MainApp`. `MainApp` holds all state: eq state, presets, A/B, ABX, selection (primary + multi-set), the undo graph (`hist` ref: nodes with snapshots; the rail), tooltips (1.5s still-hover layer), y-scale (interaction-inert). `HistoryTree` is the shared canvas component. Editing writes are optimistic + 60ms-throttled; mid-drag server echoes merge under local drag values.
+
+**Platform laws** (verified the hard way): satellite webviews get no DOM keyboard events → focus-scoped OS shortcuts (Q-20); Windows renames need sharing-violation retries (`fsx`); Peace zeroes peace.txt when toggled off (its state lives in `.peace` files, importable); the main window close-hides to tray, satellites really close.
+
 ## Committed so far
 
 - Rust core (ADR-0001).

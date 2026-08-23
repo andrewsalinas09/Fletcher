@@ -4,7 +4,7 @@ Scope authority (ADR-0006): everything in FEATURES.md ships; phases order it by 
 
 ## Current focus
 
-**Phase 1 — skeleton.** Phase 0 closed 2026-08-22: nine ADRs, both spikes verified live (hot-reload "basically 0 latency"; exclusive-mode bypass confirmed → ADR-0009). Next up: restructure to the Tauri 2 scaffold, config engine with lossless round-trip tests (first fixture: the live Peace HD650 preset), device layer, tray + hotkey, sighted system-wide A/B. Folded in from Phase 0: normative VISION rewrite, fingerprint-format sketch (Q-15).
+**Phase 2, mid-flight (2026-08-23).** Done: curve/strip editing (+multi-select), presets (AutoEQ import, Peace import, rename, filter clipboard), global reference loudness, blind ABX with stats + labeled replay (first result 13/16 p=0.011), undo graph (canvas, pop-out, persistence, export, rail). **Next, in rough order:** Q-24 history inspector (diffs, difference curve, node-vs-node ABX — closes Q-17), Settings tab (filter-ordering toggle owed since the mockups; reference-level calibration placeholder), adaptive/sequential ABX, preference voting. Still folded forward: normative VISION rewrite, fingerprint-format sketch (Q-15).
 
 ## Phases
 

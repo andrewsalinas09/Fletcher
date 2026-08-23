@@ -2,34 +2,44 @@
 
 A modern, open-source frontend for Equalizer APO on Windows — parametric EQ that is genuinely pleasant to use, plus the feature no EQ frontend has ever shipped: honest, level-matched, blind ABX listening tests with real statistics. Named for the Fletcher–Munson equal-loudness curves.
 
-## Current status
+## Current status (2026-08-23)
 
-**Design phase, late.** `src/main.rs` is an empty scaffold. Committed: Rust core (ADR-0001), Tauri 2 + TypeScript/React shell (ADR-0005), grey-don't-hide UX (ADR-0002), level-matching by default (ADR-0003), user-curated clip libraries (ADR-0004), everything-ships-in-phases scope (ADR-0006). See ROADMAP for current focus.
+**Phase 2, mid-flight — a working, daily-drivable app.** Shipped and verified on the dev machine (HD650 + Schiit Modi 3+, Equalizer APO 1.4.2 + Peace installed): live curve/strip EQ editing with multi-select, presets (AutoEQ fetch-import, Peace import incl. .peace fallback, rename/duplicate/copy-paste of filters as APO text), global reference-loudness normalization, tray + global Ctrl+Shift+A level-matched A/B, blind ABX with exact binomial stats + labeled replay (first real result: 13/16, p=0.011), branching undo graph with family-tree canvas, persistence, export/import, and the app's first pop-out window. Remaining in Phase 2: Settings tab (ordering toggle, reference calibration placeholder), adaptive/sequential ABX, preference voting, history inspector (Q-24).
 
-## Doc map — where everything lives
+## Repo layout
+
+| Path | Contains |
+|---|---|
+| `crates/fletcher-core/` | Engine lib: lossless APO config parser/writer (`config.rs`), RBJ biquad DSP (`dsp.rs`), APO detection (`apo.rs`), devices + IPolicyConfig default-switch (`devices.rs`), atomic writes w/ Windows retry (`fsx.rs`), preset store (`presets.rs`), .peace importer (`peace.rs`), binomial/xorshift (`stats.rs`). ~30 tests incl. real-fixture round-trips (`tests/`). Spike probe in `examples/`. |
+| `app/` | Tauri 2 + React/TS. `src-tauri/src/lib.rs` = the whole command surface + tray/hotkeys/watcher/ABX session engine. `src/App.tsx` = the whole UI (MainApp + PopoutHistory + HistoryTree). `src/App.css` = ADR-0010 tokens. |
+| `design/` | The design canvas working files (.dc.html artboards; published at claude.ai/code/artifact/759d400e-2583-45f9-bbd0-3008d41f8cc8). Reference, not runtime. |
+| `docs/` | The knowledge system — see map below. |
+
+**Run:** `cd app && npm run tauri dev`. **Verify:** `cargo test --workspace`, `cargo clippy --workspace --all-targets` (CI enforces `-D warnings`), `npx tsc --noEmit` in `app/`. Data dir: `%APPDATA%\Fletcher\` (layout documented in ARCHITECTURE).
+
+## Doc map
 
 | File | Contains | Read when |
 |---|---|---|
-| `docs/VISION.md` | Why this exists, north-star goals, what it feels like to use | Starting any session |
-| `docs/ARCHITECTURE.md` | Current-state design: components, data flow, the two A/B engines | Touching design |
-| `docs/FEATURES.md` | The full feature map from idea-mapping; tiering pending Q-07 | Scoping any feature work |
-| `docs/decisions/` | One ADR per settled decision, with the *why* | Before proposing any design change |
-| `docs/OPEN-QUESTIONS.md` | Unresolved debates, each with a Q-ID and status | Before designing anything new |
-| `docs/TESTBED.md` | Every known edge case (TB-IDs); the design acceptance suite | Before AND after any design change |
-| `docs/GLOSSARY.md` | Domain terms (APO, biquad, LUFS, ABX…) | A term is unfamiliar |
-| `docs/research/` | External facts with sources (APO mechanics, competitor landscape) | Verifying a claim about the outside world |
-| `docs/ROADMAP.md` | Phases and **current focus** | Starting any session |
-| `docs/WORKLOG.md` | Append-only session journal | Resuming after a gap |
-| `docs/archive/` | Raw brain-dumps and chat digests, verbatim | Almost never (history only) |
+| `docs/VISION.md` | Why this exists (still DRAFT; content superseded-ish by FEATURES) | Starting any session |
+| `docs/ARCHITECTURE.md` | Components, the two A/B paths, on-disk layout | Touching design |
+| `docs/FEATURES.md` | The full feature map + product principles (honesty, rooms, no-claims, automation-axis) | Scoping any feature work |
+| `docs/decisions/` | ADR-0001..0010 (Rust, Tauri, UX laws, wiring, A/B, visual direction) | Before proposing design changes |
+| `docs/OPEN-QUESTIONS.md` | Q-01..Q-24 with statuses; several carry hard-won platform laws (Q-20: satellite webviews get no DOM keys → focus-scoped OS shortcuts) | Before designing anything new |
+| `docs/TESTBED.md` | TB-01..TB-24 edge cases | Before AND after design changes |
+| `docs/GLOSSARY.md` | Domain vocabulary | A term is unfamiliar |
+| `docs/research/` | Verified external facts (APO mechanics + live spike results, AutoEq formats, frontend landscape) | Verifying claims about the outside world |
+| `docs/ROADMAP.md` | Phases and current focus | Starting any session |
+| `docs/WORKLOG.md` | Session journal | Resuming after a gap |
 
 ## Rules for every agent session
 
-1. **Orient first.** Read this file, `docs/ROADMAP.md` (current focus), and the last 2–3 entries of `docs/WORKLOG.md` before doing anything.
-2. **Never re-litigate an Accepted ADR.** If new information genuinely contradicts one, don't argue in chat — write a new ADR that supersedes it (and mark the old one `Superseded by ADR-XXXX`). The user decides.
-3. **Every settled design decision becomes an ADR** before the session ends, using `docs/decisions/ADR-0000-template.md`. A decision that lives only in chat history is lost.
-4. **Every unresolved debate goes to OPEN-QUESTIONS** with a Q-ID. When it's later settled, mark it `Resolved → ADR-XXXX`.
-5. **Every edge case goes to TESTBED.md the moment it's raised** — before it's solved. Every design change must be checked against the TB cases. Prime directive: Fletcher must never damage a user's existing audio setup — failure modes may lose Fletcher's own state, never the user's config or hearing (no surprise full-volume output, ever).
-6. **End every session with a WORKLOG entry.** What changed, what was learned, what's next.
-7. **Living docs describe *now*.** `ARCHITECTURE.md`, `GLOSSARY.md`, `ROADMAP.md` are always current-state — update them in place. History belongs in ADRs, the worklog, and git.
-8. **Claims about Equalizer APO's behavior go in `docs/research/` with a source** (its wiki, source code, or a local experiment written up). Design built on an unverified assumption about APO is a bug.
-9. **Document authority:** ADRs and `TESTBED.md` are normative; `ARCHITECTURE.md` and `README.md` are derived — on conflict, normative wins.
+1. **Orient first.** This file, `docs/ROADMAP.md`, and the last 2–3 WORKLOG entries.
+2. **Never re-litigate an Accepted ADR.** Supersede with a new ADR if truly needed; the user decides.
+3. **Every settled decision → ADR; every unresolved debate → OPEN-QUESTIONS (Q-ID); every edge case → TESTBED (TB-ID) the moment it's raised.**
+4. **End every session with a WORKLOG entry.**
+5. **Living docs describe *now*** — update ARCHITECTURE/GLOSSARY/ROADMAP in place; history lives in ADRs/worklog/git.
+6. **Claims about Equalizer APO or Windows behavior go in `docs/research/` with a source or a local experiment.**
+7. **Authority:** ADRs and TESTBED are normative; ARCHITECTURE/README derived.
+8. **Prime directive:** never damage the user's audio setup — never touch config lines other tools own (ADR-0007), never surprise-full-volume (TB-20), atomic writes only (TB-11).
+9. **Working style that works here:** ship small, let the user drive taste by reacting to the real app (dev server hot-reloads), file every idea the moment it's spoken, and fix root causes (the user will keep pushing — correctly — until the foundation is right).
