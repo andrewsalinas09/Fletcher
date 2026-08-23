@@ -211,7 +211,7 @@ export default function App() {
             setState(s);
           }
         })
-        .catch((e) => setError(String(e)));
+        .catch((e) => showNotice(String(e)));
     if (immediate) {
       if (pushTimer.current != null) window.clearTimeout(pushTimer.current);
       pushTimer.current = null;
