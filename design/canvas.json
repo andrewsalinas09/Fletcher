@@ -2,6 +2,7 @@
   "artboards": [
     { "file": "Main.dc.html", "title": "EQ tab · v2", "x": 0, "y": 0, "w": 1140, "h": 760, "page": "page-1" },
     { "file": "Settings.dc.html", "title": "Settings", "x": 1240, "y": 0, "w": 1140, "h": 760, "page": "page-1" },
+    { "file": "ClipStudio.dc.html", "title": "Clip Studio · v1", "x": 0, "y": 900, "w": 1140, "h": 760, "page": "page-1" },
     { "file": "Notebook.dc.html", "title": "B · Notebook (unchosen)", "x": 0, "y": 0, "w": 1140, "h": 760, "page": "page-2" },
     { "file": "Swiss.dc.html", "title": "C · Swiss (rejected)", "x": 1240, "y": 0, "w": 1140, "h": 760, "page": "page-2" }
   ],
@@ -16,7 +17,7 @@
       "y": -300,
       "w": 560,
       "page": "page-1",
-      "text": "Console v2 — reworked from your notes:\n\n· One-row header: wordmark, tabs, device chip. Wasted upper-left gone.\n· The filter rail is dead. Filters ARE the graph now — handles on the curve, each filter's own curve drawn faint, the selected one edited in the strip below. Chips row = quick selection, ordered per your Settings toggle.\n· Denser graph: 3/6 dB rules, ten labeled frequency lines.\n· Blind test moved out of the corner into the BENCH — a bar docked at the bottom of every tab: A/B state, hotkey, level-match status, Load a track, Blind test.\n· Preset line now carries the history tree (12 steps · 2 branches) and auto-preamp.\n\nSettings unchanged — you liked it."
+      "text": "EQ tab settled through v5 (arc gauges, type dropdowns, bidirectional graph-strip editing).\n\nNEW: Clip Studio v1 (below) — Resolve-inspired: media pool left; spectrogram (dark scope) + waveform stacked, swappable Wave/Spec/Both; timeline with in/out, markers, tagged clip spans; box-select a time-x-frequency moment on the spectrogram; inspector with tags + notes; A/B bar grows transport during a track session. Everything saves to the local database.\n\nOlder v2 notes:\n\n· One-row header: wordmark, tabs, device chip. Wasted upper-left gone.\n· The filter rail is dead. Filters ARE the graph now — handles on the curve, each filter's own curve drawn faint, the selected one edited in the strip below. Chips row = quick selection, ordered per your Settings toggle.\n· Denser graph: 3/6 dB rules, ten labeled frequency lines.\n· Blind test moved out of the corner into the BENCH — a bar docked at the bottom of every tab: A/B state, hotkey, level-match status, Load a track, Blind test.\n· Preset line now carries the history tree (12 steps · 2 branches) and auto-preamp.\n\nSettings unchanged — you liked it."
     }
   ],
   "launch": { "view": "canvas", "page": "page-1" }

@@ -1,0 +1,214 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+  <style>
+    body { margin: 0; font-family: "IBM Plex Sans", "Segoe UI", sans-serif; }
+    a { color: #14171a; } a:hover { color: #c85a13; }
+  </style>
+</helmet>
+<div style="width: 1140px; height: 760px; background: #f2efe9; color: #14171a; overflow: hidden; display: flex; flex-direction: column;">
+
+  <!-- header -->
+  <div style="display: flex; align-items: center; gap: 18px; padding: 9px 24px; border-bottom: 2px solid #14171a;">
+    <span style="font-family: 'IBM Plex Mono', monospace; font-weight: 600; font-size: 15px; letter-spacing: 0.14em;">FLETCHER</span>
+    <div style="display: flex; gap: 2px;">
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; letter-spacing: 0.06em; padding: 6px 13px;">EQ</span>
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; letter-spacing: 0.06em; padding: 6px 13px;">LISTENING LAB</span>
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; letter-spacing: 0.06em; padding: 6px 13px; background: #14171a; color: #f2efe9;">CLIP STUDIO</span>
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; letter-spacing: 0.06em; padding: 6px 13px; color: #b3ac9c;">FINGERPRINTS</span>
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; letter-spacing: 0.06em; padding: 6px 13px;">SETTINGS</span>
+    </div>
+    <span style="flex: 1;"></span>
+    <span style="font-size: 11px; border: 1px solid #c9c2b0; padding: 4px 10px; color: #8b8578; display: flex; align-items: center; gap: 6px;">
+      <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="#8b8578" stroke-width="1.5"><rect x="2" y="2" width="9" height="9"></rect><path d="M6 6h8v8h-8z" fill="#f2efe9"></path><rect x="6" y="6" width="8" height="8"></rect></svg>
+      pop out
+    </span>
+    <span style="font-size: 12px; border: 1px solid #c9c2b0; padding: 5px 12px; display: flex; align-items: center; gap: 7px; background: #f9f7f2;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#14171a" stroke-width="1.4"><path d="M3 6v4h3l4 3V3L6 6H3z"></path><path d="M12 6c1 1 1 3 0 4"></path></svg>
+      Schiit Modi 3+
+    </span>
+  </div>
+
+  <!-- main zone: media pool | viewer -->
+  <div style="display: flex; flex: 1; min-height: 0;">
+
+    <!-- media pool -->
+    <div style="flex: 0 0 232px; border-right: 1px solid #b3ac9c; display: flex; flex-direction: column; background: #f9f7f2;">
+      <div style="padding: 10px 12px 8px; border-bottom: 1px solid #e5dfd1;">
+        <div style="display: flex; align-items: center; gap: 6px; border: 1px solid #c9c2b0; padding: 5px 9px; background: #f2efe9;">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="#8b8578" stroke-width="1.5"><circle cx="7" cy="7" r="4.5"></circle><path d="M10.5 10.5L14 14"></path></svg>
+          <span style="font-size: 11px; color: #8b8578;">search clips, tags, genres…</span>
+        </div>
+      </div>
+      <div style="display: flex; gap: 4px; padding: 8px 12px; border-bottom: 1px solid #e5dfd1;">
+        <span style="font-size: 9.5px; font-family: 'IBM Plex Mono', monospace; border: 1px solid #3f6d9e; color: #3f6d9e; padding: 2px 7px;">LOWS</span>
+        <span style="font-size: 9.5px; font-family: 'IBM Plex Mono', monospace; border: 1px solid #3d7d43; color: #3d7d43; padding: 2px 7px;">MIDS</span>
+        <span style="font-size: 9.5px; font-family: 'IBM Plex Mono', monospace; border: 1px solid #c85a13; color: #c85a13; padding: 2px 7px;">HIGHS</span>
+        <span style="font-size: 9.5px; font-family: 'IBM Plex Mono', monospace; border: 1px solid #c9c2b0; color: #8b8578; padding: 2px 7px;">+</span>
+      </div>
+      <div style="flex: 1; overflow: hidden;">
+        <div style="padding: 8px 12px; background: #ece8df; border-bottom: 1px solid #e5dfd1;">
+          <div style="font-size: 12px; font-weight: 600;">Get Lucky</div>
+          <div style="font-size: 10px; color: #8b8578;">Daft Punk · electronic · 5 clips · 2 moments</div>
+        </div>
+        <div style="padding: 6px 12px 6px 20px; border-bottom: 1px solid #eee9dd; display: flex; align-items: center; gap: 6px;">
+          <span style="width: 6px; height: 6px; background: #3f6d9e;"></span><span style="font-size: 11px;">Bass groove</span><span style="flex: 1;"></span><span style="font-size: 9px; color: #b3ac9c; font-family: 'IBM Plex Mono', monospace;">0:41</span>
+        </div>
+        <div style="padding: 6px 12px 6px 20px; border-bottom: 1px solid #eee9dd; display: flex; align-items: center; gap: 6px; background: #14171a; color: #f2efe9;">
+          <span style="width: 6px; height: 6px; background: #c85a13;"></span><span style="font-size: 11px; font-weight: 600;">Chorus shimmer</span><span style="flex: 1;"></span><span style="font-size: 9px; color: #8b8578; font-family: 'IBM Plex Mono', monospace;">2:53</span>
+        </div>
+        <div style="padding: 6px 12px 6px 20px; border-bottom: 1px solid #eee9dd; display: flex; align-items: center; gap: 6px;">
+          <span style="width: 6px; height: 6px; background: #3d7d43;"></span><span style="font-size: 11px;">Vocal verse</span><span style="flex: 1;"></span><span style="font-size: 9px; color: #b3ac9c; font-family: 'IBM Plex Mono', monospace;">1:12</span>
+        </div>
+        <div style="padding: 8px 12px; border-bottom: 1px solid #e5dfd1;">
+          <div style="font-size: 12px;">Hotel California (Live)</div>
+          <div style="font-size: 10px; color: #8b8578;">Eagles · rock · 4 clips</div>
+        </div>
+        <div style="padding: 8px 12px; border-bottom: 1px solid #e5dfd1;">
+          <div style="font-size: 12px;">Bohemian Rhapsody</div>
+          <div style="font-size: 10px; color: #8b8578;">Queen · rock · 3 clips · 1 moment</div>
+        </div>
+        <div style="padding: 8px 12px; border-bottom: 1px solid #e5dfd1;">
+          <div style="font-size: 12px;">Limit To Your Love</div>
+          <div style="font-size: 10px; color: #8b8578;">James Blake · electronic · 2 clips</div>
+        </div>
+      </div>
+      <div style="padding: 9px 12px; border-top: 1px solid #b3ac9c; display: flex; gap: 8px; align-items: center;">
+        <span style="font-size: 11px; border: 1px solid #14171a; padding: 5px 10px;">+ Import track</span>
+        <span style="flex: 1;"></span>
+        <span style="font-size: 10px; color: #8b8578;">14 clips → </span>
+        <span style="font-size: 11px; background: #14171a; color: #f2efe9; padding: 5px 10px;">Battery</span>
+      </div>
+    </div>
+
+    <!-- viewer column -->
+    <div style="flex: 1; display: flex; flex-direction: column; min-width: 0;">
+
+      <!-- viewer toolbar -->
+      <div style="display: flex; align-items: center; gap: 12px; padding: 8px 16px; border-bottom: 1px solid #e5dfd1;">
+        <span style="font-size: 13px; font-weight: 600;">Get Lucky</span>
+        <span style="font-size: 10.5px; color: #8b8578;">Daft Punk · electronic</span>
+        <div style="display: flex; border: 1px solid #14171a; margin-left: 8px;">
+          <span style="font-size: 10.5px; padding: 3.5px 10px;">Wave</span>
+          <span style="font-size: 10.5px; padding: 3.5px 10px; border-left: 1px solid #14171a;">Spec</span>
+          <span style="font-size: 10.5px; padding: 3.5px 10px; border-left: 1px solid #14171a; background: #14171a; color: #f2efe9;">Both</span>
+        </div>
+        <span style="flex: 1;"></span>
+        <span style="font-size: 10px; color: #8b8578; font-family: 'IBM Plex Mono', monospace;">I·O in/out · M marker · J·K·L scrub · scroll zoom</span>
+      </div>
+
+      <!-- spectrogram (dark scope) -->
+      <div style="position: relative; margin: 8px 16px 0; flex: 1.6; background: #14171a; border: 1px solid #14171a; min-height: 0;">
+        <svg width="100%" height="100%" viewBox="0 0 840 210" preserveAspectRatio="none">
+          <!-- energy bands: abstract spectrogram -->
+          <rect x="0" y="150" width="840" height="60" fill="#c85a13" opacity="0.5"></rect>
+          <rect x="0" y="168" width="840" height="30" fill="#e89a5f" opacity="0.55"></rect>
+          <rect x="60" y="120" width="180" height="34" fill="#c85a13" opacity="0.28"></rect>
+          <rect x="300" y="112" width="260" height="42" fill="#c85a13" opacity="0.34"></rect>
+          <rect x="620" y="120" width="220" height="36" fill="#c85a13" opacity="0.26"></rect>
+          <rect x="120" y="70" width="120" height="42" fill="#c85a13" opacity="0.16"></rect>
+          <rect x="330" y="52" width="210" height="60" fill="#c85a13" opacity="0.22"></rect>
+          <rect x="610" y="66" width="180" height="48" fill="#c85a13" opacity="0.15"></rect>
+          <rect x="352" y="26" width="150" height="30" fill="#e89a5f" opacity="0.18"></rect>
+          <g fill="#e89a5f" opacity="0.5">
+            <rect x="88" y="188" width="7" height="18"></rect><rect x="150" y="186" width="7" height="20"></rect><rect x="212" y="188" width="7" height="18"></rect><rect x="274" y="185" width="7" height="21"></rect><rect x="336" y="188" width="7" height="18"></rect><rect x="398" y="186" width="7" height="20"></rect><rect x="460" y="188" width="7" height="18"></rect><rect x="522" y="185" width="7" height="21"></rect><rect x="584" y="188" width="7" height="18"></rect><rect x="646" y="186" width="7" height="20"></rect><rect x="708" y="188" width="7" height="18"></rect><rect x="770" y="185" width="7" height="21"></rect>
+          </g>
+          <!-- loop region -->
+          <rect x="470" y="0" width="180" height="210" fill="#f2efe9" opacity="0.08"></rect>
+          <line x1="470" y1="0" x2="470" y2="210" stroke="#f2efe9" stroke-width="1" opacity="0.5"></line>
+          <line x1="650" y1="0" x2="650" y2="210" stroke="#f2efe9" stroke-width="1" opacity="0.5"></line>
+          <!-- moment box-select: time × frequency -->
+          <rect x="500" y="46" width="96" height="52" fill="none" stroke="#e89a5f" stroke-width="1.6" stroke-dasharray="5 3"></rect>
+          <!-- playhead -->
+          <line x1="540" y1="0" x2="540" y2="210" stroke="#f2efe9" stroke-width="1.6"></line>
+          <!-- freq labels -->
+          <g font-family="IBM Plex Mono, monospace" font-size="9" fill="#8b8578">
+            <text x="6" y="196">100</text>
+            <text x="6" y="130">1k</text>
+            <text x="6" y="62">10k</text>
+          </g>
+        </svg>
+        <div style="position: absolute; left: 60.5%; top: 14px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #e89a5f; background: rgb(20 23 26 / 85%); border: 1px solid #e89a5f; padding: 2px 7px;">moment · 3–5 kHz</div>
+      </div>
+
+      <!-- waveform (light) -->
+      <div style="position: relative; margin: 6px 16px 0; flex: 0.9; background: #f9f7f2; border: 1px solid #b3ac9c; min-height: 0;">
+        <svg width="100%" height="100%" viewBox="0 0 840 96" preserveAspectRatio="none">
+          <line x1="0" y1="48" x2="840" y2="48" stroke="#ddd6c4" stroke-width="1"></line>
+          <path d="M0 48 L8 40 L16 58 L24 34 L32 60 L40 44 L48 52 L56 30 L64 64 L72 42 L80 55 L88 26 L96 68 L104 40 L112 58 L120 36 L128 62 L136 46 L144 52 L152 28 L160 66 L168 41 L176 57 L184 33 L192 61 L200 45 L208 53 L216 29 L224 65 L232 43 L240 56 L248 25 L256 69 L264 39 L272 59 L280 35 L288 63 L296 47 L304 51 L312 27 L320 67 L328 42 L336 56 L344 31 L352 63 L360 44 L368 54 L376 24 L384 70 L392 38 L400 60 L408 34 L416 62 L424 46 L432 52 L440 28 L448 66 L456 40 L464 58 L472 22 L480 72 L488 36 L496 62 L504 30 L512 66 L520 42 L528 56 L536 20 L544 74 L552 38 L560 60 L568 32 L576 64 L584 44 L592 54 L600 26 L608 68 L616 40 L624 58 L632 34 L640 62 L648 46 L656 52 L664 30 L672 64 L680 43 L688 55 L696 33 L704 61 L712 45 L720 53 L728 31 L736 63 L744 42 L752 56 L760 36 L768 60 L776 46 L784 52 L792 34 L800 60 L808 44 L816 54 L824 40 L832 56 L840 48" fill="none" stroke="#55503f" stroke-width="1.1"></path>
+          <rect x="470" y="0" width="180" height="96" fill="#c85a13" opacity="0.1"></rect>
+          <line x1="470" y1="0" x2="470" y2="96" stroke="#c85a13" stroke-width="1.2"></line>
+          <line x1="650" y1="0" x2="650" y2="96" stroke="#c85a13" stroke-width="1.2"></line>
+          <line x1="540" y1="0" x2="540" y2="96" stroke="#14171a" stroke-width="1.6"></line>
+        </svg>
+      </div>
+
+      <!-- timeline: ruler, markers, clip spans -->
+      <div style="margin: 6px 16px 0; border: 1px solid #b3ac9c; background: #f9f7f2;">
+        <svg width="100%" height="58" viewBox="0 0 840 58" preserveAspectRatio="none">
+          <g stroke="#c9c2b0" stroke-width="1">
+            <line x1="0" y1="16" x2="840" y2="16"></line>
+            <line x1="140" y1="8" x2="140" y2="16"></line><line x1="280" y1="8" x2="280" y2="16"></line><line x1="420" y1="8" x2="420" y2="16"></line><line x1="560" y1="8" x2="560" y2="16"></line><line x1="700" y1="8" x2="700" y2="16"></line>
+          </g>
+          <g font-family="IBM Plex Mono, monospace" font-size="8.5" fill="#8b8578">
+            <text x="134" y="7">1:00</text><text x="274" y="7">2:00</text><text x="414" y="7">3:00</text><text x="554" y="7">4:00</text><text x="694" y="7">5:00</text>
+          </g>
+          <!-- markers -->
+          <path d="M198 16 l4 7 l-8 0 z" fill="#14171a"></path>
+          <path d="M672 16 l4 7 l-8 0 z" fill="#14171a"></path>
+          <!-- clip spans -->
+          <rect x="92" y="28" width="80" height="10" fill="#3f6d9e"></rect>
+          <rect x="160" y="42" width="96" height="10" fill="#3d7d43"></rect>
+          <rect x="470" y="28" width="180" height="10" fill="#c85a13"></rect>
+          <rect x="700" y="28" width="70" height="10" fill="#3f6d9e" opacity="0.55"></rect>
+          <g font-family="IBM Plex Sans, sans-serif" font-size="8.5" fill="#55503f">
+            <text x="94" y="50">Bass groove</text>
+            <text x="472" y="50">Chorus shimmer</text>
+          </g>
+          <!-- in/out handles + playhead -->
+          <path d="M470 28 l-5 5 l5 5 z" fill="#c85a13"></path>
+          <path d="M650 28 l5 5 l-5 5 z" fill="#c85a13"></path>
+          <line x1="540" y1="16" x2="540" y2="58" stroke="#14171a" stroke-width="1.4"></line>
+        </svg>
+      </div>
+
+      <!-- inspector: selected clip -->
+      <div style="display: flex; align-items: center; gap: 10px; margin: 6px 16px 8px; border: 1px solid #b3ac9c; background: #f9f7f2; padding: 7px 12px;">
+        <span style="font-size: 12px; font-weight: 600;">Chorus shimmer</span>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #8b8578;">2:53.2 → 3:24.6</span>
+        <span style="font-size: 9.5px; font-family: 'IBM Plex Mono', monospace; background: #c85a13; color: #f9f7f2; padding: 2px 7px;">HIGHS</span>
+        <span style="font-size: 9.5px; font-family: 'IBM Plex Mono', monospace; border: 1px solid #e89a5f; color: #c85a13; padding: 2px 7px;">3–5 kHz</span>
+        <span style="font-size: 11px; color: #55503f; flex: 1; border-left: 1px solid #e5dfd1; padding-left: 10px;">the vocoder sheen — is it the EQ or the recording?</span>
+        <span style="font-size: 11px; border: 1px solid #14171a; padding: 4px 10px;">Solo band</span>
+        <span style="font-size: 11px; background: #14171a; color: #f2efe9; padding: 4px 10px;">+ Battery</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- A/B bar with transport (track session active) -->
+  <div style="border-top: 2px solid #14171a; background: #ece8df; display: flex; align-items: center; gap: 14px; padding: 8px 24px;">
+    <div style="display: flex; align-items: center; gap: 8px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="#14171a"><path d="M3 2l4 6-4 6zM8 2l4 6-4 6z" transform="scale(-1,1) translate(-15,0)"></path></svg>
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="#14171a"><path d="M4 2h3v12H4zM9 2h3v12H9z"></path></svg>
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="#14171a"><path d="M3 2l4 6-4 6zM8 2l4 6-4 6z"></path></svg>
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; margin-left: 4px;">2:47.1 / 5:36.0</span>
+    </div>
+    <div style="display: flex; border: 1px solid #14171a;">
+      <span style="font-size: 12px; padding: 5px 14px; background: #14171a; color: #f2efe9; font-weight: 600;">A · HD 650</span>
+      <span style="font-size: 12px; padding: 5px 14px; border-left: 1px solid #14171a;">B · Flat</span>
+    </div>
+    <span style="display: flex; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #3d7d43;"><span style="width: 7px; height: 7px; background: #3d7d43; border-radius: 50%;"></span>matched · track engine</span>
+    <span style="flex: 1;"></span>
+    <span style="font-size: 12px; background: #c85a13; color: #f9f7f2; padding: 7px 16px; font-weight: 600;">Blind test these clips</span>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>
