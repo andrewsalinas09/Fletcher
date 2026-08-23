@@ -62,5 +62,7 @@ Nothing on the market does this. Its own tab, visibly its own setup:
 - **It's for everyone.** One UI, not separate beginner/expert apps.
 - **Progressive disclosure by greying, not hiding**: in standard mode the layout is *identical*, advanced features are slightly greyed; hovering explains what the feature does and why it's advanced. Discovery is built into the disabled state. (Leaning → Q-02; candidate ADR.)
 - **Instant everything**: no Apply buttons; APO hot-reload makes every control live.
+- **Pop-out windows, one truth** (Q-20): any tab can become its own OS window — curve on one monitor, Lab on another — and every window updates together in real time, because the Rust core owns all state and windows are just views.
+- **Bidirectional editing**: the graph and the filter strip edit the same model — drag a handle or type a number, both update live.
 - **Never lie about loudness**: the app treats unmatched comparisons as invalid by default.
 - **Everything recorded, so everything is known** (ADR-0006): every test, measurement, and comparison stores full provenance — configs, levels, matching offsets, capture metadata. Results are auditable, never vibes.

@@ -12,6 +12,12 @@ Append-only session journal. Newest entry first.
 
 ---
 
+## 2026-08-22 — Design session: five iterations to a settled EQ-tab direction
+
+- **Did:** Built a design canvas (claude.ai/code/artifact/759d400e-…) with three directions from real HD650 data; user killed Swiss, chose Console, then drove five iterations: v3 curve/editor split, v4 transposed horizontal strip + tooltip-not-panel + bidirectional graph↔strip editing, v5 arc-fill gain gauges (needles rejected as unglanceable) and type-as-dropdown (name · curve glyph · caret). Persistent A/B bar replaced the floating Blind-test button. Settings artboard approved early and untouched since. Vocabulary audit: invented labels (PRINTS, BENCH, response-curve toggle) purged after user flagged them as unmappable to our docs. New ideas filed: pop-out windows with synced state (Q-20), post-"Load a track" flow (Q-21).
+- **Learned:** The user's design taste is concrete and fast when given real candidates to react against; "show 3, iterate on reactions" works. Redundant views (rail duplicating graph) read as mess; amount-of-ink beats needle-angle for glanceability; every UI word must trace to FEATURES.md or it reads as hallucination.
+- **Next:** ADR-0010 (visual direction); port v5 into the app; design Listening Lab + Clip Studio artboards (resolves Q-21).
+
 ## 2026-08-22 — Phase 1 opens: workspace, Tauri scaffold, config engine v1
 
 - **Did:** Restructured to a cargo workspace: `crates/fletcher-core` (engine lib; spike moved to examples) + `app/` (Tauri 2 + React/TS via create-tauri-app, product name Fletcher, identifier net.asal.fletcher). Built the config engine's first component: a lossless line-preserving APO config parser (`config.rs`) — raw bytes kept per line, parsing as a view, byte-for-byte round-trip guaranteed; parses Preamp/Filter (12 kinds)/Include/Device/Channel, everything else degrades to Unknown. 7 integration tests green against real fixtures copied from the live APO install (Peace HD650 preset, root config, REW exports, multichannel). CI updated for workspace + frontend build. Mid-session feature idea filed: moment isolation + spectral similarity + future MCP agent hook (Q-18).
