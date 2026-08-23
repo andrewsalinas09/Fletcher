@@ -160,6 +160,14 @@ export default function App() {
       .then(setPresets)
       .catch((e) => setError(String(e)));
   };
+  const copyFromSource = (source: string) => {
+    const stem = source.replace(/\.txt$/i, "");
+    let name = `${stem} copy`;
+    for (let n = 2; presets.presets.includes(name); n++) name = `${stem} copy ${n}`;
+    invoke<PresetsState>("preset_copy_from_source", { source, name })
+      .then(setPresets)
+      .catch((e) => setError(String(e)));
+  };
   const deletePreset = (name: string) =>
     presetAction(invoke<EqState>("preset_delete", { name }));
 
@@ -374,6 +382,16 @@ export default function App() {
                           <span className="spacer" />
                           <span className="dim-sm">
                             {count ? `${count} filters on` : "inactive"}
+                          </span>
+                          <span
+                            className="row-act"
+                            title="copy this chain into your presets (does not change it or switch to it)"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              copyFromSource(inc);
+                            }}
+                          >
+                            ⧉
                           </span>
                         </div>
                       );

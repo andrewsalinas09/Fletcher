@@ -318,6 +318,53 @@ fn preset_create(name: String, from_live: bool) -> Result<EqState, String> {
     eq_state()
 }
 
+/// Copy an external include's chain (e.g. peace.txt) into a Fletcher preset.
+/// Never touches the source; does not activate the new preset.
+#[tauri::command]
+fn preset_copy_from_source(source: String, name: String) -> Result<PresetsState, String> {
+    let name = sanitize_name(&name).ok_or("invalid preset name")?;
+    if source.contains(['/', '\\', ':']) {
+        return Err("invalid source".into());
+    }
+    let install = apo::detect().map_err(|e| e.to_string())?;
+    let text = std::fs::read_to_string(install.config_path.join(&source))
+        .map_err(|e| format!("cannot read {source}: {e}"))?;
+    let doc = ConfigDoc::parse(&text);
+    let mut preamp = 0.0;
+    let mut chain = Vec::new();
+    for d in doc.directives() {
+        match d {
+            Parsed::Preamp { db } => preamp += db,
+            Parsed::Filter {
+                enabled,
+                kind,
+                fc_hz,
+                gain_db,
+                q,
+                ..
+            } => chain.push(ChainFilter {
+                enabled: *enabled,
+                kind: *kind,
+                fc_hz: fc_hz.unwrap_or(1000.0),
+                gain_db: gain_db.unwrap_or(0.0),
+                q: q.unwrap_or(std::f64::consts::FRAC_1_SQRT_2),
+            }),
+            _ => {}
+        }
+    }
+    if chain.is_empty() {
+        return Err(format!(
+            "{source} has no filters right now — turn its EQ on in the other tool first, then copy"
+        ));
+    }
+    let st = store()?;
+    if st.exists(&name) {
+        return Err(format!("a preset named {name:?} already exists"));
+    }
+    st.save(&name, preamp, &chain).map_err(|e| e.to_string())?;
+    presets_state()
+}
+
 #[tauri::command]
 fn preset_duplicate(from: String, to: String) -> Result<PresetsState, String> {
     let to = sanitize_name(&to).ok_or("invalid preset name")?;
@@ -543,6 +590,7 @@ pub fn run() {
             presets_state,
             preset_switch,
             preset_create,
+            preset_copy_from_source,
             preset_duplicate,
             preset_delete
         ])
