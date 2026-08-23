@@ -158,6 +158,7 @@ export default function App() {
   const [presets, setPresets] = useState<PresetsState>({ presets: [], active: null });
   const [menuOpen, setMenuOpen] = useState(false);
   const [newName, setNewName] = useState("");
+  const [typeMenu, setTypeMenu] = useState<{ i: number; x: number; y: number } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const noticeTimer = useRef<number | null>(null);
 
@@ -531,7 +532,7 @@ export default function App() {
     const f = fOf(x);
     const db = dbOf(p.y + grabOffset.current.dy);
     const clamped = Math.max(-dbRange, Math.min(dbRange, db));
-    if (Math.abs(clamped) >= dbRange * 0.95 && dbRange < 48) {
+    if (Math.abs(clamped) >= dbRange * 0.85 && dbRange < 48) {
       setDragRange(dbRange * 2); // hit the peak → double, in one jump
     }
     mutateFilter(i, {
@@ -582,6 +583,49 @@ export default function App() {
           <span className="dim-sm"> · dismiss</span>
         </div>
       )}
+
+      {typeMenu &&
+        state &&
+        createPortal(
+          <>
+            <div className="type-backdrop" onClick={() => setTypeMenu(null)} />
+            <div
+              className="type-menu"
+              style={{
+                left: Math.min(typeMenu.x, window.innerWidth - 250),
+                top: Math.min(typeMenu.y, window.innerHeight - 380),
+              }}
+            >
+              {KINDS.map((k) => {
+                const info = TYPE_INFO[k];
+                const cur = state.filters[typeMenu.i];
+                const boost = (cur?.gainDb ?? 0) >= 0;
+                return (
+                  <div
+                    key={k}
+                    className={`type-row ${cur?.kind === k ? "current" : ""}`}
+                    onClick={() => {
+                      mutateFilter(typeMenu.i, { kind: k }, true);
+                      setTypeMenu(null);
+                    }}
+                    {...tipProps(
+                      <div>
+                        <div className="t-title">{`${k} — ${info.name}`}</div>
+                        <p>{info.desc}</p>
+                      </div>,
+                    )}
+                  >
+                    <span className="mono type-code">{k}</span>
+                    <span className="type-desc">{info.name}</span>
+                    <span className="spacer" />
+                    <TypeGlyph kind={k} boost={boost} dark={cur?.kind === k} />
+                  </div>
+                );
+              })}
+            </div>
+          </>,
+          document.body,
+        )}
 
       {tip &&
         createPortal(
@@ -839,20 +883,18 @@ export default function App() {
                         if (editable) mutateFilter(i, { enabled: !f.enabled }, true);
                       }}
                     />
-                    {isSel && editable ? (
-                      <select
-                        className="type-select"
-                        value={f.kind}
-                        onClick={(e) => e.stopPropagation()}
-                        onChange={(e) => mutateFilter(i, { kind: e.target.value }, true)}
-                      >
-                        {KINDS.map((k) => (
-                          <option key={k} value={k}>{k}</option>
-                        ))}
-                      </select>
-                    ) : (
-                      <span className="mono type-name">{f.kind}</span>
-                    )}
+                    <span
+                      className={`mono type-name ${isSel && editable ? "openable" : ""}`}
+                      onClick={(e) => {
+                        if (!isSel || !editable) return;
+                        e.stopPropagation();
+                        clearTip();
+                        const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                        setTypeMenu(typeMenu?.i === i ? null : { i, x: r.left, y: r.bottom + 4 });
+                      }}
+                    >
+                      {f.kind}
+                    </span>
                     <TypeGlyph kind={f.kind} boost={boost} dark={isSel} />
                   </span>
                   <GainGauge gainDb={f.gainDb} dark={isSel} />

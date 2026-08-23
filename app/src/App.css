@@ -473,13 +473,62 @@ button.ghost {
   background: var(--ok);
 }
 
-.type-select {
-  font-family: "IBM Plex Mono", monospace;
-  font-size: 10px;
+.type-name.openable {
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+
+.type-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 490;
+}
+
+.type-menu {
+  position: fixed;
+  z-index: 500;
+  min-width: 236px;
+  background: #fffdf6;
+  border: 1px solid var(--ink);
+  box-shadow: 4px 4px 0 rgb(20 23 26 / 10%);
+}
+
+.type-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--line);
+}
+
+.type-row:last-child {
+  border-bottom: none;
+}
+
+.type-row:hover {
+  background: var(--panel-alt);
+}
+
+.type-row.current {
   background: var(--ink);
   color: var(--paper);
-  border: 1px solid var(--dim);
-  padding: 0 1px;
+}
+
+.type-code {
+  font-size: 11px;
+  font-weight: 600;
+  width: 34px;
+}
+
+.type-desc {
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.type-row.current .type-desc {
+  color: var(--line-strong);
 }
 
 .handle.editable {
