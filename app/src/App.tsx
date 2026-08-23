@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./App.css";
@@ -498,27 +499,37 @@ export default function App() {
     );
   };
 
-  const graphPoint = (e: React.PointerEvent) => {
-    const rect = svgRef.current!.getBoundingClientRect();
-    const x = ((e.clientX - rect.left) / rect.width) * GW;
-    const y = ((e.clientY - rect.top) / rect.height) * GH;
-    return { f: fOf(Math.max(0, Math.min(GW, x))), db: dbOf(y) };
+  /** Client → SVG user coordinates via the SVG's own transform — exact under
+   *  any letterboxing/scaling (a rect-ratio mapping drifts toward the edges). */
+  const svgPoint = (e: React.PointerEvent) => {
+    const ctm = svgRef.current?.getScreenCTM();
+    if (!ctm) return { x: 0, y: 0 };
+    const p = new DOMPoint(e.clientX, e.clientY).matrixTransform(ctm.inverse());
+    return { x: p.x, y: p.y };
   };
 
+  const grabOffset = useRef({ dx: 0, dy: 0 });
+
   const startDrag = (i: number) => (e: React.PointerEvent) => {
-    if (state?.filters[i]?.sourceFile !== OWN_FILE) {
+    const f = state?.filters[i];
+    if (f?.sourceFile !== OWN_FILE) {
       setSelected(i);
       return;
     }
     setSelected(i);
     dragging.current = true;
     setDragRange(dbRange); // freeze the scale for the whole drag
+    const p = svgPoint(e);
+    grabOffset.current = { dx: xOf(f.fcHz) - p.x, dy: yOf(f.gainDb) - p.y };
     (e.target as Element).setPointerCapture(e.pointerId);
   };
 
   const onDragMove = (i: number) => (e: React.PointerEvent) => {
     if (!dragging.current || selected !== i) return;
-    const { f, db } = graphPoint(e);
+    const p = svgPoint(e);
+    const x = Math.max(0, Math.min(GW, p.x + grabOffset.current.dx));
+    const f = fOf(x);
+    const db = dbOf(p.y + grabOffset.current.dy);
     const clamped = Math.max(-dbRange, Math.min(dbRange, db));
     if (Math.abs(clamped) >= dbRange * 0.95 && dbRange < 48) {
       setDragRange(dbRange * 2); // hit the peak → double, in one jump
@@ -572,17 +583,19 @@ export default function App() {
         </div>
       )}
 
-      {tip && (
-        <div
-          className="tooltip"
-          style={{
-            left: Math.min(tip.x + 14, window.innerWidth - 356),
-            top: Math.min(tip.y + 18, window.innerHeight - 190),
-          }}
-        >
-          {tip.content}
-        </div>
-      )}
+      {tip &&
+        createPortal(
+          <div
+            className="tooltip"
+            style={{
+              left: Math.min(tip.x + 14, window.innerWidth - 356),
+              top: Math.min(tip.y + 18, window.innerHeight - 190),
+            }}
+          >
+            {tip.content}
+          </div>,
+          document.body,
+        )}
 
       {error && (
         <section className="alert">

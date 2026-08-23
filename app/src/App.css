@@ -572,7 +572,7 @@ button.ghost {
 
 .tooltip {
   position: fixed;
-  z-index: 100;
+  z-index: 1000;
   max-width: 340px;
   background: #fffdf6;
   border: 1px solid var(--ink);
