@@ -1,159 +1,113 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 
-type Line =
-  | { kind: "preamp"; text: string; db: number }
-  | {
-      kind: "filter";
-      text: string;
-      index: number | null;
-      enabled: boolean;
-      filterType: string;
-      fcHz: number | null;
-      gainDb: number | null;
-      q: number | null;
-    }
-  | { kind: "include"; text: string; path: string }
-  | { kind: "device"; text: string; pattern: string }
-  | { kind: "channel"; text: string; spec: string }
-  | { kind: "comment"; text: string }
-  | { kind: "blank" }
-  | { kind: "unknown"; text: string };
-
-type ApoStatus = {
-  installPath: string;
-  configPath: string;
-  files: { name: string; lines: Line[] }[];
+type EqFilter = {
+  enabled: boolean;
+  kind: string;
+  fcHz: number;
+  gainDb: number;
+  q: number;
+  responseDb: number[];
 };
 
-type FilterLine = Extract<Line, { kind: "filter" }>;
+type EqState = {
+  deviceName: string | null;
+  preampDb: number;
+  freqs: number[];
+  sumDb: number[];
+  filters: EqFilter[];
+  sourceFiles: string[];
+};
+
+// ---- graph geometry (matches design/Main.dc.html v5) ----
+const GW = 1090;
+const GH = 330;
+const DB_RANGE = 12; // ±12 dB visible
+const FMIN = 20;
+const FMAX = 20000;
+
+const xOf = (f: number) =>
+  ((Math.log10(f) - Math.log10(FMIN)) / (Math.log10(FMAX) - Math.log10(FMIN))) * GW;
+const yOf = (db: number) => GH / 2 - (db / DB_RANGE) * (GH / 2 - 30);
 
 const fmtHz = (hz: number) =>
-  hz >= 1000 ? `${+(hz / 1000).toFixed(2)}k` : `${+hz.toFixed(1)}`;
-
+  hz >= 1000 ? `${+(hz / 1000).toFixed(2)}k` : `${+hz.toFixed(0)}`;
 const fmtGain = (g: number) => `${g > 0 ? "+" : ""}${+g.toFixed(1)}`;
 
-function GainBar({ gain }: { gain: number | null }) {
-  const clamped = Math.max(-12, Math.min(12, gain ?? 0));
-  const half = Math.abs(clamped) / 12 / 2; // fraction of bar height
-  const isBoost = clamped >= 0;
+function pathFrom(freqs: number[], dbs: number[]): string {
+  return dbs
+    .map((db, i) => `${i === 0 ? "M" : "L"}${xOf(freqs[i]).toFixed(1)} ${yOf(db).toFixed(1)}`)
+    .join(" ");
+}
+
+// ---- type glyphs: tiny curve icons per filter family ----
+function TypeGlyph({ kind, boost, dark }: { kind: string; boost: boolean; dark?: boolean }) {
+  const color = boost ? (dark ? "var(--boost-dark)" : "var(--boost)") : dark ? "#9db8d2" : "var(--cut)";
+  const d = (() => {
+    switch (kind) {
+      case "LSC":
+      case "LS":
+        return boost ? "M1 4 L5 4 C9 4 10 9 13 9 L15 9" : "M1 8 L5 8 C9 8 10 3 13 3 L15 3";
+      case "HSC":
+      case "HS":
+        return boost ? "M1 9 L3 9 C6 9 7 4 10 4 L15 4" : "M1 3 L3 3 C6 3 7 8 10 8 L15 8";
+      case "LP":
+      case "LPQ":
+        return "M1 4 L6 4 C10 4 11 10 15 11";
+      case "HP":
+      case "HPQ":
+        return "M1 11 C5 10 6 4 10 4 L15 4";
+      case "NO":
+        return "M1 4 L5 4 L8 11 L11 4 L15 4";
+      case "BP":
+        return "M1 11 C5 11 5 3 8 3 C11 3 11 11 15 11";
+      default: // PK, AP
+        return boost ? "M1 10 C4 10 5 4 8 4 C11 4 12 10 15 10" : "M1 3 C4 3 5 9 8 9 C11 9 12 3 15 3";
+    }
+  })();
   return (
-    <div className="gainbar" aria-hidden>
-      <div
-        className={`gainbar-fill ${isBoost ? "boost" : "cut"}`}
-        style={
-          isBoost
-            ? { bottom: "50%", height: `${half * 100}%` }
-            : { top: "50%", height: `${half * 100}%` }
-        }
-      />
-      <div className="gainbar-axis" />
-    </div>
+    <svg width="18" height="12" viewBox="0 0 16 12" fill="none" stroke={color} strokeWidth="1.5">
+      <path d={d} />
+    </svg>
   );
 }
 
-function FilterCard({ f }: { f: FilterLine }) {
+// ---- arc-fill gain gauge ----
+function GainGauge({ gainDb, dark }: { gainDb: number; dark?: boolean }) {
+  const clamped = Math.max(-12, Math.min(12, gainDb));
+  const theta = (Math.abs(clamped) / 12) * (Math.PI * 0.75); // up to 135°
+  const px = (ang: number, sign: number) => 11 + sign * 8 * Math.sin(ang);
+  const py = (ang: number) => 11 - 8 * Math.cos(ang);
+  const boost = clamped >= 0;
+  const sign = boost ? 1 : -1;
+  const tip = `${px(theta, sign).toFixed(2)} ${py(theta).toFixed(2)}`;
+  const fill = boost ? `M11 3 A8 8 0 0 1 ${tip}` : `M${tip} A8 8 0 0 1 11 3`;
+  const color = boost ? (dark ? "var(--boost-dark)" : "var(--boost)") : dark ? "#9db8d2" : "var(--cut)";
   return (
-    <div className={`fcard ${f.enabled ? "" : "off"}`}>
-      <span className="ftype">{f.filterType}</span>
-      <GainBar gain={f.gainDb} />
-      <span
-        className={`fgain ${
-          f.gainDb == null ? "" : f.gainDb >= 0 ? "boost" : "cut"
-        }`}
-      >
-        {f.gainDb != null ? fmtGain(f.gainDb) : "—"}
-      </span>
-      <span className="ffc">{f.fcHz != null ? fmtHz(f.fcHz) : "—"}</span>
-      <span className="fq">{f.q != null ? `Q ${f.q}` : " "}</span>
-    </div>
-  );
-}
-
-function FilePanel({ name, lines }: { name: string; lines: Line[] }) {
-  const filters = lines
-    .filter((l): l is FilterLine => l.kind === "filter")
-    .sort((a, b) => (a.fcHz ?? Infinity) - (b.fcHz ?? Infinity));
-  const preamps = lines.filter((l) => l.kind === "preamp");
-  const scopes = lines.filter(
-    (l) => l.kind === "device" || l.kind === "channel",
-  );
-  const includes = lines.filter((l) => l.kind === "include");
-  const other = lines.filter(
-    (l) => (l.kind === "unknown" && l.text.trim()) || l.kind === "comment",
-  );
-  const empty =
-    !filters.length && !preamps.length && !scopes.length && !includes.length;
-
-  return (
-    <section className="panel">
-      <div className="panel-head">
-        <h2>{name}</h2>
-        <div className="chips">
-          {scopes.map((s, i) => (
-            <span className="chip scope" key={`s${i}`}>
-              {s.kind === "device" ? "Device" : "Channel"}{" "}
-              <b>{s.kind === "device" ? s.pattern : s.spec}</b>
-            </span>
-          ))}
-          {includes.map((inc, i) => (
-            <span className="chip include" key={`i${i}`}>
-              → {inc.kind === "include" ? inc.path : ""}
-            </span>
-          ))}
-        </div>
-      </div>
-
-      {(preamps.length > 0 || filters.length > 0) && (
-        <div className="strip">
-          {preamps.map((p, i) => (
-            <div className="fcard preamp" key={`p${i}`}>
-              <span className="ftype">PRE</span>
-              <GainBar gain={p.kind === "preamp" ? p.db : 0} />
-              <span
-                className={`fgain ${
-                  p.kind === "preamp" && p.db >= 0 ? "boost" : "cut"
-                }`}
-              >
-                {p.kind === "preamp" ? fmtGain(p.db) : ""}
-              </span>
-              <span className="ffc">amp</span>
-              <span className="fq">dB</span>
-            </div>
-          ))}
-          {filters.map((f, i) => (
-            <FilterCard f={f} key={i} />
-          ))}
-        </div>
+    <svg width="26" height="26" viewBox="0 0 22 22" fill="none">
+      <line x1="11" y1="1.5" x2="11" y2="4" stroke={dark ? "#55503f" : "var(--line-strong)"} strokeWidth="1.2" />
+      <path d="M5.34 16.66 A8 8 0 1 1 16.66 16.66" stroke={dark ? "#3a3e36" : "var(--line)"} strokeWidth="3" />
+      {Math.abs(clamped) > 0.05 && (
+        <path d={fill} stroke={color} strokeWidth="3.5" strokeLinecap="round" />
       )}
-
-      {empty && other.length === 0 && <p className="empty">empty</p>}
-      {other.length > 0 && (
-        <details className="raw">
-          <summary>
-            {other.length} other line{other.length > 1 ? "s" : ""}
-          </summary>
-          <pre>
-            {other
-              .map((l) => ("text" in l ? l.text : ""))
-              .join("\n")}
-          </pre>
-        </details>
-      )}
-    </section>
+    </svg>
   );
 }
 
 export default function App() {
-  const [status, setStatus] = useState<ApoStatus | null>(null);
+  const [state, setState] = useState<EqState | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<number | null>(null);
 
   const refresh = () =>
-    invoke<ApoStatus>("apo_status")
+    invoke<EqState>("eq_state")
       .then((s) => {
-        setStatus(s);
+        setState(s);
         setError(null);
+        setSelected((sel) =>
+          sel != null && sel < s.filters.length ? sel : s.filters.length ? 0 : null,
+        );
       })
       .catch((e) => setError(String(e)));
 
@@ -161,35 +115,167 @@ export default function App() {
     refresh();
   }, []);
 
+  const ordered = useMemo(() => {
+    if (!state) return [];
+    return state.filters
+      .map((f, i) => ({ f, i }))
+      .sort((a, b) => a.f.fcHz - b.f.fcHz);
+  }, [state]);
+
+  const sel = selected != null && state ? state.filters[selected] : null;
+
   return (
     <div className="frame">
       <header>
-        <span className="wordmark">Fletcher</span>
-        <span className="sub">honest EQ</span>
+        <span className="wordmark">FLETCHER</span>
+        <nav>
+          <span className="tab active">EQ</span>
+          <span className="tab disabled" title="Blind tests and statistics — coming with the test engine">LISTENING LAB</span>
+          <span className="tab disabled" title="Annotate tracks, build clip libraries — coming with the track engine">CLIP STUDIO</span>
+          <span className="tab advanced" title="Measure and match headphones. Advanced: needs a measurement microphone.">FINGERPRINTS</span>
+          <span className="tab disabled" title="Coming soon">SETTINGS</span>
+        </nav>
         <span className="spacer" />
-        {status && (
-          <span className="engine">
-            Equalizer APO · <span className="path">{status.installPath}</span>
-          </span>
-        )}
-        <button onClick={refresh}>Refresh</button>
+        <span className="device-chip">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4">
+            <path d="M3 6v4h3l4 3V3L6 6H3z" />
+            <path d="M12 6c1 1 1 3 0 4" />
+          </svg>
+          {state?.deviceName ?? "no device"}
+        </span>
       </header>
 
       {error && (
-        <section className="panel alert">
+        <section className="alert">
           <h2>Equalizer APO problem</h2>
           <p>{error}</p>
           <p className="dim">
-            Fletcher drives Equalizer APO — install it from
-            sourceforge.net/projects/equalizerapo, enable it for your output
-            device, then refresh.
+            Install it from sourceforge.net/projects/equalizerapo, enable it for your
+            output device, then <button onClick={refresh}>retry</button>.
           </p>
         </section>
       )}
 
-      {status?.files.map((f) => (
-        <FilePanel key={f.name} name={f.name} lines={f.lines} />
-      ))}
+      {state && (
+        <>
+          <div className="preset-line">
+            <span className="preset-chip">
+              <b>Live APO config</b>
+              <span className="dim-sm">{state.sourceFiles.join(" + ")}</span>
+            </span>
+            <span className="spacer" />
+            <span className="mono dim-sm">auto preamp</span>
+            <span className="mono preamp-val">{fmtGain(state.preampDb)} dB</span>
+            <button onClick={refresh}>Refresh</button>
+          </div>
+
+          <div className="graph-panel">
+            <svg viewBox={`0 0 ${GW} ${GH}`} className="graph">
+              {[3, 6, 9].flatMap((db) => [
+                <line key={`p${db}`} x1={0} x2={GW} y1={yOf(db)} y2={yOf(db)} className={db % 6 ? "grid-minor" : "grid-major"} />,
+                <line key={`m${db}`} x1={0} x2={GW} y1={yOf(-db)} y2={yOf(-db)} className={db % 6 ? "grid-minor" : "grid-major"} />,
+              ])}
+              {[30, 50, 100, 200, 500, 1000, 2000, 5000, 10000].map((f) => (
+                <line key={f} x1={xOf(f)} x2={xOf(f)} y1={0} y2={GH - 24} className="grid-vert" />
+              ))}
+              <line x1={0} x2={GW} y1={yOf(0)} y2={yOf(0)} className="grid-zero" />
+
+              {sel && sel.enabled && (
+                <path d={pathFrom(state.freqs, sel.responseDb)} className={`sel-curve ${sel.gainDb >= 0 ? "boost" : "cut"}`} />
+              )}
+              <path d={pathFrom(state.freqs, state.sumDb.map((db) => db - state.preampDb))} className="sum-curve" />
+
+              {state.filters.map((f, i) =>
+                f.enabled ? (
+                  <circle
+                    key={i}
+                    cx={xOf(f.fcHz)}
+                    cy={yOf(f.gainDb)}
+                    r={i === selected ? 7 : 5}
+                    className={`handle ${f.gainDb >= 0 ? "boost" : "cut"} ${i === selected ? "selected" : ""}`}
+                    onClick={() => setSelected(i)}
+                  />
+                ) : null,
+              )}
+
+              {sel && (
+                <g className="flag" transform={`translate(${Math.min(xOf(sel.fcHz) + 16, GW - 200)}, ${Math.max(yOf(sel.gainDb) - 34, 6)})`}>
+                  <rect width="188" height="24" />
+                  <text x="9" y="16">{`${sel.kind} ${fmtHz(sel.fcHz)} Hz ${fmtGain(sel.gainDb)} dB Q ${sel.q}`}</text>
+                </g>
+              )}
+
+              <g className="axis">
+                {[30, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000].map((f) => (
+                  <text key={f} x={xOf(f) - 8} y={GH - 8}>{fmtHz(f)}</text>
+                ))}
+                {[9, 6, 0, -6, -9].map((db) => (
+                  <text key={db} x={6} y={yOf(db) + 4}>{db === 0 ? "0 dB" : fmtGain(db)}</text>
+                ))}
+              </g>
+            </svg>
+          </div>
+
+          <div className="strip">
+            <div className="cell pre">
+              <span className="cell-type mono dim-sm">PRE · AUTO</span>
+              <GainGauge gainDb={state.preampDb} />
+              <span className="cell-gain mono">{fmtGain(state.preampDb)}</span>
+              <span className="cell-fc mono">amp</span>
+              <span className="cell-q">no clip</span>
+            </div>
+            {ordered.map(({ f, i }) => {
+              const isSel = i === selected;
+              const boost = f.gainDb >= 0;
+              return (
+                <div
+                  key={i}
+                  className={`cell ${isSel ? "selected" : ""} ${f.enabled ? "" : "off"}`}
+                  onClick={() => setSelected(i)}
+                >
+                  <span className="cell-type">
+                    <span className="mono type-name">{f.kind}</span>
+                    <TypeGlyph kind={f.kind} boost={boost} dark={isSel} />
+                    <svg width="8" height="8" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" className="caret">
+                      <path d="M4 6l4 4 4-4" />
+                    </svg>
+                  </span>
+                  <GainGauge gainDb={f.gainDb} dark={isSel} />
+                  <span className={`cell-gain mono ${boost ? "boost" : "cut"} ${isSel ? "on-dark" : ""}`}>
+                    {fmtGain(f.gainDb)}
+                  </span>
+                  <span className="cell-fc mono">{fmtHz(f.fcHz)}</span>
+                  <span className="cell-q">Q {f.q}</span>
+                </div>
+              );
+            })}
+            <div className="cell add" title="Editing arrives with the fletcher.txt writer UI">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <path d="M8 3v10M3 8h10" />
+              </svg>
+            </div>
+          </div>
+        </>
+      )}
+
+      <footer className="ab-bar">
+        <div className="ab-toggle">
+          <span className="ab-side active">A · Live config</span>
+          <span className="ab-side">B · Flat</span>
+        </div>
+        <span className="mono dim-sm">Ctrl·Shift·A</span>
+        <span className="matched mono">
+          <span className="dot" />
+          levels matched
+        </span>
+        <span className="spacer" />
+        <button className="ghost" disabled title="Track engine — Phase 3">
+          Load a track
+        </button>
+        <button className="primary" disabled title="Test engine — Phase 2">
+          Blind test
+        </button>
+      </footer>
     </div>
   );
 }

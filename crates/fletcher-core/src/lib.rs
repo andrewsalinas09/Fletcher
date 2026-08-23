@@ -7,4 +7,6 @@
 
 pub mod apo;
 pub mod config;
+pub mod devices;
+pub mod dsp;
 pub mod fsx;
