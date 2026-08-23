@@ -104,6 +104,14 @@ export default function App() {
   const [presets, setPresets] = useState<PresetsState>({ presets: [], active: null });
   const [menuOpen, setMenuOpen] = useState(false);
   const [newName, setNewName] = useState("");
+  const [notice, setNotice] = useState<string | null>(null);
+  const noticeTimer = useRef<number | null>(null);
+
+  const showNotice = (msg: string) => {
+    setNotice(msg);
+    if (noticeTimer.current != null) window.clearTimeout(noticeTimer.current);
+    noticeTimer.current = window.setTimeout(() => setNotice(null), 6000);
+  };
   const svgRef = useRef<SVGSVGElement>(null);
   const stateRef = useRef<EqState | null>(null);
   stateRef.current = state;
@@ -137,11 +145,10 @@ export default function App() {
   const presetAction = (p: Promise<EqState>) =>
     p.then((s) => {
       setState(s);
-      setError(null);
       refreshPresets();
       setMenuOpen(false);
       setNewName("");
-    }).catch((e) => setError(String(e)));
+    }).catch((e) => showNotice(String(e)));
 
   const switchPreset = (name: string | null) =>
     presetAction(invoke<EqState>("preset_switch", { name }));
@@ -158,15 +165,18 @@ export default function App() {
   const duplicatePreset = (from: string) => {
     invoke<PresetsState>("preset_duplicate", { from, to: `${from} copy` })
       .then(setPresets)
-      .catch((e) => setError(String(e)));
+      .catch((e) => showNotice(String(e)));
   };
   const copyFromSource = (source: string) => {
     const stem = source.replace(/\.txt$/i, "");
     let name = `${stem} copy`;
     for (let n = 2; presets.presets.includes(name); n++) name = `${stem} copy ${n}`;
     invoke<PresetsState>("preset_copy_from_source", { source, name })
-      .then(setPresets)
-      .catch((e) => setError(String(e)));
+      .then((p) => {
+        setPresets(p);
+        showNotice(`copied to “${name}” — select it in the list to activate`);
+      })
+      .catch((e) => showNotice(String(e)));
   };
   const deletePreset = (name: string) =>
     presetAction(invoke<EqState>("preset_delete", { name }));
@@ -334,6 +344,13 @@ export default function App() {
           {state?.deviceName ?? "no device"}
         </span>
       </header>
+
+      {notice && (
+        <div className="notice" onClick={() => setNotice(null)}>
+          {notice}
+          <span className="dim-sm"> · dismiss</span>
+        </div>
+      )}
 
       {error && (
         <section className="alert">

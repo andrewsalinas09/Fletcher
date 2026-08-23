@@ -570,6 +570,15 @@ button.ghost {
 
 /* ---------- alert ---------- */
 
+.notice {
+  margin: 8px 24px 0;
+  border: 1px solid var(--line-strong);
+  background: #fffdf6;
+  padding: 7px 14px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
 .alert {
   margin: 12px 24px;
   border: 1px solid var(--boost);
