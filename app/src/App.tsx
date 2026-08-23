@@ -1169,15 +1169,19 @@ function PopoutHistory() {
     }
   };
 
+  // Trampoline (dev law, Q-20) for the document-level key listener.
+  const keyRef = useRef(handleKey);
+  keyRef.current = handleKey;
+
   useEffect(() => {
     // Hello only after the listener is live — a race leaves the reply unheard.
-    // `alive` guard: listeners must survive HMR churn (see main's hist-cmd effect).
+    // `alive` = post-unmount setState hygiene (the unlisten promise is async).
     let alive = true;
     const un = listen<HistTreeData>("hist-sync", (e) => {
       if (alive) setData(e.payload);
     });
     un.then(() => emitTo("main", "hist-hello", {}));
-    const onKey = (e: KeyboardEvent) => handleKey(e);
+    const onKey = (e: KeyboardEvent) => keyRef.current(e);
     // Capture phase + document: maximum chance of delivery in a secondary webview.
     document.addEventListener("keydown", onKey, true);
     const grabFocus = () => rootRef.current?.focus();
@@ -1700,24 +1704,28 @@ function MainApp() {
   };
 
   // Trial-room keyboard: a/b/x audition, arrows vote, Esc leaves.
+  // Trampoline (dev law, Q-20): registered only while a session runs, but the
+  // body must stay current across hot reloads mid-session too.
+  const abxKeyRef = useRef<(e: KeyboardEvent) => void>(() => {});
+  abxKeyRef.current = (e: KeyboardEvent) => {
+    const k = e.key.toLowerCase();
+    if (k === "a" || k === "b" || k === "x") {
+      e.preventDefault();
+      abxAudition(k as "a" | "b" | "x");
+    } else if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      abxVote(true);
+    } else if (e.key === "ArrowRight") {
+      e.preventDefault();
+      abxVote(false);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      abxCancel();
+    }
+  };
   useEffect(() => {
     if (!abx) return;
-    const onKey = (e: KeyboardEvent) => {
-      const k = e.key.toLowerCase();
-      if (k === "a" || k === "b" || k === "x") {
-        e.preventDefault();
-        abxAudition(k as "a" | "b" | "x");
-      } else if (e.key === "ArrowLeft") {
-        e.preventDefault();
-        abxVote(true);
-      } else if (e.key === "ArrowRight") {
-        e.preventDefault();
-        abxVote(false);
-      } else if (e.key === "Escape") {
-        e.preventDefault();
-        abxCancel();
-      }
-    };
+    const onKey = (e: KeyboardEvent) => abxKeyRef.current(e);
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1742,30 +1750,32 @@ function MainApp() {
     invoke<AbInfo>("ab_info").then(setAb).catch(() => {});
   };
 
-  useEffect(() => {
-    refresh();
-    refreshPresets();
-    // `alive` guard: see the hist-cmd effect — listeners must survive HMR churn.
-    let alive = true;
+  // Trampoline (dev law, Q-20): fast-refresh never re-runs []-effects, so
+  // registered callbacks are permanent — they dispatch through this ref,
+  // whose body is refreshed every render.
+  const pushRef = useRef({ config: () => {}, ab: (_s: string) => {}, abx: (_t: string) => {} });
+  pushRef.current = {
     // Push-based updates from the Rust config watcher — no polling. Ignored
     // mid-drag (our own writes fire it; the drag state is fresher).
-    const unlisten = listen("apo-config-changed", () => {
-      if (alive && !dragging.current) {
+    config: () => {
+      if (!dragging.current) {
         refresh();
         invoke<AbInfo>("ab_info").then(setAb).catch(() => {});
       }
-    });
+    },
     // Hotkey / tray flips land here.
-    const unlistenAb = listen<string>("ab-changed", (e) => {
-      if (alive) setAb((cur) => ({ ...cur, side: e.payload }));
-    });
+    ab: (side: string) => setAb((cur) => ({ ...cur, side })),
     // During a session the hotkey cycles the audition target.
-    const unlistenAbx = listen<string>("abx-audition", (e) => {
-      if (alive) setAbx((cur) => (cur ? { ...cur, audition: e.payload } : cur));
-    });
+    abx: (target: string) => setAbx((cur) => (cur ? { ...cur, audition: target } : cur)),
+  };
+  useEffect(() => {
+    refresh();
+    refreshPresets();
     loadSessions();
+    const unlisten = listen("apo-config-changed", () => pushRef.current.config());
+    const unlistenAb = listen<string>("ab-changed", (e) => pushRef.current.ab(e.payload));
+    const unlistenAbx = listen<string>("abx-audition", (e) => pushRef.current.abx(e.payload));
     return () => {
-      alive = false;
       unlisten.then((f) => f());
       unlistenAb.then((f) => f());
       unlistenAbx.then((f) => f());
