@@ -125,6 +125,80 @@ impl ConfigDoc {
             p => Some(p),
         })
     }
+
+    /// The document's dominant line terminator — new lines match the file's
+    /// existing style rather than imposing one (ADR-0007: minimal diffs on
+    /// files we share with other tools).
+    fn terminator(&self) -> &'static str {
+        if self.lines.iter().any(|l| l.raw.ends_with("\r\n")) {
+            "\r\n"
+        } else if self.lines.iter().any(|l| l.raw.ends_with('\n')) {
+            "\n"
+        } else {
+            "\r\n" // empty or single unterminated line: Windows default
+        }
+    }
+
+    /// Append one directive line (text without terminator). If the current
+    /// last line has no terminator, it gets one first so content is never
+    /// glued together.
+    pub fn push_line(&mut self, text: &str) {
+        let term = self.terminator();
+        if let Some(last) = self.lines.last_mut()
+            && !last.raw.ends_with('\n')
+        {
+            last.raw.push_str(term);
+        }
+        self.lines.push(ConfigLine {
+            raw: format!("{text}{term}"),
+            parsed: parse_line(text),
+        });
+    }
+
+    /// Ensure an `Include: path` directive exists (case-insensitive path
+    /// comparison — Windows filenames). Returns true if it was added.
+    pub fn ensure_include(&mut self, path: &str) -> bool {
+        let present = self
+            .directives()
+            .any(|d| matches!(d, Parsed::Include { path: p } if p.eq_ignore_ascii_case(path)));
+        if present {
+            return false;
+        }
+        self.push_line(&format!("Include: {path}"));
+        true
+    }
+}
+
+/// Canonical rendering of a filter directive; guaranteed to re-parse to the
+/// same values (see config_write tests).
+pub fn format_filter(
+    index: Option<u32>,
+    enabled: bool,
+    kind: FilterKind,
+    fc_hz: Option<f64>,
+    gain_db: Option<f64>,
+    q: Option<f64>,
+) -> String {
+    let mut s = match index {
+        Some(n) => format!("Filter {n}: "),
+        None => "Filter: ".to_string(),
+    };
+    s.push_str(if enabled { "ON " } else { "OFF " });
+    s.push_str(kind.code());
+    if let Some(fc) = fc_hz {
+        s.push_str(&format!(" Fc {fc} Hz"));
+    }
+    if let Some(g) = gain_db {
+        s.push_str(&format!(" Gain {g} dB"));
+    }
+    if let Some(q) = q {
+        s.push_str(&format!(" Q {q}"));
+    }
+    s
+}
+
+pub fn format_preamp(db: f64) -> String {
+    format!("Preamp: {db} dB")
 }
 
 impl fmt::Display for ConfigDoc {

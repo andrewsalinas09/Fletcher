@@ -20,8 +20,10 @@ struct ConfigFile {
     lines: Vec<LineDto>,
 }
 
+// rename_all covers the variant names (the "kind" tag); rename_all_fields is
+// needed separately for the fields inside each variant.
 #[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
 #[serde(tag = "kind")]
 enum LineDto {
     Preamp {
