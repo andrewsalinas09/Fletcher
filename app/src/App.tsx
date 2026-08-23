@@ -393,6 +393,11 @@ export default function App() {
               drag handles · scroll for Q · locked filters: duplicate from live to edit
             </span>
             <span className="spacer" />
+            {sel && (
+              <span className="sel-readout mono">
+                {`${sel.kind} ${fmtHz(sel.fcHz)} Hz ${fmtGain(sel.gainDb)} dB Q ${sel.q}${sel.enabled ? "" : " · bypassed"}`}
+              </span>
+            )}
             {state.filters.some((f) => f.enabled && f.sourceFile !== OWN_FILE) &&
               state.filters.some((f) => f.enabled && f.sourceFile === OWN_FILE) && (
                 <span className="warn-chip" title="Filters from another tool (e.g. Peace) are active alongside Fletcher's — you may be hearing both EQs stacked.">
@@ -421,34 +426,27 @@ export default function App() {
               )}
               <path d={pathFrom(state.freqs, state.sumDb.map((db) => db - state.preampDb), yOf)} className="sum-curve" />
 
-              {state.filters.map((f, i) =>
-                f.enabled ? (
-                  <circle
-                    key={i}
-                    cx={xOf(f.fcHz)}
-                    cy={yOf(f.gainDb)}
-                    r={i === selected ? 7 : 5}
-                    className={`handle ${f.gainDb >= 0 ? "boost" : "cut"} ${i === selected ? "selected" : ""} ${
-                      f.sourceFile === OWN_FILE ? "editable" : "locked"
+              {state.filters.map((f, i) => (
+                <circle
+                  key={i}
+                  cx={xOf(f.fcHz)}
+                  cy={yOf(f.gainDb)}
+                  r={i === selected ? 7 : 5}
+                  className={`handle ${f.gainDb >= 0 ? "boost" : "cut"} ${i === selected ? "selected" : ""} ${
+                    f.sourceFile === OWN_FILE ? "editable" : "locked"
+                  } ${f.enabled ? "" : "bypassed"}`}
+                  onPointerDown={startDrag(i)}
+                  onPointerMove={onDragMove(i)}
+                  onPointerUp={endDrag(i)}
+                  onWheel={onWheelQ(i)}
+                >
+                  <title>
+                    {`${f.enabled ? "" : "bypassed · "}${
+                      f.sourceFile === OWN_FILE ? "drag to move · scroll for Q" : `managed by ${f.sourceFile}`
                     }`}
-                    onPointerDown={startDrag(i)}
-                    onPointerMove={onDragMove(i)}
-                    onPointerUp={endDrag(i)}
-                    onWheel={onWheelQ(i)}
-                  >
-                    <title>
-                      {f.sourceFile === OWN_FILE ? "drag to move · scroll for Q" : `managed by ${f.sourceFile}`}
-                    </title>
-                  </circle>
-                ) : null,
-              )}
-
-              {sel && (
-                <g className="flag" transform={`translate(${Math.min(xOf(sel.fcHz) + 16, GW - 200)}, ${Math.max(yOf(sel.gainDb) - 34, 6)})`}>
-                  <rect width="188" height="24" />
-                  <text x="9" y="16">{`${sel.kind} ${fmtHz(sel.fcHz)} Hz ${fmtGain(sel.gainDb)} dB Q ${sel.q}`}</text>
-                </g>
-              )}
+                  </title>
+                </circle>
+              ))}
 
               <g className="axis">
                 {[30, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000].map((f) => (
