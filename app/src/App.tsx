@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow, PhysicalPosition } from "@tauri-apps/api/window";
 import "./App.css";
 
 type EqFilter = {
@@ -510,7 +511,25 @@ export default function App() {
     return { x: p.x, y: p.y };
   };
 
-  const grabOffset = useRef({ dx: 0, dy: 0 });
+  /** Warp the OS cursor to an SVG-user-space point (native shell privilege). */
+  const warpCursorTo = async (svgX: number, svgY: number) => {
+    try {
+      const ctm = svgRef.current?.getScreenCTM();
+      if (!ctm) return;
+      const client = new DOMPoint(svgX, svgY).matrixTransform(ctm);
+      const win = getCurrentWindow();
+      const inner = await win.innerPosition();
+      const scale = window.devicePixelRatio;
+      await win.setCursorPosition(
+        new PhysicalPosition(
+          Math.round(inner.x + client.x * scale),
+          Math.round(inner.y + client.y * scale),
+        ),
+      );
+    } catch {
+      // cursor warping is a nicety — dragging still works without it
+    }
+  };
 
   const startDrag = (i: number) => (e: React.PointerEvent) => {
     const f = state?.filters[i];
@@ -521,31 +540,24 @@ export default function App() {
     setSelected(i);
     dragging.current = true;
     setDragRange(dbRange); // freeze the scale for the whole drag
-    const p = svgPoint(e);
-    grabOffset.current = { dx: xOf(f.fcHz) - p.x, dy: yOf(f.gainDb) - p.y };
     (e.target as Element).setPointerCapture(e.pointerId);
+    // Cursor and dot are one: snap the cursor to the dot's center on grab.
+    warpCursorTo(xOf(f.fcHz), yOf(f.gainDb));
   };
 
   const onDragMove = (i: number) => (e: React.PointerEvent) => {
     if (!dragging.current || selected !== i) return;
     const p = svgPoint(e);
-    // Rubber-band catch-up: any cursor↔dot offset (from an off-center grab or
-    // a scale doubling) decays away within a few movement events, so the dot
-    // converges onto the cursor without the value ever jumping.
-    grabOffset.current.dx *= 0.8;
-    grabOffset.current.dy *= 0.8;
-    if (Math.abs(grabOffset.current.dx) < 0.5) grabOffset.current.dx = 0;
-    if (Math.abs(grabOffset.current.dy) < 0.5) grabOffset.current.dy = 0;
-    const x = Math.max(0, Math.min(GW, p.x + grabOffset.current.dx));
+    const x = Math.max(0, Math.min(GW, p.x));
     const f = fOf(x);
-    const db = dbOfR(p.y + grabOffset.current.dy, dbRange);
+    const db = dbOfR(p.y, dbRange);
     const clamped = Math.max(-dbRange, Math.min(dbRange, db));
     if (Math.abs(clamped) >= dbRange * 0.65 && dbRange < 48) {
-      // Double the scale — and re-anchor the grab so the filter's current
-      // value stays exactly under the cursor in the new scale. No jump.
+      // Double the scale; the value stays continuous and the CURSOR follows
+      // the dot to its position in the new scale.
       const newRange = dbRange * 2;
-      grabOffset.current.dy = yOfR(clamped, newRange) - p.y;
       setDragRange(newRange);
+      warpCursorTo(x, yOfR(clamped, newRange));
     }
     mutateFilter(i, {
       fcHz: +f.toFixed(f < 100 ? 1 : 0),
