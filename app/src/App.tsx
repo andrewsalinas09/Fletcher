@@ -397,8 +397,20 @@ function PopoutHistory() {
   useEffect(() => {
     const un = listen<HistTreeData>("hist-sync", (e) => setData(e.payload));
     emit("hist-hello", {});
+    const onKey = (e: KeyboardEvent) => {
+      const k = e.key.toLowerCase();
+      if (e.ctrlKey && !e.shiftKey && k === "z") {
+        e.preventDefault();
+        emit("hist-cmd", { type: "undo", id: 0 });
+      } else if ((e.ctrlKey && k === "y") || (e.ctrlKey && e.shiftKey && k === "z")) {
+        e.preventDefault();
+        emit("hist-cmd", { type: "redo", id: 0 });
+      }
+    };
+    window.addEventListener("keydown", onKey);
     return () => {
       un.then((f) => f());
+      window.removeEventListener("keydown", onKey);
     };
   }, []);
   return (
@@ -1197,6 +1209,8 @@ function MainApp() {
     const u2 = listen<{ type: string; id: number }>("hist-cmd", (e) => {
       if (e.payload.type === "jump") jumpTo(e.payload.id);
       else if (e.payload.type === "del") deleteNode(e.payload.id);
+      else if (e.payload.type === "undo") undo();
+      else if (e.payload.type === "redo") redo();
     });
     return () => {
       u1.then((f) => f());
