@@ -148,22 +148,238 @@ function ValueEdit({
   );
 }
 
-// This bundle serves both windows; the query param picks the personality.
+// This bundle serves every window; the query param picks the personality.
 const IS_HISTORY_WINDOW = new URLSearchParams(window.location.search).get("view") === "history";
+const IS_DIFF_WINDOW = new URLSearchParams(window.location.search).get("view") === "diff";
 
-type HistTreeNode = { id: number; parent: number | null; children: number[]; label: string; ts: number };
+type ChainSnap = { enabled: boolean; kind: string; fcHz: number; gainDb: number; q: number }[];
+type HistTreeNode = {
+  id: number;
+  parent: number | null;
+  children: number[];
+  label: string;
+  ts: number;
+  snap: ChainSnap;
+  note?: string;
+  pinned?: boolean;
+};
 type HistTreeData = { nodes: HistTreeNode[]; current: number };
+type NodePatch = { label?: string; note?: string; pinned?: boolean };
 
-/** The family-tree canvas: cursor-anchored zoom, drag pan, armed deletes.
- *  Shared by the in-app panel and the pop-out window. */
+/** One filter as a real APO config line — shared by filter Ctrl+C and the
+ *  inspector's copy-node (one formatter, never two drifting ones). */
+const apoLine = (f: ChainSnap[number]) =>
+  `Filter: ${f.enabled ? "ON" : "OFF"} ${f.kind} Fc ${f.fcHz} Hz Gain ${f.gainDb} dB Q ${f.q}`;
+
+// ---- inspector curve math (Q-24): all responses come from Rust, TS only
+// subtracts. "Audible" = response + matched preamp — what actually plays.
+type ChainCurvesResp = { freqs: number[]; curves: { responseDb: number[]; matchedPreampDb: number }[] };
+type CurveMap = { freqs: number[]; byId: Map<number, { responseDb: number[]; preamp: number }> };
+
+const audibleOf = (c: { responseDb: number[]; preamp: number }) => c.responseDb.map((db) => db + c.preamp);
+const diffOf = (a: number[], b: number[]) => a.map((v, i) => v - (b[i] ?? 0));
+const meanAbs = (xs: number[]) => (xs.length ? xs.reduce((s, x) => s + Math.abs(x), 0) / xs.length : 0);
+
+/** Series colors for multi-node compare — legend, rings, and curves agree. */
+const CMP_COLORS = ["#c85a13", "#3f6d9e", "#3d7d43", "#7d5a9e", "#a3552e", "#4f7d7d"];
+
+type DiffRow =
+  | { t: "changed"; a: ChainSnap[number]; b: ChainSnap[number] }
+  | { t: "added"; b: ChainSnap[number] }
+  | { t: "removed"; a: ChainSnap[number] };
+
+/** Parametric diff base→node. Filters have no stable identity across nodes,
+ *  so pair greedily: same kind + nearest log-Fc first, then leftovers at
+ *  (nearly) the same Fc pair as type changes; the rest are added/removed. */
+function diffChains(base: ChainSnap, node: ChainSnap): { rows: DiffRow[]; unchanged: number } {
+  const usedN = new Set<number>();
+  const pair = new Map<number, number>();
+  const claim = (bi: number, sameKind: boolean, maxD: number) => {
+    const bf = base[bi];
+    let best = -1;
+    let bestD = Infinity;
+    node.forEach((nf, j) => {
+      if (usedN.has(j)) return;
+      if (sameKind && nf.kind !== bf.kind) return;
+      const d = Math.abs(Math.log(nf.fcHz / bf.fcHz));
+      if (d < bestD) {
+        bestD = d;
+        best = j;
+      }
+    });
+    if (best >= 0 && bestD <= maxD) {
+      usedN.add(best);
+      pair.set(bi, best);
+    }
+  };
+  base.forEach((_, bi) => claim(bi, true, Infinity));
+  base.forEach((_, bi) => {
+    if (!pair.has(bi)) claim(bi, false, 0.12);
+  });
+  const rows: DiffRow[] = [];
+  let unchanged = 0;
+  base.forEach((bf, bi) => {
+    const ni = pair.get(bi);
+    if (ni == null) {
+      rows.push({ t: "removed", a: bf });
+      return;
+    }
+    const nf = node[ni];
+    const same =
+      nf.kind === bf.kind &&
+      nf.enabled === bf.enabled &&
+      Math.abs(Math.log(nf.fcHz / bf.fcHz)) < 1e-6 &&
+      Math.abs(nf.gainDb - bf.gainDb) < 0.005 &&
+      Math.abs(nf.q - bf.q) < 0.005;
+    if (same) unchanged++;
+    else rows.push({ t: "changed", a: bf, b: nf });
+  });
+  node.forEach((nf, j) => {
+    if (!usedN.has(j)) rows.push({ t: "added", b: nf });
+  });
+  const fcOf = (r: DiffRow) => (r.t === "removed" ? r.a.fcHz : r.b.fcHz);
+  rows.sort((r1, r2) => fcOf(r1) - fcOf(r2));
+  return { rows, unchanged };
+}
+
+/** Mini spectral plot for the inspector: difference curves (single diff gets
+ *  boost/cut shading) over optional faint context curves. Own geometry —
+ *  independent of the main graph's fixed width. */
+function DiffPlot({
+  freqs,
+  diffs,
+  faint,
+  range,
+  w = 300,
+  h = 132,
+}: {
+  freqs: number[];
+  diffs: { dbs: number[]; color: string }[];
+  faint?: number[][];
+  range: number;
+  w?: number;
+  h?: number;
+}) {
+  const PW = w;
+  const PH = h;
+  const px = (f: number) =>
+    ((Math.log10(f) - Math.log10(FMIN)) / (Math.log10(FMAX) - Math.log10(FMIN))) * PW;
+  const py = (db: number) => PH / 2 - (db / range) * (PH / 2 - 6);
+  const path = (dbs: number[]) =>
+    dbs
+      .map(
+        (db, i) =>
+          `${i === 0 ? "M" : "L"}${px(freqs[i]).toFixed(1)} ${Math.max(0, Math.min(PH, py(db))).toFixed(1)}`,
+      )
+      .join(" ");
+  const zero = py(0);
+  const area = (dbs: number[]) => `${path(dbs)} L${PW} ${zero.toFixed(1)} L0 ${zero.toFixed(1)} Z`;
+  return (
+    <svg viewBox={`0 0 ${PW} ${PH}`} className="diff-plot">
+      <clipPath id="dp-up">
+        <rect x={0} y={0} width={PW} height={zero} />
+      </clipPath>
+      <clipPath id="dp-dn">
+        <rect x={0} y={zero} width={PW} height={PH - zero} />
+      </clipPath>
+      {[100, 1000, 10000].map((f) => (
+        <line key={f} x1={px(f)} x2={px(f)} y1={0} y2={PH} className="dp-grid" />
+      ))}
+      {[range / 2, -range / 2].map((db) => (
+        <line key={db} x1={0} x2={PW} y1={py(db)} y2={py(db)} className="dp-grid" />
+      ))}
+      <line x1={0} x2={PW} y1={zero} y2={zero} className="dp-zero" />
+      {faint?.map((dbs, k) => (
+        <path key={`f${k}`} d={path(dbs)} className="dp-faint" />
+      ))}
+      {diffs.length === 1 && (
+        <>
+          <path d={area(diffs[0].dbs)} clipPath="url(#dp-up)" className="dp-fill boost" />
+          <path d={area(diffs[0].dbs)} clipPath="url(#dp-dn)" className="dp-fill cut" />
+        </>
+      )}
+      {diffs.map((d, k) => (
+        <path key={k} d={path(d.dbs)} className="dp-line" style={{ stroke: d.color }} />
+      ))}
+      <text x={3} y={11} className="dp-label">{`+${range}`}</text>
+      <text x={3} y={PH - 4} className="dp-label">{`−${range}`}</text>
+      {[100, 1000, 10000].map((f) => (
+        <text key={f} x={px(f) + 3} y={PH - 4} className="dp-label">
+          {fmtHz(f)}
+        </text>
+      ))}
+    </svg>
+  );
+}
+
+/** One parametric-diff line: what changed on a filter, boost/cut colored. */
+function DiffRowView({ row }: { row: DiffRow }) {
+  if (row.t !== "changed") {
+    const f = row.t === "added" ? row.b : row.a;
+    return (
+      <div className={`diff-row ${row.t}`}>
+        <span className="mono d-tag">{row.t === "added" ? "+add" : "−rem"}</span>
+        <TypeGlyph kind={f.kind} boost={f.gainDb >= 0} />
+        <span className="mono d-txt">{`${f.kind} ${fmtHz(f.fcHz)} ${fmtGain(f.gainDb)} dB Q ${f.q}`}</span>
+      </div>
+    );
+  }
+  const { a, b } = row;
+  const parts: React.ReactNode[] = [];
+  if (b.kind !== a.kind) parts.push(<span key="k" className="d-delta">{`${a.kind}→${b.kind}`}</span>);
+  if (Math.abs(Math.log(b.fcHz / a.fcHz)) > 1e-6)
+    parts.push(<span key="f" className="d-delta">{`Fc ${fmtHz(a.fcHz)}→${fmtHz(b.fcHz)}`}</span>);
+  const dg = b.gainDb - a.gainDb;
+  if (Math.abs(dg) >= 0.005)
+    parts.push(
+      <span key="g" className={`d-delta ${dg >= 0 ? "boost" : "cut"}`}>{`${fmtGain(dg)} dB`}</span>,
+    );
+  if (Math.abs(b.q - a.q) >= 0.005)
+    parts.push(<span key="q" className="d-delta">{`Q ${a.q}→${b.q}`}</span>);
+  if (b.enabled !== a.enabled)
+    parts.push(<span key="e" className="d-delta">{b.enabled ? "enabled" : "bypassed"}</span>);
+  return (
+    <div className="diff-row changed">
+      <span className="mono d-tag">Δ</span>
+      <TypeGlyph kind={b.kind} boost={b.gainDb >= 0} />
+      <span className="mono d-fc">{fmtHz(b.fcHz)}</span>
+      <span className="d-parts">{parts}</span>
+    </div>
+  );
+}
+
+/** The family-tree canvas + the node inspector (Q-24): cursor-anchored zoom,
+ *  drag pan, armed deletes, and a right-side panel that answers "what is this
+ *  node, and how does it differ from that one". Shared by the in-app panel
+ *  and the pop-out window; the inspector never claims audibility — the blind
+ *  test button is the only arbiter. */
 function HistoryTree({
   data,
   onJump,
   onDelete,
+  onEdit,
+  onPreview,
+  onAbx,
+  onPromote,
+  onCompare,
+  onPopoutDiff,
+  onGraft,
+  notify,
 }: {
   data: HistTreeData;
   onJump: (id: number) => void;
   onDelete: (id: number) => void;
+  onEdit: (id: number, patch: NodePatch) => void;
+  onPreview: (snap: ChainSnap | null) => void;
+  onAbx: (aId: number, bId: number) => void;
+  onPromote: (id: number) => void;
+  /** Drag-graft: copy `id`'s exact sound as one clean step under `ontoId`. */
+  onGraft?: (id: number, ontoId: number) => void;
+  /** Reports the inspector's compare (sel/base/cmp, nulls = follow current/parent)
+   *  so the difference pop-out can mirror it. */
+  onCompare?: (spec: { sel: number | null; base: number | null; cmp: number[] }) => void;
+  onPopoutDiff?: () => void;
+  notify?: (msg: string) => void;
 }) {
   const [zoom, setZoom] = useState(1);
   const [armed, setArmed] = useState<{ id: number; count: number } | null>(null);
@@ -173,6 +389,124 @@ function HistoryTree({
   const pending = useRef<{ ox: number; oy: number; sl: number; st: number; prevZ: number } | null>(null);
 
   const map = useMemo(() => new Map(data.nodes.map((n) => [n.id, n])), [data]);
+
+  // ---- inspector state ----
+  const [selId, setSelId] = useState<number | null>(null);
+  const [baseSel, setBaseSel] = useState<number | null>(null); // null = parent of selected
+  const [pickMode, setPickMode] = useState(false);
+  const [cmp, setCmp] = useState<ReadonlySet<number>>(new Set()); // extra compare members
+  const [previewing, setPreviewing] = useState<"node" | "base" | null>(null);
+  const [editingLabel, setEditingLabel] = useState<string | null>(null);
+  const [diffScale, setDiffScale] = useState<number | "auto">(loadDiffScale);
+  const [curves, setCurves] = useState<CurveMap | null>(null);
+
+  // A preview must never outlive the panel (or the selection that started it).
+  const onPreviewRef = useRef(onPreview);
+  onPreviewRef.current = onPreview;
+  useEffect(() => () => onPreviewRef.current(null), []);
+
+  // Undo/redo are keyboard clicks on the graph: whenever the current node
+  // moves (Ctrl+Z/Y, pop-out commands, prunes), the inspector follows it,
+  // exactly as if the node had been clicked. Only Alt+click (silent inspect)
+  // deliberately diverges selection from current — until the next move.
+  useEffect(() => {
+    setSelId(null); // effective selection falls back to data.current
+    setCmp(new Set());
+    setEditingLabel(null);
+    setPreviewing(null);
+  }, [data.current]);
+
+  // Keep the difference pop-out mirroring this inspector's compare.
+  const onCompareRef = useRef(onCompare);
+  onCompareRef.current = onCompare;
+  useEffect(() => {
+    onCompareRef.current?.({ sel: selId, base: baseSel, cmp: [...cmp] });
+  }, [selId, baseSel, cmp]);
+
+  // All node curves in one batched call — feeds the diff plot AND the edge
+  // weights. Trees only change on completed gestures, so this stays cheap.
+  useEffect(() => {
+    const nodes = data.nodes;
+    const t = window.setTimeout(() => {
+      invoke<ChainCurvesResp>("chain_curves", { chains: nodes.map((n) => n.snap ?? []) })
+        .then((r) =>
+          setCurves({
+            freqs: r.freqs,
+            byId: new Map(
+              nodes.map((n, k) => [
+                n.id,
+                { responseDb: r.curves[k].responseDb, preamp: r.curves[k].matchedPreampDb },
+              ]),
+            ),
+          }),
+        )
+        .catch(() => {});
+    }, 150);
+    return () => window.clearTimeout(t);
+  }, [data]);
+
+  const selNodeId = selId != null && map.has(selId) ? selId : data.current;
+  const selNode = map.get(selNodeId);
+  const baseId =
+    baseSel != null && map.has(baseSel) && baseSel !== selNodeId ? baseSel : selNode?.parent ?? null;
+  const baseNode = baseId != null ? map.get(baseId) ?? null : null;
+  const group = useMemo(
+    () => [selNodeId, ...[...cmp].filter((id) => id !== selNodeId && map.has(id))],
+    [selNodeId, cmp, map],
+  );
+  const multi = group.length >= 2;
+
+  const audible = (id: number) => {
+    const c = curves?.byId.get(id);
+    return c ? audibleOf(c) : null;
+  };
+  const madBetween = (i: number, j: number) => {
+    const a = audible(i);
+    const b = audible(j);
+    return a && b ? meanAbs(diffOf(a, b)) : null;
+  };
+  const edgeW = (child: number, parent: number) => {
+    const mad = madBetween(child, parent);
+    return mad == null ? 1.5 : 1.2 + Math.min(4.8, mad * 1.6);
+  };
+
+  const stopPreview = () => {
+    if (previewing) {
+      onPreviewRef.current(null);
+      setPreviewing(null);
+    }
+  };
+
+  // ---- drag-graft state: a node dragged onto another copies itself there ----
+  const svgElRef = useRef<SVGSVGElement | null>(null);
+  const dragStart = useRef<{ id: number; sx: number; sy: number } | null>(null);
+  const suppressClick = useRef(false);
+  const [ghost, setGhost] = useState<{ id: number; x: number; y: number; target: number | null } | null>(
+    null,
+  );
+
+  const nodeClick = (e: React.MouseEvent, id: number) => {
+    stopPreview();
+    if (pickMode) {
+      setBaseSel(id === selNodeId ? null : id);
+      setPickMode(false);
+      return;
+    }
+    if (e.ctrlKey) {
+      setCmp((prev) => {
+        const n = new Set(prev);
+        if (n.has(id)) n.delete(id);
+        else n.add(id);
+        n.delete(selNodeId); // the selected node is an implicit member
+        return n;
+      });
+      return;
+    }
+    setCmp(new Set());
+    setEditingLabel(null);
+    setSelId(id);
+    if (!e.altKey) onJump(id);
+  };
 
   const rows = useMemo(() => {
     const path = new Set<number>();
@@ -283,6 +617,148 @@ function HistoryTree({
   const H = Math.max((maxDepth + 1) * LEVEL_H + PAD * 2, 900);
   const PADX = (W - Math.max(leaf - 1, 0) * NODE_W) / 2;
 
+  // ---- inspector derivations ----
+  const fmtWhenShort = (ts: number) =>
+    new Date(ts).toLocaleString([], { dateStyle: "short", timeStyle: "short" });
+  const selCurve = selNode ? curves?.byId.get(selNode.id) : null;
+  const baseCurve = baseNode ? curves?.byId.get(baseNode.id) : null;
+
+  let pairDiff: number[] | null = null;
+  let faint: number[][] | undefined;
+  if (!multi && selCurve && baseCurve) {
+    const a = audibleOf(selCurve);
+    const b = audibleOf(baseCurve);
+    pairDiff = diffOf(a, b);
+    // Context curves centered on their joint mean: shapes AND their relative
+    // offset survive; absolute level (≈ the reference) is not the story here.
+    const center = (a.reduce((s, x) => s + x, 0) + b.reduce((s, x) => s + x, 0)) / (a.length + b.length);
+    faint = [a.map((x) => x - center), b.map((x) => x - center)];
+  }
+  const multiDiffs =
+    multi && baseNode
+      ? group.map((id, k) => {
+          const a = audible(id);
+          const b = audible(baseNode.id);
+          return { id, color: CMP_COLORS[k % CMP_COLORS.length], dbs: a && b ? diffOf(a, b) : null };
+        })
+      : [];
+  const autoRange = (() => {
+    const peaks = [
+      ...(pairDiff ? [Math.max(...pairDiff.map(Math.abs))] : []),
+      ...multiDiffs.filter((d) => d.dbs).map((d) => Math.max(...d.dbs!.map(Math.abs))),
+    ];
+    const m = peaks.length ? Math.max(...peaks) : 0;
+    // 33 = the "±30" chip, with the main graph's edge margin trick.
+    return [3, 6, 12, 18, 33].find((r) => r >= m + 0.4) ?? 33;
+  })();
+  const range = diffScale === "auto" ? autoRange : diffScale;
+  const par = !multi && selNode && baseNode ? diffChains(baseNode.snap ?? [], selNode.snap ?? []) : null;
+
+  const commitLabel = () => {
+    if (editingLabel == null || !selNode) return;
+    const v = editingLabel.trim();
+    if (v && v !== selNode.label) onEdit(selNode.id, { label: v });
+    setEditingLabel(null);
+  };
+  const doPreview = (which: "node" | "base") => {
+    const target = which === "node" ? selNode : baseNode;
+    if (!target) return;
+    if (previewing === which) {
+      setPreviewing(null);
+      onPreview(null);
+    } else {
+      setPreviewing(which);
+      onPreview(target.snap ?? []);
+    }
+  };
+  const copyNode = () => {
+    const snap = selNode?.snap ?? [];
+    if (!snap.length) return;
+    navigator.clipboard?.writeText(snap.map(apoLine).join("\r\n")).catch(() => {});
+    notify?.(`copied ${snap.length} filter${snap.length === 1 ? "" : "s"} as APO text`);
+  };
+  const pickDiffScale = (v: number | "auto") => {
+    setDiffScale(v);
+    storeDiffScale(v);
+  };
+  const scaleChips = (
+    <div className="diff-scale">
+      <span className={`scale-opt ${diffScale === "auto" ? "on" : ""}`} onClick={() => pickDiffScale("auto")}>
+        auto
+      </span>
+      {DIFF_SCALES.map((s) => (
+        <span
+          key={s.v}
+          className={`scale-opt ${diffScale === s.v ? "on" : ""}`}
+          onClick={() => pickDiffScale(s.v)}
+        >
+          {s.label}
+        </span>
+      ))}
+      <span className="spacer" />
+      {onPopoutDiff && (
+        <span
+          className="row-act"
+          title="pop the difference graph into its own window — stays live while you edit"
+          onClick={onPopoutDiff}
+        >
+          ⇱
+        </span>
+      )}
+    </div>
+  );
+  const baseLabel = baseNode
+    ? baseSel == null || baseId === selNode?.parent
+      ? `parent · #${baseId}`
+      : `#${baseId} ${baseNode.label}`
+    : "— (root)";
+
+  // ---- drag-graft handlers (need pos/PADX/PAD, so they live after layout) ----
+  const svgPt = (e: { clientX: number; clientY: number }) => {
+    const el = svgElRef.current;
+    if (!el) return { x: 0, y: 0 };
+    const r = el.getBoundingClientRect(); // reflects the zoom transform
+    return { x: (e.clientX - r.left) / zoom, y: (e.clientY - r.top) / zoom };
+  };
+  const nodeDown = (id: number) => (e: React.PointerEvent) => {
+    // Delete glyphs keep their own click path — capturing would retarget it.
+    if (e.button !== 0 || (e.target as Element).closest(".tree-del, .tree-confirm")) return;
+    dragStart.current = { id, sx: e.clientX, sy: e.clientY };
+    (e.currentTarget as Element).setPointerCapture(e.pointerId);
+  };
+  const dropTarget = (id: number, e: { clientX: number; clientY: number }) => {
+    const p = svgPt(e);
+    let target: number | null = null;
+    let best = 48;
+    pos.forEach((c, nid) => {
+      if (nid === id) return;
+      const dist = Math.hypot(c.x + PADX - p.x, c.y + PAD - p.y);
+      if (dist < best) {
+        best = dist;
+        target = nid;
+      }
+    });
+    return { target, p };
+  };
+  const nodeMove = (id: number) => (e: React.PointerEvent) => {
+    const d = dragStart.current;
+    if (!d || d.id !== id) return;
+    if (!ghost && Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < 6) return;
+    const { target, p } = dropTarget(id, e);
+    setGhost({ id, x: p.x, y: p.y, target });
+  };
+  const nodeUp = (id: number) => (e: React.PointerEvent) => {
+    const d = dragStart.current;
+    dragStart.current = null;
+    setGhost(null);
+    if (!d || d.id !== id) return;
+    // Decide from the UP event itself — never from possibly-stale ghost state.
+    if (Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < 6) return; // a click; onClick handles it
+    suppressClick.current = true;
+    const { target } = dropTarget(id, e);
+    if (target != null) onGraft?.(id, target);
+  };
+
   return (
     <div
       className="hist-body"
@@ -291,6 +767,7 @@ function HistoryTree({
         if (!(e.target as Element).closest(".tree-del, .tree-confirm")) setArmed(null);
       }}
     >
+      <div className="hist-main">
       <div
         className="hist-viewport"
         ref={vpRef}
@@ -314,7 +791,7 @@ function HistoryTree({
       >
         <div className="hist-graph" style={{ width: W * zoom, height: H * zoom }}>
           <div className="hist-scale" style={{ transform: `scale(${zoom})`, width: W, height: H }}>
-            <svg width={W} height={H}>
+            <svg width={W} height={H} ref={svgElRef}>
               {rows.map((r) => {
                 const n = map.get(r.id);
                 if (!n || n.parent == null) return null;
@@ -324,11 +801,14 @@ function HistoryTree({
                 const py = p.y + PAD;
                 const cxx = c.x + PADX;
                 const cyy = c.y + PAD;
+                // Edge thickness = mean |audible diff| across it: the tree's
+                // shape shows where the big sonic moves happened.
                 return (
                   <path
                     key={`e${r.id}`}
                     d={`M ${px} ${py + 26} C ${px} ${py + 70}, ${cxx} ${cyy - 70}, ${cxx} ${cyy - 26}`}
                     className={`hist-edge ${r.onPath ? "on" : ""}`}
+                    style={{ strokeWidth: edgeW(r.id, n.parent) }}
                   />
                 );
               })}
@@ -337,17 +817,58 @@ function HistoryTree({
                 const x = c.x + PADX;
                 const y = c.y + PAD;
                 const isArmed = armed?.id === r.id;
+                const nodeR = r.isCurrent ? 28 : 24;
+                const gi = group.indexOf(r.id);
+                // Long (renamed) labels overflow the circle — truncate on the
+                // canvas; the full name lives on hover and in the inspector.
+                const shortLabel = r.label.length > 12 ? `${r.label.slice(0, 11)}…` : r.label;
+                const note = map.get(r.id)?.note;
                 return (
-                  <g key={`n${r.id}`} className={`tree-g ${r.onPath ? "on" : "off"}`} onClick={() => onJump(r.id)}>
+                  <g
+                    key={`n${r.id}`}
+                    className={`tree-g ${r.onPath ? "on" : "off"}`}
+                    onClick={(e) => {
+                      if (suppressClick.current) {
+                        suppressClick.current = false;
+                        return;
+                      }
+                      nodeClick(e, r.id);
+                    }}
+                    onPointerDown={nodeDown(r.id)}
+                    onPointerMove={nodeMove(r.id)}
+                    onPointerUp={nodeUp(r.id)}
+                  >
                     <circle cx={x} cy={y} r={44} fill="transparent" />
+                    {!multi && r.id === selNodeId && (
+                      <circle cx={x} cy={y} r={nodeR + 5} className="sel-ring" />
+                    )}
+                    {multi && gi >= 0 && (
+                      <circle
+                        cx={x}
+                        cy={y}
+                        r={nodeR + 5}
+                        className="cmp-ring"
+                        style={{ stroke: CMP_COLORS[gi % CMP_COLORS.length] }}
+                      />
+                    )}
+                    {r.id === baseId && <circle cx={x} cy={y} r={nodeR + 9} className="base-ring" />}
                     <circle
                       cx={x}
                       cy={y}
-                      r={r.isCurrent ? 28 : 24}
+                      r={nodeR}
                       className={`hist-node ${r.isCurrent ? "current" : ""} ${r.onPath ? "on" : ""}`}
                     />
+                    <text x={x} y={y - 13} className={`tree-id ${r.isCurrent ? "inv" : ""}`}>
+                      {`#${r.id}`}
+                    </text>
+                    {map.get(r.id)?.pinned && (
+                      <text x={x - 26} y={y - 22} className="tree-pin">
+                        ★
+                      </text>
+                    )}
+                    <title>{note ? `${r.label} — ${note}` : r.label}</title>
                     <text x={x} y={y - 1} className={`tree-label ${r.isCurrent ? "inv" : ""}`}>
-                      {r.label}
+                      {shortLabel}
                     </text>
                     <text x={x} y={y + 11} className={`tree-time ${r.isCurrent ? "inv" : ""}`}>
                       {new Date(r.ts).toLocaleTimeString([], { timeStyle: "short" })}
@@ -380,12 +901,251 @@ function HistoryTree({
                   </g>
                 );
               })}
+              {ghost && (
+                <g className="graft-ghost">
+                  {ghost.target != null &&
+                    (() => {
+                      const t = pos.get(ghost.target)!;
+                      return <circle cx={t.x + PADX} cy={t.y + PAD} r={36} className="graft-target" />;
+                    })()}
+                  <circle cx={ghost.x} cy={ghost.y} r={20} className="graft-drag" />
+                  <text x={ghost.x} y={ghost.y + 3} className="tree-label">
+                    {`#${ghost.id}`}
+                  </text>
+                </g>
+              )}
             </svg>
           </div>
         </div>
       </div>
       <div className="hist-hint mono">
-        click a node to jump (audibly) · scroll = zoom · drag empty space = pan · × prunes (asks first for whole branches)
+        {pickMode
+          ? "pick-mode: click the node to compare against · the chip cancels"
+          : ghost
+            ? ghost.target != null
+              ? `drop: copy #${ghost.id} under #${ghost.target} as one step`
+              : "drop on a node to copy this sound there as one clean step"
+            : "click = jump (audible) · Alt+click = inspect silently · Ctrl+click = add to compare · drag node onto node = copy it there as one step · thicker edge = bigger sound change · scroll = zoom · × prunes"}
+      </div>
+      </div>
+
+      <div className="hist-inspector">
+        <span className="mono lab-label">{multi ? `NODE #${selNodeId} · +${group.length - 1} compared` : `NODE #${selNodeId}`}</span>
+        <div className="insp-head">
+          {editingLabel != null ? (
+            <input
+              className="rename-input"
+              autoFocus
+              value={editingLabel}
+              onChange={(e) => setEditingLabel(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") commitLabel();
+                if (e.key === "Escape") setEditingLabel(null);
+              }}
+              onBlur={commitLabel}
+            />
+          ) : (
+            <span className="insp-name" title={selNode?.label}>
+              {selNode?.label}
+            </span>
+          )}
+          <span
+            className="row-act"
+            title="rename — gesture labels become intentions"
+            onClick={() => setEditingLabel(selNode?.label ?? "")}
+          >
+            ✎
+          </span>
+          <span
+            className={`insp-pin ${selNode?.pinned ? "on" : ""}`}
+            title={selNode?.pinned ? "unpin" : "pin this node"}
+            onClick={() => selNode && onEdit(selNode.id, { pinned: !selNode.pinned })}
+          >
+            ★
+          </span>
+        </div>
+        <div className="mono dim-sm">
+          {selNode ? `${fmtWhenShort(selNode.ts)} · ${(selNode.snap ?? []).length} filters` : ""}
+        </div>
+        <input
+          key={`note-${selNodeId}`}
+          className="insp-note"
+          placeholder="add a note…"
+          defaultValue={selNode?.note ?? ""}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+          }}
+          onBlur={(e) => {
+            const v = e.target.value.trim();
+            if (selNode && v !== (selNode.note ?? "")) onEdit(selNode.id, { note: v });
+          }}
+        />
+
+        <div className="insp-vs">
+          <span className="dim-sm">compared to</span>
+          <span
+            className={`hist-chip mono ${pickMode ? "picking" : ""}`}
+            title="everything below — the graph, the changes, hearing, the blind test — is this node against the one named here. Click, then click any node on the tree to change it."
+            onClick={() => setPickMode((p) => !p)}
+          >
+            {pickMode ? "click a node on the tree…" : baseLabel}
+          </span>
+          {baseSel != null && !pickMode && (
+            <span className="row-act" title="back to comparing against the parent" onClick={() => setBaseSel(null)}>
+              ↺
+            </span>
+          )}
+        </div>
+
+        {!multi && (
+          <>
+            {!baseNode && (
+              <p className="dim-sm">
+                the root has nothing before it — use the chip above to compare it to any node.
+              </p>
+            )}
+            {baseNode && (
+              <>
+                {pairDiff && curves && (
+                  <>
+                    <DiffPlot
+                      freqs={curves.freqs}
+                      diffs={[{ dbs: pairDiff, color: "var(--ink)" }]}
+                      faint={faint}
+                      range={range}
+                    />
+                    <p className="dim-sm insp-cap">
+                      {`how #${selNodeId} differs from #${baseId} — flat at 0 = they sound identical`}
+                    </p>
+                  </>
+                )}
+                {scaleChips}
+                {par && (
+                  <div className="diff-rows">
+                    {par.rows.length === 0 && <span className="dim-sm">no parametric changes</span>}
+                    {par.rows.map((row, k) => (
+                      <DiffRowView key={k} row={row} />
+                    ))}
+                    {par.unchanged > 0 && (
+                      <span className="dim-sm">{`${par.unchanged} filter${par.unchanged === 1 ? "" : "s"} unchanged`}</span>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+          </>
+        )}
+
+        {multi && (
+          <>
+            {!baseNode && (
+              <p className="dim-sm">nothing to compare against — use the chip above to pick a node.</p>
+            )}
+            {baseNode && curves && (
+              <>
+                <DiffPlot
+                  freqs={curves.freqs}
+                  diffs={multiDiffs.filter((d) => d.dbs).map((d) => ({ dbs: d.dbs!, color: d.color }))}
+                  range={range}
+                />
+                <p className="dim-sm insp-cap">{`each curve: how that node differs from #${baseId}`}</p>
+                {scaleChips}
+                <div className="diff-rows">
+                  {multiDiffs.map((d) => {
+                    const n = map.get(d.id)!;
+                    return (
+                      <div
+                        key={d.id}
+                        className={`legend-row ${d.id === selNodeId ? "sel" : ""}`}
+                        onClick={() => setSelId(d.id)}
+                      >
+                        <span className="sw" style={{ background: d.color }} />
+                        <span className="mono">{`#${d.id}`}</span>
+                        <span className="legend-name">{n.label}</span>
+                        <span className="spacer" />
+                        {d.id !== selNodeId && (
+                          <span
+                            className="row-act"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setCmp((p) => {
+                                const s = new Set(p);
+                                s.delete(d.id);
+                                return s;
+                              });
+                            }}
+                          >
+                            ×
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+                <p className="dim-sm">Ctrl+click nodes on the tree to add or remove them.</p>
+              </>
+            )}
+          </>
+        )}
+
+        <div className="insp-actions">
+          <button
+            className="primary"
+            disabled={!baseNode}
+            onClick={() => baseNode && selNode && onAbx(selNode.id, baseNode.id)}
+            title="blind ABX these two — Fletcher claims nothing; the test is the only arbiter"
+          >
+            {baseNode ? `⚖ blind test #${selNodeId} vs #${baseId}` : "⚖ blind test"}
+          </button>
+        </div>
+        <div className="insp-vs">
+          <span className="dim-sm">hear</span>
+          <div className="insp-ab mono">
+            <span
+              className={`insp-ab-side ${previewing === "node" ? "active" : ""} ${
+                selNodeId === data.current && previewing !== "node" ? "disabled" : ""
+              }`}
+              title={
+                selNodeId === data.current
+                  ? `#${selNodeId} is what you're hearing already`
+                  : `hear #${selNodeId} without moving to it — click again to go back`
+              }
+              onClick={() => {
+                if (selNodeId !== data.current || previewing === "node") doPreview("node");
+              }}
+            >
+              {`#${selNodeId}`}
+            </span>
+            <span
+              className={`insp-ab-side ${previewing === "base" ? "active" : ""} ${!baseNode ? "disabled" : ""}`}
+              title={
+                baseNode
+                  ? `hear #${baseId} without moving to it — click again to go back`
+                  : "nothing to compare against yet"
+              }
+              onClick={() => baseNode && doPreview("base")}
+            >
+              {baseNode ? `#${baseId}` : "—"}
+            </span>
+          </div>
+          {previewing && <span className="dim-sm">click again to go back</span>}
+        </div>
+        <div className="insp-actions">
+          <button
+            onClick={() => selNode && onPromote(selNode.id)}
+            disabled={!(selNode?.snap ?? []).length}
+            title="save this node's chain as a new preset in the preset menu"
+          >
+            save as preset
+          </button>
+          <button
+            onClick={copyNode}
+            disabled={!(selNode?.snap ?? []).length}
+            title="copy this node's filters to the clipboard as APO text"
+          >
+            copy APO
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -408,8 +1168,13 @@ function PopoutHistory() {
   };
 
   useEffect(() => {
-    const un = listen<HistTreeData>("hist-sync", (e) => setData(e.payload));
-    emitTo("main", "hist-hello", {});
+    // Hello only after the listener is live — a race leaves the reply unheard.
+    // `alive` guard: listeners must survive HMR churn (see main's hist-cmd effect).
+    let alive = true;
+    const un = listen<HistTreeData>("hist-sync", (e) => {
+      if (alive) setData(e.payload);
+    });
+    un.then(() => emitTo("main", "hist-hello", {}));
     const onKey = (e: KeyboardEvent) => handleKey(e);
     // Capture phase + document: maximum chance of delivery in a secondary webview.
     document.addEventListener("keydown", onKey, true);
@@ -417,6 +1182,7 @@ function PopoutHistory() {
     window.addEventListener("focus", grabFocus);
     grabFocus();
     return () => {
+      alive = false;
       un.then((f) => f());
       document.removeEventListener("keydown", onKey, true);
       window.removeEventListener("focus", grabFocus);
@@ -429,7 +1195,11 @@ function PopoutHistory() {
       ref={rootRef}
       tabIndex={0}
       onKeyDown={handleKey}
-      onPointerDown={() => rootRef.current?.focus()}
+      onPointerDown={(e) => {
+        // Keyboard reclaim — but never mid-node-press: stealing focus while a
+        // drag-graft is starting can disturb its pointer capture.
+        if (!(e.target as Element).closest(".tree-g")) rootRef.current?.focus();
+      }}
       style={{ outline: "none" }}
     >
       <div className="hist-head">
@@ -442,10 +1212,174 @@ function PopoutHistory() {
           data={data}
           onJump={(id) => emitTo("main", "hist-cmd", { type: "jump", id })}
           onDelete={(id) => emitTo("main", "hist-cmd", { type: "del", id })}
+          onEdit={(id, patch) => emitTo("main", "hist-cmd", { type: "edit", id, patch })}
+          onPreview={(snap) => emitTo("main", "hist-cmd", { type: snap ? "preview" : "restore", id: 0, snap })}
+          onAbx={(a, b) => emitTo("main", "hist-cmd", { type: "abx", id: a, base: b })}
+          onPromote={(id) => emitTo("main", "hist-cmd", { type: "promote", id })}
+          onCompare={(spec) => emitTo("main", "hist-cmd", { type: "compare", id: 0, spec })}
+          onPopoutDiff={() => emitTo("main", "hist-cmd", { type: "popdiff", id: 0 })}
+          onGraft={(id, onto) => emitTo("main", "hist-cmd", { type: "graft", id, base: onto })}
         />
       ) : (
         <p className="dim-sm" style={{ padding: 20 }}>
           waiting for the main window…
+        </p>
+      )}
+    </div>
+  );
+}
+
+// What the difference pop-out mirrors: the compared nodes, resolved by the
+// main window against the live tree (so it keeps tracking as the tree grows).
+type DiffSync = {
+  base: { id: number; label: string; snap: ChainSnap } | null;
+  series: { id: number; label: string; color: string; snap: ChainSnap }[];
+};
+
+const DIFF_SCALES = [
+  { label: "±3", v: 3 },
+  { label: "±6", v: 6 },
+  { label: "±12", v: 12 },
+  { label: "±18", v: 18 },
+  { label: "±30", v: 33 }, // main-graph margin trick: a ±30 curve isn't pinned to the edge
+];
+
+const loadDiffScale = (): number | "auto" => {
+  try {
+    const s = localStorage.getItem("fletcher.diffscale");
+    return s === null || s === "auto" ? "auto" : Number(s);
+  } catch {
+    return "auto";
+  }
+};
+const storeDiffScale = (v: number | "auto") => {
+  try {
+    localStorage.setItem("fletcher.diffscale", String(v));
+  } catch {
+    /* per-viewer nicety only */
+  }
+};
+
+/** The difference-graph pop-out: mirrors whichever history inspector the user
+ *  last touched and keeps tracking the live tree. With the default compare
+ *  (current node vs its parent) it continuously shows "what did my last
+ *  gesture change" while sculpting. */
+function PopoutDiff() {
+  const [sync, setSync] = useState<DiffSync | null>(null);
+  const [curves, setCurves] = useState<{ freqs: number[]; audible: number[][] } | null>(null);
+  const [scale, setScale] = useState<number | "auto">(loadDiffScale);
+
+  useEffect(() => {
+    // Say hello only AFTER the listener is registered — the reply is a one-shot
+    // (re-emits only happen on tree changes), so a race here means a window
+    // that sits on "waiting" forever.
+    let un: (() => void) | undefined;
+    let gone = false;
+    listen<DiffSync>("diff-sync", (e) => {
+      if (!gone) setSync(e.payload);
+    }).then((f) => {
+      if (gone) {
+        f();
+        return;
+      }
+      un = f;
+      emitTo("main", "diff-hello", {});
+    });
+    return () => {
+      gone = true;
+      un?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!sync?.base) {
+      setCurves(null);
+      return;
+    }
+    const chains = [sync.base.snap, ...sync.series.map((s) => s.snap)];
+    const t = window.setTimeout(() => {
+      invoke<ChainCurvesResp>("chain_curves", { chains })
+        .then((r) =>
+          setCurves({
+            freqs: r.freqs,
+            audible: r.curves.map((c) => c.responseDb.map((db) => db + c.matchedPreampDb)),
+          }),
+        )
+        .catch(() => {});
+    }, 100);
+    return () => window.clearTimeout(t);
+  }, [sync]);
+
+  const diffs =
+    sync && curves
+      ? sync.series.map((s, k) => ({
+          dbs: diffOf(curves.audible[k + 1], curves.audible[0]),
+          color: sync.series.length === 1 ? "var(--ink)" : s.color,
+        }))
+      : [];
+  const faint =
+    sync && curves && sync.series.length === 1
+      ? (() => {
+          const a = curves.audible[1];
+          const b = curves.audible[0];
+          const center =
+            (a.reduce((s, x) => s + x, 0) + b.reduce((s, x) => s + x, 0)) / (a.length + b.length);
+          return [a.map((x) => x - center), b.map((x) => x - center)];
+        })()
+      : undefined;
+  const autoR = (() => {
+    const peaks = diffs.map((d) => Math.max(...d.dbs.map(Math.abs)));
+    const m = peaks.length ? Math.max(...peaks) : 0;
+    return [3, 6, 12, 18, 33].find((r) => r >= m + 0.4) ?? 33;
+  })();
+  const range = scale === "auto" ? autoR : scale;
+  const pick = (v: number | "auto") => {
+    setScale(v);
+    storeDiffScale(v);
+  };
+
+  return (
+    <div className="hist-panel full">
+      <div className="hist-head">
+        <span className="mono hist-title">DIFFERENCE</span>
+        {sync?.base && sync.series.length === 1 && (
+          <span className="mono dim-sm">
+            {`#${sync.series[0].id} ${sync.series[0].label} vs #${sync.base.id} ${sync.base.label}`}
+          </span>
+        )}
+        <span className="spacer" />
+        <span className="mono dim-sm">live-synced · flat at 0 = they sound identical</span>
+      </div>
+      {sync?.base && curves ? (
+        <div className="diff-win-body">
+          <DiffPlot freqs={curves.freqs} diffs={diffs} faint={faint} range={range} w={760} h={420} />
+          <div className="diff-scale">
+            <span className={`scale-opt ${scale === "auto" ? "on" : ""}`} onClick={() => pick("auto")}>
+              auto
+            </span>
+            {DIFF_SCALES.map((s) => (
+              <span key={s.v} className={`scale-opt ${scale === s.v ? "on" : ""}`} onClick={() => pick(s.v)}>
+                {s.label}
+              </span>
+            ))}
+          </div>
+          {sync.series.length > 1 && (
+            <div className="diff-rows">
+              {sync.series.map((s) => (
+                <div key={s.id} className="legend-row">
+                  <span className="sw" style={{ background: s.color }} />
+                  <span className="mono">{`#${s.id}`}</span>
+                  <span className="legend-name">{s.label}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : (
+        <p className="dim-sm" style={{ padding: 20 }}>
+          {sync && !sync.base
+            ? "nothing to compare — the current node is the root"
+            : "waiting for the main window…"}
         </p>
       )}
     </div>
@@ -460,6 +1394,7 @@ type AutoeqEntry = { name: string; path: string; note: string };
 type AbxState = {
   active: boolean;
   aName: string;
+  bName?: string;
   planned: number;
   answered: number;
   audition: string;
@@ -469,6 +1404,11 @@ type AbxTrial = { xWasA: boolean; answeredA: boolean; correct: boolean };
 type AbxResult = {
   id: string;
   aName: string;
+  // Sessions recorded before node-vs-node ABX lack these; B was always Flat.
+  bName?: string;
+  aChain?: ChainSnap;
+  bChain?: ChainSnap;
+  referenceDb?: number;
   trials: number;
   correct: number;
   pValue: number;
@@ -538,9 +1478,10 @@ const TYPE_INFO: Record<string, { name: string; desc: string }> = {
 };
 
 export default function App() {
-  // The history pop-out window renders only the tree (fed over events).
-  // Constant per window lifetime, so the early return is hook-safe.
+  // Pop-out windows render only their view (fed over events). Constant per
+  // window lifetime, so the early returns are hook-safe.
   if (IS_HISTORY_WINDOW) return <PopoutHistory />;
+  if (IS_DIFF_WINDOW) return <PopoutDiff />;
   // eslint-disable-next-line react-hooks/rules-of-hooks
   return <MainApp />;
 }
@@ -690,14 +1631,27 @@ function MainApp() {
   const loadSessions = () =>
     invoke<AbxResult[]>("abx_sessions").then(setSessions).catch(() => {});
 
-  const startAbx = (n?: number) => {
-    invoke<AbxState>("abx_start", { trials: n ?? trials })
+  /** Classic mode (no chains): active preset vs flat. With chains: any two —
+   *  node-vs-node from the history inspector, or a recorded session's re-run. */
+  const startAbx = (n?: number, chains?: { a: ChainSnap; b: ChainSnap; aName: string; bName: string }) => {
+    invoke<AbxState>("abx_start", {
+      trials: n ?? trials,
+      ...(chains ?? {}),
+    })
       .then((s) => {
         setAbx(s);
         setAbxResult(null);
       })
       .catch((e) => showNotice(String(e)));
   };
+  /** Re-run a recorded session: with its exact chains when recorded, else classic. */
+  const rerunAbx = (r: AbxResult) =>
+    startAbx(
+      r.trials,
+      r.aChain && r.bChain
+        ? { a: r.aChain, b: r.bChain, aName: r.aName, bName: r.bName ?? "Flat" }
+        : undefined,
+    );
 
   const abxAudition = (target: "a" | "b" | "x") => {
     invoke<AbxState>("abx_audition", { target })
@@ -777,24 +1731,27 @@ function MainApp() {
   useEffect(() => {
     refresh();
     refreshPresets();
+    // `alive` guard: see the hist-cmd effect — listeners must survive HMR churn.
+    let alive = true;
     // Push-based updates from the Rust config watcher — no polling. Ignored
     // mid-drag (our own writes fire it; the drag state is fresher).
     const unlisten = listen("apo-config-changed", () => {
-      if (!dragging.current) {
+      if (alive && !dragging.current) {
         refresh();
         invoke<AbInfo>("ab_info").then(setAb).catch(() => {});
       }
     });
     // Hotkey / tray flips land here.
     const unlistenAb = listen<string>("ab-changed", (e) => {
-      setAb((cur) => ({ ...cur, side: e.payload }));
+      if (alive) setAb((cur) => ({ ...cur, side: e.payload }));
     });
     // During a session the hotkey cycles the audition target.
     const unlistenAbx = listen<string>("abx-audition", (e) => {
-      setAbx((cur) => (cur ? { ...cur, audition: e.payload } : cur));
+      if (alive) setAbx((cur) => (cur ? { ...cur, audition: e.payload } : cur));
     });
     loadSessions();
     return () => {
+      alive = false;
       unlisten.then((f) => f());
       unlistenAb.then((f) => f());
       unlistenAbx.then((f) => f());
@@ -911,7 +1868,6 @@ function MainApp() {
   // A snapshot lands only when a gesture finishes: mouse drop, Enter commit,
   // or a wheel burst settling for 250 ms. Undoing then editing doesn't discard
   // the future — it branches. Session-scoped for now.
-  type ChainSnap = { enabled: boolean; kind: string; fcHz: number; gainDb: number; q: number }[];
   type HistNode = {
     id: number;
     parent: number | null;
@@ -919,6 +1875,8 @@ function MainApp() {
     snap: ChainSnap;
     label: string;
     ts: number;
+    note?: string;
+    pinned?: boolean;
   };
   const hist = useRef<{ nodes: Map<number, HistNode>; current: number; next: number } | null>(null);
   const [histVersion, setHistVersion] = useState(0);
@@ -975,6 +1933,8 @@ function MainApp() {
   };
 
   const applySnap = (snap: ChainSnap) => {
+    // A real move supersedes any inspector preview — never "restore" over it.
+    previewRestore.current = null;
     const cur = stateRef.current;
     if (!cur) return;
     const foreign = cur.filters.filter((f) => f.sourceFile !== OWN_FILE);
@@ -1077,7 +2037,112 @@ function MainApp() {
     setHistVersion((v) => v + 1);
   };
 
-  
+  // ---- the history inspector's actions (Q-24) ----
+
+  /** Drag-graft: copy a node's exact sound in as ONE clean step under any
+   *  other node — a chain of 100 messy edits becomes a single child of the
+   *  ancestor you dropped it on. The original branch stays until pruned
+   *  (history never lies); nodes are full snapshots, so the copy is exact
+   *  wherever it lands. The graft becomes current, audibly. */
+  const graftNode = (id: number, ontoId: number) => {
+    const h = hist.current;
+    const src = h?.nodes.get(id);
+    const onto = h?.nodes.get(ontoId);
+    // Dropping on its own parent is allowed: that's a plain node duplicate.
+    if (!h || !src || !onto || id === ontoId) return;
+    // steps from src up to onto, when onto is an ancestor — names the label
+    let d = 0;
+    let c: number | null = src.parent;
+    for (let steps = 1; c != null; steps++) {
+      if (c === ontoId) {
+        d = steps;
+        break;
+      }
+      c = h.nodes.get(c)?.parent ?? null;
+    }
+    const node: HistNode = {
+      id: h.next++,
+      parent: onto.id,
+      children: [],
+      snap: src.snap.map((f) => ({ ...f })),
+      label: d ? `${d} edit${d === 1 ? "" : "s"} in one` : `from #${src.id}`,
+      ts: Date.now(),
+      note: src.note,
+    };
+    onto.children.push(node.id);
+    h.nodes.set(node.id, node);
+    h.current = node.id;
+    applySnap(node.snap);
+    buildRail(node.id);
+    setHistVersion((v) => v + 1);
+    showNotice(`copied #${src.id} under #${onto.id} — “${node.label}” is a new node (and current)`);
+  };
+
+  /** Rename / annotate / pin — labels become intentions, notes become memory. */
+  const editNode = (id: number, patch: NodePatch) => {
+    const h = hist.current;
+    const n = h?.nodes.get(id);
+    if (!n) return;
+    if (patch.label !== undefined && patch.label) n.label = patch.label;
+    if (patch.note !== undefined) n.note = patch.note || undefined;
+    if (patch.pinned !== undefined) n.pinned = patch.pinned || undefined;
+    setHistVersion((v) => v + 1);
+  };
+
+  /** Level-matched preview of an arbitrary snap; null restores what played
+   *  before the first preview. Uses preview_chain — fletcher.txt only, no
+   *  preset mutation, no A/B side reset. */
+  const previewRestore = useRef<ChainSnap | null>(null);
+  const previewSnap = (snap: ChainSnap | null) => {
+    if (snap) {
+      if (previewRestore.current == null) previewRestore.current = ownSnap();
+      invoke("preview_chain", { filters: snap }).catch((e) => showNotice(String(e)));
+    } else {
+      const back = previewRestore.current;
+      previewRestore.current = null;
+      if (back) invoke("preview_chain", { filters: back }).catch((e) => showNotice(String(e)));
+    }
+  };
+
+  // The hist-cmd listener runs in a [] effect; these refs keep it (and the
+  // inspector callbacks) reading fresh state instead of stale closures.
+  const trialsRef = useRef(trials);
+  trialsRef.current = trials;
+  const presetsRef = useRef(presets);
+  presetsRef.current = presets;
+
+  /** Blind-test two tree nodes — closes Q-17's last residual. The trial room
+   *  lives in the main window, so surface it (the pop-out may have started this). */
+  const abxNodes = (aId: number, bId: number) => {
+    const h = hist.current;
+    const a = h?.nodes.get(aId);
+    const b = h?.nodes.get(bId);
+    if (!a || !b) return;
+    previewRestore.current = null; // the session owns fletcher.txt now
+    setHistOpen(false);
+    const name = (n: HistNode) => `node #${n.id} · ${n.label}`;
+    startAbx(trialsRef.current, { a: a.snap, b: b.snap, aName: name(a), bName: name(b) });
+    import("@tauri-apps/api/window")
+      .then(({ getCurrentWindow }) => {
+        const w = getCurrentWindow();
+        return w.show().then(() => w.setFocus());
+      })
+      .catch(() => {});
+  };
+
+  /** Promote a node's chain into a preset (auto-suffixed name, not activated). */
+  const promoteNode = (id: number) => {
+    const n = hist.current?.nodes.get(id);
+    if (!n) return;
+    // sanitize_name caps at 60 bytes — leave headroom for the auto-suffix.
+    const base = `${presetsRef.current.active ?? "chain"} · ${n.label === "start" ? "root" : n.label}`.slice(0, 48);
+    invoke<string>("preset_create_from_chain", { name: base, filters: n.snap })
+      .then((saved) => {
+        refreshPresets();
+        showNotice(`saved as preset “${saved}” — select it in the preset menu to activate`);
+      })
+      .catch((e) => showNotice(String(e)));
+  };
 
   // ---- history persistence: trees survive restarts; files are the export ----
   const serializeHistory = (): string | null => {
@@ -1093,6 +2158,8 @@ function MainApp() {
         label: n.label,
         ts: n.ts,
         snap: n.snap,
+        note: n.note,
+        pinned: n.pinned,
       })),
     });
   };
@@ -1110,6 +2177,8 @@ function MainApp() {
           snap: n.snap ?? [],
           label: String(n.label ?? "step"),
           ts: n.ts ?? Date.now(),
+          note: typeof n.note === "string" && n.note ? n.note : undefined,
+          pinned: n.pinned === true ? true : undefined,
         });
       }
       if (!nodes.has(0)) return false;
@@ -1206,7 +2275,9 @@ function MainApp() {
     }
   };
 
-  // Serializable tree (snapshots stripped) for the shared canvas + pop-out sync.
+  // Serializable tree for the shared canvas + pop-out sync. Snapshots ride
+  // along since Q-24: the inspector needs them in both windows (they're small,
+  // and curves are recomputed per window through chain_curves).
   const treeData = useMemo<HistTreeData | null>(() => {
     const h = hist.current;
     if (!h) return null;
@@ -1217,6 +2288,9 @@ function MainApp() {
         children: [...n.children],
         label: n.label,
         ts: n.ts,
+        snap: n.snap,
+        note: n.note,
+        pinned: n.pinned,
       })),
       current: h.current,
     };
@@ -1230,18 +2304,50 @@ function MainApp() {
     if (treeData) emit("hist-sync", treeData);
   }, [treeData]);
   useEffect(() => {
-    const u1 = listen("hist-hello", () => {
-      if (treeDataRef.current) emit("hist-sync", treeDataRef.current);
-    });
-    const u2 = listen<{ type: string; id: number }>("hist-cmd", (e) => {
-      if (e.payload.type === "jump") jumpTo(e.payload.id);
-      else if (e.payload.type === "del") deleteNode(e.payload.id);
-      else if (e.payload.type === "undo") undo();
-      else if (e.payload.type === "redo") redo();
-    });
+    // `alive` guard: hot-reload churn re-runs this effect with async Tauri
+    // unlisten cleanup; a stale closure that self-mutes is harmless, but a
+    // lost listener kills the whole popout→main command bus.
+    let alive = true;
+    const guard = <T,>(fn: (e: T) => void) => (e: T) => {
+      if (alive) fn(e);
+    };
+    const u1 = listen(
+      "hist-hello",
+      guard(() => {
+        if (treeDataRef.current) emit("hist-sync", treeDataRef.current);
+      }),
+    );
+    const u2 = listen<{
+      type: string;
+      id: number;
+      base?: number;
+      patch?: NodePatch;
+      snap?: ChainSnap | null;
+      spec?: { sel: number | null; base: number | null; cmp: number[] };
+    }>("hist-cmd", guard((e) => {
+      const p = e.payload;
+      if (p.type === "jump") jumpTo(p.id);
+      else if (p.type === "del") deleteNode(p.id);
+      else if (p.type === "undo") undo();
+      else if (p.type === "redo") redo();
+      else if (p.type === "edit" && p.patch) editNode(p.id, p.patch);
+      else if (p.type === "preview" && p.snap) previewSnap(p.snap);
+      else if (p.type === "restore") previewSnap(null);
+      else if (p.type === "abx" && p.base != null) abxNodes(p.id, p.base);
+      else if (p.type === "promote") promoteNode(p.id);
+      else if (p.type === "compare" && p.spec) onCompareSpec(p.spec);
+      else if (p.type === "popdiff") popOutDiff();
+      else if (p.type === "graft" && p.base != null) graftNode(p.id, p.base);
+    }));
+    const u3 = listen(
+      "diff-hello",
+      guard(() => emitDiffSync()),
+    );
     return () => {
+      alive = false;
       u1.then((f) => f());
       u2.then((f) => f());
+      u3.then((f) => f());
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1262,6 +2368,62 @@ function MainApp() {
         });
       }
       setHistOpen(false);
+    } catch (e) {
+      showNotice(String(e));
+    }
+  };
+
+  // ---- the difference pop-out: mirrors the last-touched inspector's compare,
+  // re-resolved against the live tree so it keeps tracking while you edit ----
+  const diffSpecRef = useRef<{ sel: number | null; base: number | null; cmp: number[] }>({
+    sel: null,
+    base: null,
+    cmp: [],
+  });
+  const emitDiffSync = () => {
+    const h = hist.current;
+    if (!h) return;
+    const spec = diffSpecRef.current;
+    const selId = spec.sel != null && h.nodes.has(spec.sel) ? spec.sel : h.current;
+    const selN = h.nodes.get(selId)!;
+    const baseId =
+      spec.base != null && h.nodes.has(spec.base) && spec.base !== selId ? spec.base : selN.parent;
+    const base = baseId != null ? h.nodes.get(baseId) ?? null : null;
+    const ids = [selId, ...spec.cmp.filter((id) => id !== selId && h.nodes.has(id))];
+    const payload: DiffSync = {
+      base: base ? { id: base.id, label: base.label, snap: base.snap } : null,
+      series: ids.map((id, k) => {
+        const n = h.nodes.get(id)!;
+        return { id: n.id, label: n.label, color: CMP_COLORS[k % CMP_COLORS.length], snap: n.snap };
+      }),
+    };
+    emit("diff-sync", payload);
+  };
+  const onCompareSpec = (spec: { sel: number | null; base: number | null; cmp: number[] }) => {
+    diffSpecRef.current = spec;
+    emitDiffSync();
+  };
+  // Any tree change (gesture, undo, prune, preset switch) re-resolves the compare.
+  useEffect(() => {
+    emitDiffSync();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [histVersion]);
+
+  const popOutDiff = async () => {
+    try {
+      const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+      const existing = await WebviewWindow.getByLabel("diff");
+      if (existing) {
+        await existing.show().catch(() => {});
+        await existing.setFocus();
+      } else {
+        new WebviewWindow("diff", {
+          url: "index.html?view=diff",
+          title: "Fletcher — Difference",
+          width: 880,
+          height: 560,
+        });
+      }
     } catch (e) {
       showNotice(String(e));
     }
@@ -1296,9 +2458,7 @@ function MainApp() {
       gainDb: f.gainDb,
       q: f.q,
     }));
-    const text = members
-      .map((f) => `Filter: ${f.enabled ? "ON" : "OFF"} ${f.kind} Fc ${f.fcHz} Hz Gain ${f.gainDb} dB Q ${f.q}`)
-      .join("\r\n");
+    const text = members.map(apoLine).join("\r\n");
     navigator.clipboard?.writeText(text).catch(() => {});
     showNotice(
       members.length === 1
@@ -1351,6 +2511,9 @@ function MainApp() {
         copySelectedFilter();
       } else if (e.ctrlKey && k === "v") {
         pasteFilters();
+      } else if (e.key === "Escape") {
+        selectOnly(null);
+        setTypeMenu(null);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -1694,7 +2857,7 @@ function MainApp() {
           <div className="trial-room">
             <div className="trial-top mono">
               <span className="ink">ABX</span>
-              <span>{`${abx.aName} vs Flat`}</span>
+              <span>{`${abx.aName} vs ${abx.bName ?? "Flat"}`}</span>
               <span className="spacer" />
               <span>{`trial ${Math.min(abx.answered + 1, abx.planned)} of ${abx.planned}`}</span>
               <span className="trial-leave" onClick={abxCancel}>esc · leave</span>
@@ -1762,7 +2925,7 @@ function MainApp() {
                 <button onClick={() => { setAbxResult(null); setExpanded(abxResult.id); setView("lab"); }}>
                   Replay labeled
                 </button>
-                <button onClick={() => { const n = abxResult.trials; setAbxResult(null); startAbx(n); }}>
+                <button onClick={() => { const r = abxResult; setAbxResult(null); rerunAbx(r); }}>
                   {`Run again · ${abxResult.trials}`}
                 </button>
                 <button className="primary" onClick={() => { setAbxResult(null); setView("lab"); }}>Done</button>
@@ -1898,7 +3061,7 @@ function MainApp() {
                   <div className="session-head" onClick={() => setExpanded(expanded === r.id ? null : r.id)}>
                     <span className="mono badge-abx">ABX</span>
                     <div className="session-main">
-                      <div className="session-title">{`${r.aName} vs Flat`}</div>
+                      <div className="session-title">{`${r.aName} vs ${r.bName ?? "Flat"}`}</div>
                       <div className={`session-verdict ${v.good ? "good" : "meh"}`}>{v.text}</div>
                       {r.statsViewed.length > 0 && (
                         <div className="dim-sm">{`score viewed mid-session at trial ${r.statsViewed.join(", ")}`}</div>
@@ -1918,10 +3081,26 @@ function MainApp() {
                       </div>
                       <div className="session-actions">
                         <span className="dim-sm">listen again, labels on:</span>
-                        <button onClick={() => setSide("a")}>{`A · ${r.aName}`}</button>
-                        <button onClick={() => setSide("b")}>B · Flat</button>
+                        <button
+                          onClick={() =>
+                            r.aChain
+                              ? invoke("preview_chain", { filters: r.aChain }).catch((e) => showNotice(String(e)))
+                              : setSide("a")
+                          }
+                        >
+                          {`A · ${r.aName}`}
+                        </button>
+                        <button
+                          onClick={() =>
+                            r.bChain
+                              ? invoke("preview_chain", { filters: r.bChain }).catch((e) => showNotice(String(e)))
+                              : setSide("b")
+                          }
+                        >
+                          {`B · ${r.bName ?? "Flat"}`}
+                        </button>
                         <span className="spacer" />
-                        <button onClick={() => startAbx(r.trials)}>{`Run again · ${r.trials} trials`}</button>
+                        <button onClick={() => rerunAbx(r)}>{`Run again · ${r.trials} trials`}</button>
                       </div>
                     </div>
                   )}
@@ -2148,7 +3327,19 @@ function MainApp() {
                         </button>
                         <span className="hist-close" onClick={() => setHistOpen(false)}>×</span>
                       </div>
-                      <HistoryTree data={treeData} onJump={jumpTo} onDelete={deleteNode} />
+                      <HistoryTree
+                        data={treeData}
+                        onJump={jumpTo}
+                        onDelete={deleteNode}
+                        onEdit={editNode}
+                        onPreview={previewSnap}
+                        onAbx={abxNodes}
+                        onPromote={promoteNode}
+                        onCompare={onCompareSpec}
+                        onPopoutDiff={popOutDiff}
+                        onGraft={graftNode}
+                        notify={showNotice}
+                      />
                     </div>
                   </>,
                   document.body,

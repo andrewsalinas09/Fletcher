@@ -4,7 +4,7 @@ Scope authority (ADR-0006): everything in FEATURES.md ships; phases order it by 
 
 ## Current focus
 
-**Phase 2, mid-flight (2026-08-23).** Done: curve/strip editing (+multi-select), presets (AutoEQ import, Peace import, rename, filter clipboard), global reference loudness, blind ABX with stats + labeled replay (first result 13/16 p=0.011), undo graph (canvas, pop-out, persistence, export, rail). **Next, in rough order:** Q-24 history inspector (diffs, difference curve, node-vs-node ABX — closes Q-17), Settings tab (filter-ordering toggle owed since the mockups; reference-level calibration placeholder), adaptive/sequential ABX, preference voting. Still folded forward: normative VISION rewrite, fingerprint-format sketch (Q-15).
+**Phase 2, mid-flight (2026-08-23).** Done: curve/strip editing (+multi-select), presets (AutoEQ import, Peace import, rename, filter clipboard), global reference loudness, blind ABX with stats + labeled replay (first result 13/16 p=0.011), undo graph (canvas, pop-out, persistence, export, rail), Q-24 history inspector (parametric + spectral diffs, any-N-node compare, listen previews, node-vs-node ABX — Q-17 closed, edge weights, notes/pins). **Next, in rough order:** Settings tab (filter-ordering toggle owed since the mockups; reference-level calibration placeholder), adaptive/sequential ABX, preference voting. Still folded forward: normative VISION rewrite, fingerprint-format sketch (Q-15).
 
 ## Phases
 

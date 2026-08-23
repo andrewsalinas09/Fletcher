@@ -204,15 +204,10 @@ struct FilterIn {
     q: f64,
 }
 
-/// Replace Fletcher's own chain (fletcher.txt) with the given filters.
-/// Auto-preamp is computed from the summed response peak (TB-06), the file
-/// is written atomically (TB-11), and APO hot-reloads it. Returns the fresh
-/// merged state.
-#[tauri::command]
-fn set_fletcher_chain(filters: Vec<FilterIn>) -> Result<EqState, String> {
-    let install = apo::detect().map_err(|e| e.to_string())?;
-
-    let chain: Vec<ChainFilter> = filters
+/// Validate + clamp incoming filters into a chain — the shared adapter for
+/// every command that accepts a chain as an argument.
+fn chain_of(filters: &[FilterIn]) -> Result<Vec<ChainFilter>, String> {
+    filters
         .iter()
         .map(|f| {
             Ok(ChainFilter {
@@ -224,8 +219,18 @@ fn set_fletcher_chain(filters: Vec<FilterIn>) -> Result<EqState, String> {
                 q: f.q.clamp(0.01, 100.0),
             })
         })
-        .collect::<Result<_, String>>()?;
+        .collect()
+}
 
+/// Replace Fletcher's own chain (fletcher.txt) with the given filters.
+/// Auto-preamp is computed from the summed response peak (TB-06), the file
+/// is written atomically (TB-11), and APO hot-reloads it. Returns the fresh
+/// merged state.
+#[tauri::command]
+fn set_fletcher_chain(filters: Vec<FilterIn>) -> Result<EqState, String> {
+    let install = apo::detect().map_err(|e| e.to_string())?;
+
+    let chain = chain_of(&filters)?;
     let specs = specs_of(&chain);
     let preamp = matched_preamp(&specs);
 
@@ -663,6 +668,74 @@ fn parse_filters(text: String) -> Vec<PastedFilter> {
         .collect()
 }
 
+// ---------------- the history inspector's engine access (Q-24) ----------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChainCurve {
+    response_db: Vec<f64>,
+    matched_preamp_db: f64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChainCurves {
+    freqs: Vec<f64>,
+    curves: Vec<ChainCurve>,
+}
+
+/// Response curves for arbitrary (non-live) chains, batched — one call serves a
+/// whole history tree. The audible, level-matched difference between chains i
+/// and j is (responseDb_i + matchedPreampDb_i) − (responseDb_j + matchedPreampDb_j).
+#[tauri::command]
+fn chain_curves(chains: Vec<Vec<FilterIn>>) -> Result<ChainCurves, String> {
+    let freqs = log_freqs(20.0, 20000.0, CURVE_POINTS);
+    let curves = chains
+        .iter()
+        .map(|filters| {
+            let specs = specs_of(&chain_of(filters)?);
+            Ok(ChainCurve {
+                response_db: chain_response_db(&specs, 0.0, FS, &freqs),
+                matched_preamp_db: matched_preamp(&specs),
+            })
+        })
+        .collect::<Result<_, String>>()?;
+    Ok(ChainCurves { freqs, curves })
+}
+
+/// Level-matched, non-destructive audition of an arbitrary chain (the history
+/// inspector's "listen"): writes fletcher.txt only — the active preset and the
+/// A/B side are untouched, so the preview leaves no trace on disk state.
+/// Refused mid-ABX: an outside write would break the blinding.
+#[tauri::command]
+fn preview_chain(filters: Vec<FilterIn>) -> Result<(), String> {
+    if ABX.lock().unwrap().is_some() {
+        return Err("a blind test is running — finish or cancel it first".into());
+    }
+    activate_chain(&chain_of(&filters)?)
+}
+
+/// Promote an arbitrary chain (a history node) into a preset. Auto-suffixes on
+/// name collision; does not activate. Returns the name actually used.
+#[tauri::command]
+fn preset_create_from_chain(name: String, filters: Vec<FilterIn>) -> Result<String, String> {
+    let base = sanitize_name(&name).ok_or("invalid preset name")?;
+    let chain = chain_of(&filters)?;
+    if chain.is_empty() {
+        return Err("this node has no filters to save".into());
+    }
+    let st = store()?;
+    let mut name = base.clone();
+    let mut n = 2;
+    while st.exists(&name) {
+        name = format!("{base} {n}");
+        n += 1;
+    }
+    st.save(&name, matched_preamp(&specs_of(&chain)), &chain)
+        .map_err(|e| e.to_string())?;
+    Ok(name)
+}
+
 // ---------------- history persistence (Q-17: trees survive restarts) ----------------
 
 fn history_dir() -> PathBuf {
@@ -796,6 +869,13 @@ fn ab_flip(app: &tauri::AppHandle) {
 struct AbxSession {
     id: String,
     a_name: String,
+    b_name: String,
+    /// The two competing chains, captured at start. Classic mode is the active
+    /// preset's chain vs an empty (flat) chain; node-vs-node passes both
+    /// explicitly. Every audition writes through the level-matched path, so
+    /// both sides land at the reference loudness by construction.
+    a: Vec<ChainFilter>,
+    b: Vec<ChainFilter>,
     planned: usize,
     assignments: Vec<bool>, // per trial: X is A
     answers: Vec<bool>,     // per answered trial: user said "X is A"
@@ -821,7 +901,7 @@ fn abx_apply_audition(session: &mut AbxSession, target: &str) -> Result<(), Stri
         "b" => false,
         _ => *session.assignments.get(trial).unwrap_or(&true),
     };
-    apply_side(if hear_a { "a" } else { "b" })?;
+    activate_chain(if hear_a { &session.a } else { &session.b })?;
     session.audition = target.to_string();
     Ok(())
 }
@@ -831,6 +911,7 @@ fn abx_apply_audition(session: &mut AbxSession, target: &str) -> Result<(), Stri
 struct AbxState {
     active: bool,
     a_name: String,
+    b_name: String,
     planned: usize,
     answered: usize,
     audition: String,
@@ -842,6 +923,7 @@ fn abx_state_of(session: &AbxSession, revealed: bool) -> AbxState {
     AbxState {
         active: true,
         a_name: session.a_name.clone(),
+        b_name: session.b_name.clone(),
         planned: session.planned,
         answered: session.answers.len(),
         audition: session.audition.clone(),
@@ -862,17 +944,60 @@ fn abx_correct(session: &AbxSession) -> usize {
         .count()
 }
 
+/// Start a session. With no chains: classic mode — the active preset vs flat.
+/// With both `a` and `b`: any two chains (e.g. two history nodes); level
+/// matching between them comes from the shared write path.
 #[tauri::command]
-fn abx_start(trials: usize) -> Result<AbxState, String> {
-    let chain = active_chain();
-    if chain.iter().filter(|f| f.enabled).count() == 0 {
-        return Err("activate a preset with at least one enabled filter first — A and B would sound identical".into());
+fn abx_start(
+    trials: usize,
+    a: Option<Vec<FilterIn>>,
+    b: Option<Vec<FilterIn>>,
+    a_name: Option<String>,
+    b_name: Option<String>,
+) -> Result<AbxState, String> {
+    let (chain_a, chain_b, name_a, name_b) = match (a, b) {
+        (Some(a), Some(b)) => (
+            chain_of(&a)?,
+            chain_of(&b)?,
+            a_name.unwrap_or_else(|| "A".into()),
+            b_name.unwrap_or_else(|| "B".into()),
+        ),
+        (None, None) => {
+            let chain = active_chain();
+            if chain.iter().filter(|f| f.enabled).count() == 0 {
+                return Err("activate a preset with at least one enabled filter first — A and B would sound identical".into());
+            }
+            (
+                chain,
+                Vec::new(),
+                active_preset().unwrap_or_else(|| "Fletcher chain".into()),
+                "Flat".into(),
+            )
+        }
+        _ => return Err("provide both chains or neither".into()),
+    };
+    // Two chains that level-match to the same response leave nothing to test.
+    // Comparing responses, not filter lists, catches differently-written but
+    // audibly identical chains.
+    {
+        let freqs = log_freqs(20.0, 20000.0, CURVE_POINTS);
+        let (sa, sb) = (specs_of(&chain_a), specs_of(&chain_b));
+        let ra = chain_response_db(&sa, matched_preamp(&sa), FS, &freqs);
+        let rb = chain_response_db(&sb, matched_preamp(&sb), FS, &freqs);
+        if ra.iter().zip(&rb).all(|(x, y)| (x - y).abs() < 0.05) {
+            return Err(
+                "A and B level-match to the same response — there is no difference to test".into(),
+            );
+        }
     }
     let trials = trials.clamp(4, 100);
     let mut rng = fletcher_core::stats::Xorshift::new(now_ms() | 1);
     let mut session = AbxSession {
         id: format!("abx-{}", now_ms()),
-        a_name: active_preset().unwrap_or_else(|| "Fletcher chain".into()),
+        a_name: name_a,
+        b_name: name_b,
+        a: chain_a,
+        b: chain_b,
         planned: trials,
         assignments: (0..trials).map(|_| rng.next_bool()).collect(),
         answers: Vec::new(),
@@ -911,6 +1036,12 @@ struct AbxTrialLog {
 struct AbxResult {
     id: String,
     a_name: String,
+    b_name: String,
+    /// Full provenance: what A and B actually were, and the reference both
+    /// were matched to — a session replays meaningfully years later.
+    a_chain: Vec<PastedFilter>,
+    b_chain: Vec<PastedFilter>,
+    reference_db: f64,
     trials: usize,
     correct: usize,
     p_value: f64,
@@ -919,11 +1050,28 @@ struct AbxResult {
     started_ms: u64,
 }
 
+fn dto_chain(chain: &[ChainFilter]) -> Vec<PastedFilter> {
+    chain
+        .iter()
+        .map(|f| PastedFilter {
+            enabled: f.enabled,
+            kind: f.kind.code(),
+            fc_hz: f.fc_hz,
+            gain_db: f.gain_db,
+            q: f.q,
+        })
+        .collect()
+}
+
 fn abx_result_of(session: &AbxSession) -> AbxResult {
     let correct = abx_correct(session);
     AbxResult {
         id: session.id.clone(),
         a_name: session.a_name.clone(),
+        b_name: session.b_name.clone(),
+        a_chain: dto_chain(&session.a),
+        b_chain: dto_chain(&session.b),
+        reference_db: reference_db(),
         trials: session.answers.len(),
         correct,
         p_value: fletcher_core::stats::binomial_p_one_sided(
@@ -1321,6 +1469,13 @@ pub fn run() {
                 }
                 tauri::WindowEvent::Destroyed if window.label() == "history" => {
                     set_history_shortcuts(window.app_handle(), false);
+                    // A preview started from the pop-out must not outlive it.
+                    use tauri::Emitter;
+                    let _ = window.app_handle().emit_to(
+                        "main",
+                        "hist-cmd",
+                        serde_json::json!({ "type": "restore", "id": 0 }),
+                    );
                 }
                 _ => {}
             }
@@ -1349,6 +1504,9 @@ pub fn run() {
             autoeq_import,
             preset_rename,
             parse_filters,
+            chain_curves,
+            preview_chain,
+            preset_create_from_chain,
             history_save,
             history_load,
             history_export,

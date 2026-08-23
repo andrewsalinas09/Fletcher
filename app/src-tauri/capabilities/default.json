@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
-  "windows": ["main", "history"],
+  "description": "IPC capability for every Fletcher window. The glob is deliberate: satellite windows (history, diff, and every future pop-out room) are created at runtime with new labels, and a label missing here gets NO event/invoke access — it renders but sits dead. Naming windows individually made that a recurring class of bug.",
+  "windows": ["*"],
   "permissions": [
     "core:default",
     "opener:default",
