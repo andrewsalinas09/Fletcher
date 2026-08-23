@@ -69,7 +69,7 @@ pub enum FilterKind {
 }
 
 impl FilterKind {
-    fn from_code(code: &str) -> Option<Self> {
+    pub fn from_code(code: &str) -> Option<Self> {
         Some(match code {
             "PK" => Self::Peaking,
             "LP" => Self::LowPass,
@@ -199,6 +199,37 @@ pub fn format_filter(
 
 pub fn format_preamp(db: f64) -> String {
     format!("Preamp: {db} dB")
+}
+
+/// One filter in Fletcher's own chain (the contents of fletcher.txt).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ChainFilter {
+    pub enabled: bool,
+    pub kind: FilterKind,
+    pub fc_hz: f64,
+    pub gain_db: f64,
+    pub q: f64,
+}
+
+/// Render the complete fletcher.txt for a chain. Fletcher fully owns this
+/// file (ADR-0007), so it is regenerated, never edited in place.
+pub fn render_fletcher_file(preamp_db: f64, filters: &[ChainFilter]) -> String {
+    let mut doc = ConfigDoc::parse("");
+    doc.push_line("# Written by Fletcher. Hand edits will be overwritten.");
+    if preamp_db != 0.0 {
+        doc.push_line(&format_preamp(preamp_db));
+    }
+    for (i, f) in filters.iter().enumerate() {
+        doc.push_line(&format_filter(
+            Some(i as u32 + 1),
+            f.enabled,
+            f.kind,
+            Some(f.fc_hz),
+            Some(f.gain_db),
+            Some(f.q),
+        ));
+    }
+    doc.to_string()
 }
 
 impl fmt::Display for ConfigDoc {

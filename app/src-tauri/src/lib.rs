@@ -1,10 +1,10 @@
 //! Fletcher's Tauri shell: thin command layer over fletcher-core (ADR-0001/0005 —
 //! the UI draws, the core thinks). DTOs live here so the core stays serde-free.
 
-use fletcher_core::config::{ConfigDoc, Parsed};
-use fletcher_core::dsp::{chain_response_db, log_freqs, FilterSpec};
-use fletcher_core::{apo, devices, dsp};
-use serde::Serialize;
+use fletcher_core::config::{render_fletcher_file, ChainFilter, ConfigDoc, FilterKind, Parsed};
+use fletcher_core::dsp::{auto_preamp_db, chain_response_db, log_freqs, FilterSpec};
+use fletcher_core::{apo, devices, dsp, fsx};
+use serde::{Deserialize, Serialize};
 
 const FS: f64 = 48000.0;
 const CURVE_POINTS: usize = 200;
@@ -29,6 +29,8 @@ struct EqFilter {
     gain_db: f64,
     q: f64,
     response_db: Vec<f64>,
+    /// Which config file this filter came from; only "fletcher.txt" is editable.
+    source_file: String,
 }
 
 /// The live EQ chain: every filter and preamp reachable from config.txt
@@ -56,7 +58,7 @@ fn eq_state() -> Result<EqState, String> {
     }
 
     let mut preamp_db = 0.0;
-    let mut filters = Vec::new();
+    let mut filters: Vec<(bool, FilterKind, f64, f64, f64, String)> = Vec::new();
     let mut source_files = Vec::new();
     for (name, doc) in &docs {
         let mut contributed = false;
@@ -80,6 +82,7 @@ fn eq_state() -> Result<EqState, String> {
                         fc_hz.unwrap_or(1000.0),
                         gain_db.unwrap_or(0.0),
                         q.unwrap_or(std::f64::consts::FRAC_1_SQRT_2),
+                        name.clone(),
                     ));
                     contributed = true;
                 }
@@ -95,7 +98,7 @@ fn eq_state() -> Result<EqState, String> {
     let specs: Vec<FilterSpec> = filters
         .iter()
         .filter(|f| f.0)
-        .map(|&(_, kind, fc_hz, gain_db, q)| FilterSpec {
+        .map(|&(_, kind, fc_hz, gain_db, q, _)| FilterSpec {
             kind,
             fc_hz,
             gain_db,
@@ -106,15 +109,16 @@ fn eq_state() -> Result<EqState, String> {
 
     let filter_dtos = filters
         .iter()
-        .map(|&(enabled, kind, fc_hz, gain_db, q)| {
-            let biquad = dsp::Biquad::rbj(kind, FS, fc_hz, gain_db, q);
+        .map(|(enabled, kind, fc_hz, gain_db, q, source)| {
+            let biquad = dsp::Biquad::rbj(*kind, FS, *fc_hz, *gain_db, *q);
             EqFilter {
-                enabled,
+                enabled: *enabled,
                 kind: kind.code(),
-                fc_hz,
-                gain_db,
-                q,
+                fc_hz: *fc_hz,
+                gain_db: *gain_db,
+                q: *q,
                 response_db: freqs.iter().map(|&f| biquad.magnitude_db(f, FS)).collect(),
+                source_file: source.clone(),
             }
         })
         .collect();
@@ -127,6 +131,57 @@ fn eq_state() -> Result<EqState, String> {
         filters: filter_dtos,
         source_files,
     })
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FilterIn {
+    enabled: bool,
+    kind: String,
+    fc_hz: f64,
+    gain_db: f64,
+    q: f64,
+}
+
+/// Replace Fletcher's own chain (fletcher.txt) with the given filters.
+/// Auto-preamp is computed from the summed response peak (TB-06), the file
+/// is written atomically (TB-11), and APO hot-reloads it. Returns the fresh
+/// merged state.
+#[tauri::command]
+fn set_fletcher_chain(filters: Vec<FilterIn>) -> Result<EqState, String> {
+    let install = apo::detect().map_err(|e| e.to_string())?;
+
+    let chain: Vec<ChainFilter> = filters
+        .iter()
+        .map(|f| {
+            Ok(ChainFilter {
+                enabled: f.enabled,
+                kind: FilterKind::from_code(&f.kind)
+                    .ok_or_else(|| format!("unknown filter type {}", f.kind))?,
+                fc_hz: f.fc_hz.clamp(10.0, 24000.0),
+                gain_db: f.gain_db.clamp(-30.0, 30.0),
+                q: f.q.clamp(0.01, 100.0),
+            })
+        })
+        .collect::<Result<_, String>>()?;
+
+    let specs: Vec<FilterSpec> = chain
+        .iter()
+        .filter(|f| f.enabled)
+        .map(|f| FilterSpec {
+            kind: f.kind,
+            fc_hz: f.fc_hz,
+            gain_db: f.gain_db,
+            q: f.q,
+        })
+        .collect();
+    let preamp = auto_preamp_db(&specs, FS);
+
+    let text = render_fletcher_file(preamp, &chain);
+    fsx::write_atomic(&install.config_path.join("fletcher.txt"), &text)
+        .map_err(|e| e.to_string())?;
+
+    eq_state()
 }
 
 #[derive(Serialize)]
@@ -322,7 +377,11 @@ pub fn run() {
             spawn_config_watcher(app.handle().clone());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![apo_status, eq_state])
+        .invoke_handler(tauri::generate_handler![
+            apo_status,
+            eq_state,
+            set_fletcher_chain
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

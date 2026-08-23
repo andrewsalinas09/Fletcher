@@ -144,6 +144,17 @@ pub fn log_freqs(lo: f64, hi: f64, n: usize) -> Vec<f64> {
         .collect()
 }
 
+/// Preamp that guarantees the summed chain never exceeds 0 dB (TB-06):
+/// the negative of the summed response's positive peak — filter *interaction*
+/// counts, not just the largest single gain. Rounded to 0.1 dB.
+pub fn auto_preamp_db(filters: &[FilterSpec], fs: f64) -> f64 {
+    let freqs = log_freqs(20.0, 20000.0, 400);
+    let peak = chain_response_db(filters, 0.0, fs, &freqs)
+        .into_iter()
+        .fold(0.0_f64, f64::max);
+    -(peak * 10.0).ceil() / 10.0
+}
+
 /// Summed chain response (preamp + all filters) at each frequency.
 pub fn chain_response_db(
     filters: &[FilterSpec],

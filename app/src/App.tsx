@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./App.css";
@@ -10,6 +10,7 @@ type EqFilter = {
   gainDb: number;
   q: number;
   responseDb: number[];
+  sourceFile: string;
 };
 
 type EqState = {
@@ -21,7 +22,10 @@ type EqState = {
   sourceFiles: string[];
 };
 
-// ---- graph geometry (matches design/Main.dc.html v5) ----
+const OWN_FILE = "fletcher.txt";
+const KINDS = ["PK", "LSC", "LS", "HSC", "HS", "LP", "LPQ", "HP", "HPQ", "NO", "BP", "AP"];
+
+// ---- graph geometry (design/Main.dc.html v5) ----
 const GW = 1090;
 const GH = 330;
 const FMIN = 20;
@@ -29,6 +33,8 @@ const FMAX = 20000;
 
 const xOf = (f: number) =>
   ((Math.log10(f) - Math.log10(FMIN)) / (Math.log10(FMAX) - Math.log10(FMIN))) * GW;
+const fOf = (x: number) =>
+  Math.pow(10, Math.log10(FMIN) + (x / GW) * (Math.log10(FMAX) - Math.log10(FMIN)));
 
 const fmtHz = (hz: number) =>
   hz >= 1000 ? `${+(hz / 1000).toFixed(2)}k` : `${+hz.toFixed(0)}`;
@@ -40,7 +46,6 @@ function pathFrom(freqs: number[], dbs: number[], yOf: (db: number) => number): 
     .join(" ");
 }
 
-// ---- type glyphs: tiny curve icons per filter family ----
 function TypeGlyph({ kind, boost, dark }: { kind: string; boost: boolean; dark?: boolean }) {
   const color = boost ? (dark ? "var(--boost-dark)" : "var(--boost)") : dark ? "#9db8d2" : "var(--cut)";
   const d = (() => {
@@ -61,7 +66,7 @@ function TypeGlyph({ kind, boost, dark }: { kind: string; boost: boolean; dark?:
         return "M1 4 L5 4 L8 11 L11 4 L15 4";
       case "BP":
         return "M1 11 C5 11 5 3 8 3 C11 3 11 11 15 11";
-      default: // PK, AP
+      default:
         return boost ? "M1 10 C4 10 5 4 8 4 C11 4 12 10 15 10" : "M1 3 C4 3 5 9 8 9 C11 9 12 3 15 3";
     }
   })();
@@ -72,24 +77,19 @@ function TypeGlyph({ kind, boost, dark }: { kind: string; boost: boolean; dark?:
   );
 }
 
-// ---- arc-fill gain gauge ----
 function GainGauge({ gainDb, dark }: { gainDb: number; dark?: boolean }) {
   const clamped = Math.max(-12, Math.min(12, gainDb));
-  const theta = (Math.abs(clamped) / 12) * (Math.PI * 0.75); // up to 135°
-  const px = (ang: number, sign: number) => 11 + sign * 8 * Math.sin(ang);
-  const py = (ang: number) => 11 - 8 * Math.cos(ang);
+  const theta = (Math.abs(clamped) / 12) * (Math.PI * 0.75);
   const boost = clamped >= 0;
   const sign = boost ? 1 : -1;
-  const tip = `${px(theta, sign).toFixed(2)} ${py(theta).toFixed(2)}`;
+  const tip = `${(11 + sign * 8 * Math.sin(theta)).toFixed(2)} ${(11 - 8 * Math.cos(theta)).toFixed(2)}`;
   const fill = boost ? `M11 3 A8 8 0 0 1 ${tip}` : `M${tip} A8 8 0 0 1 11 3`;
   const color = boost ? (dark ? "var(--boost-dark)" : "var(--boost)") : dark ? "#9db8d2" : "var(--cut)";
   return (
     <svg width="26" height="26" viewBox="0 0 22 22" fill="none">
       <line x1="11" y1="1.5" x2="11" y2="4" stroke={dark ? "#55503f" : "var(--line-strong)"} strokeWidth="1.2" />
       <path d="M5.34 16.66 A8 8 0 1 1 16.66 16.66" stroke={dark ? "#3a3e36" : "var(--line)"} strokeWidth="3" />
-      {Math.abs(clamped) > 0.05 && (
-        <path d={fill} stroke={color} strokeWidth="3.5" strokeLinecap="round" />
-      )}
+      {Math.abs(clamped) > 0.05 && <path d={fill} stroke={color} strokeWidth="3.5" strokeLinecap="round" />}
     </svg>
   );
 }
@@ -98,39 +98,96 @@ export default function App() {
   const [state, setState] = useState<EqState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
+  const stateRef = useRef<EqState | null>(null);
+  stateRef.current = state;
+  const dragging = useRef(false);
+  const pushTimer = useRef<number | null>(null);
 
   const refresh = () =>
     invoke<EqState>("eq_state")
       .then((s) => {
         setState(s);
         setError(null);
-        setSelected((sel) =>
-          sel != null && sel < s.filters.length ? sel : s.filters.length ? 0 : null,
-        );
       })
       .catch((e) => setError(String(e)));
 
   useEffect(() => {
     refresh();
-    // Push-based updates: the Rust watcher emits whenever any config file
-    // changes on disk (Peace, hand edits, Fletcher itself). No polling.
-    const unlisten = listen("apo-config-changed", () => refresh());
+    // Push-based updates from the Rust config watcher — no polling. Ignored
+    // mid-drag (our own writes fire it; the drag state is fresher).
+    const unlisten = listen("apo-config-changed", () => {
+      if (!dragging.current) refresh();
+    });
     return () => {
       unlisten.then((f) => f());
     };
   }, []);
 
+  /** Send Fletcher's own chain to the backend (throttled during drags). */
+  const pushChain = (filters: EqFilter[], immediate = false) => {
+    const own = filters
+      .filter((f) => f.sourceFile === OWN_FILE)
+      .map(({ enabled, kind, fcHz, gainDb, q }) => ({ enabled, kind, fcHz, gainDb, q }));
+    const send = () =>
+      invoke<EqState>("set_fletcher_chain", { filters: own })
+        .then((s) => setState(s))
+        .catch((e) => setError(String(e)));
+    if (immediate) {
+      if (pushTimer.current != null) window.clearTimeout(pushTimer.current);
+      pushTimer.current = null;
+      send();
+    } else if (pushTimer.current == null) {
+      pushTimer.current = window.setTimeout(() => {
+        pushTimer.current = null;
+        send();
+      }, 60);
+    }
+  };
+
+  const mutateFilter = (i: number, patch: Partial<EqFilter>, immediate = false) => {
+    const cur = stateRef.current;
+    if (!cur) return;
+    const filters = cur.filters.map((f, j) => (j === i ? { ...f, ...patch } : f));
+    setState({ ...cur, filters });
+    pushChain(filters, immediate);
+  };
+
+  const deleteFilter = (i: number) => {
+    const cur = stateRef.current;
+    if (!cur) return;
+    const filters = cur.filters.filter((_, j) => j !== i);
+    setState({ ...cur, filters });
+    setSelected(null);
+    pushChain(filters, true);
+  };
+
+  const addFilter = () => {
+    const cur = stateRef.current;
+    if (!cur) return;
+    const fresh: EqFilter = {
+      enabled: true,
+      kind: "PK",
+      fcHz: 1000,
+      gainDb: 0,
+      q: 1,
+      responseDb: cur.freqs.map(() => 0),
+      sourceFile: OWN_FILE,
+    };
+    const filters = [...cur.filters, fresh];
+    setState({ ...cur, filters });
+    setSelected(filters.length - 1);
+    pushChain(filters, true);
+  };
+
   const ordered = useMemo(() => {
     if (!state) return [];
-    return state.filters
-      .map((f, i) => ({ f, i }))
-      .sort((a, b) => a.f.fcHz - b.f.fcHz);
+    return state.filters.map((f, i) => ({ f, i })).sort((a, b) => a.f.fcHz - b.f.fcHz);
   }, [state]);
 
   const sel = selected != null && state ? state.filters[selected] : null;
 
-  // Dynamic vertical range: enough headroom for the loudest feature,
-  // snapped to 3 dB steps, never tighter than ±12.
+
   const dbRange = useMemo(() => {
     if (!state) return 12;
     const peaks = [
@@ -142,12 +199,12 @@ export default function App() {
   }, [state]);
 
   const yOf = (db: number) => GH / 2 - (db / dbRange) * (GH / 2 - 30);
+  const dbOf = (y: number) => ((GH / 2 - y) / (GH / 2 - 30)) * dbRange;
+
   const gridSteps = useMemo(() => {
     const minor: number[] = [];
     const major: number[] = [];
-    for (let db = 3; db < dbRange; db += 3) {
-      (db % 6 === 0 ? major : minor).push(db, -db);
-    }
+    for (let db = 3; db < dbRange; db += 3) (db % 6 === 0 ? major : minor).push(db, -db);
     return { minor, major };
   }, [dbRange]);
   const labelSteps = useMemo(() => {
@@ -156,6 +213,46 @@ export default function App() {
     for (let db = step; db < dbRange; db += step) out.push(db, -db);
     return out;
   }, [dbRange]);
+
+  const graphPoint = (e: React.PointerEvent) => {
+    const rect = svgRef.current!.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * GW;
+    const y = ((e.clientY - rect.top) / rect.height) * GH;
+    return { f: fOf(Math.max(0, Math.min(GW, x))), db: dbOf(y) };
+  };
+
+  const startDrag = (i: number) => (e: React.PointerEvent) => {
+    if (state?.filters[i]?.sourceFile !== OWN_FILE) {
+      setSelected(i);
+      return;
+    }
+    setSelected(i);
+    dragging.current = true;
+    (e.target as Element).setPointerCapture(e.pointerId);
+  };
+
+  const onDragMove = (i: number) => (e: React.PointerEvent) => {
+    if (!dragging.current || selected !== i) return;
+    const { f, db } = graphPoint(e);
+    mutateFilter(i, {
+      fcHz: +f.toFixed(f < 100 ? 1 : 0),
+      gainDb: +Math.max(-dbRange, Math.min(dbRange, db)).toFixed(1),
+    });
+  };
+
+  const endDrag = (_i: number) => () => {
+    if (!dragging.current) return;
+    dragging.current = false;
+    const cur = stateRef.current;
+    if (cur) pushChain(cur.filters, true);
+  };
+
+  const onWheelQ = (i: number) => (e: React.WheelEvent) => {
+    const f = state?.filters[i];
+    if (!f || f.sourceFile !== OWN_FILE) return;
+    const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+    mutateFilter(i, { q: +Math.max(0.05, Math.min(50, f.q * factor)).toFixed(2) }, true);
+  };
 
   return (
     <div className="frame">
@@ -196,14 +293,16 @@ export default function App() {
               <b>Live APO config</b>
               <span className="dim-sm">{state.sourceFiles.join(" + ")}</span>
             </span>
+            <span className="dim-sm">
+              drag handles · scroll a cell for Q · filters from other tools are read-only
+            </span>
             <span className="spacer" />
             <span className="mono dim-sm">auto preamp</span>
             <span className="mono preamp-val">{fmtGain(state.preampDb)} dB</span>
-            <button onClick={refresh}>Refresh</button>
           </div>
 
           <div className="graph-panel">
-            <svg viewBox={`0 0 ${GW} ${GH}`} className="graph">
+            <svg viewBox={`0 0 ${GW} ${GH}`} className="graph" ref={svgRef}>
               {gridSteps.minor.map((db) => (
                 <line key={`n${db}`} x1={0} x2={GW} y1={yOf(db)} y2={yOf(db)} className="grid-minor" />
               ))}
@@ -227,9 +326,18 @@ export default function App() {
                     cx={xOf(f.fcHz)}
                     cy={yOf(f.gainDb)}
                     r={i === selected ? 7 : 5}
-                    className={`handle ${f.gainDb >= 0 ? "boost" : "cut"} ${i === selected ? "selected" : ""}`}
-                    onClick={() => setSelected(i)}
-                  />
+                    className={`handle ${f.gainDb >= 0 ? "boost" : "cut"} ${i === selected ? "selected" : ""} ${
+                      f.sourceFile === OWN_FILE ? "editable" : "locked"
+                    }`}
+                    onPointerDown={startDrag(i)}
+                    onPointerMove={onDragMove(i)}
+                    onPointerUp={endDrag(i)}
+                    onWheel={onWheelQ(i)}
+                  >
+                    <title>
+                      {f.sourceFile === OWN_FILE ? "drag to move · scroll for Q" : `managed by ${f.sourceFile}`}
+                    </title>
+                  </circle>
                 ) : null,
               )}
 
@@ -262,18 +370,39 @@ export default function App() {
             {ordered.map(({ f, i }) => {
               const isSel = i === selected;
               const boost = f.gainDb >= 0;
+              const editable = f.sourceFile === OWN_FILE;
               return (
                 <div
                   key={i}
-                  className={`cell ${isSel ? "selected" : ""} ${f.enabled ? "" : "off"}`}
+                  className={`cell ${isSel ? "selected" : ""} ${f.enabled ? "" : "off"} ${editable ? "" : "locked"}`}
                   onClick={() => setSelected(i)}
+                  onWheel={onWheelQ(i)}
+                  title={editable ? undefined : `managed by ${f.sourceFile} — read-only`}
                 >
                   <span className="cell-type">
-                    <span className="mono type-name">{f.kind}</span>
+                    <span
+                      className={`toggle-dot ${f.enabled ? "on" : ""}`}
+                      title={editable ? (f.enabled ? "click: bypass this filter" : "click: re-enable") : undefined}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (editable) mutateFilter(i, { enabled: !f.enabled }, true);
+                      }}
+                    />
+                    {isSel && editable ? (
+                      <select
+                        className="type-select"
+                        value={f.kind}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => mutateFilter(i, { kind: e.target.value }, true)}
+                      >
+                        {KINDS.map((k) => (
+                          <option key={k} value={k}>{k}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <span className="mono type-name">{f.kind}</span>
+                    )}
                     <TypeGlyph kind={f.kind} boost={boost} dark={isSel} />
-                    <svg width="8" height="8" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" className="caret">
-                      <path d="M4 6l4 4 4-4" />
-                    </svg>
                   </span>
                   <GainGauge gainDb={f.gainDb} dark={isSel} />
                   <span className={`cell-gain mono ${boost ? "boost" : "cut"} ${isSel ? "on-dark" : ""}`}>
@@ -281,10 +410,22 @@ export default function App() {
                   </span>
                   <span className="cell-fc mono">{fmtHz(f.fcHz)}</span>
                   <span className="cell-q">Q {f.q}</span>
+                  {isSel && editable && (
+                    <span
+                      className="cell-delete"
+                      title="delete filter"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        deleteFilter(i);
+                      }}
+                    >
+                      ×
+                    </span>
+                  )}
                 </div>
               );
             })}
-            <div className="cell add" title="Editing arrives with the fletcher.txt writer UI">
+            <div className="cell add" title="add a filter to fletcher.txt" onClick={addFilter}>
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
                 <path d="M8 3v10M3 8h10" />
               </svg>

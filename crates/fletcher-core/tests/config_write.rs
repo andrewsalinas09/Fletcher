@@ -133,6 +133,88 @@ fn push_line_parses_what_it_appends() {
 }
 
 #[test]
+fn rendered_fletcher_file_parses_back_to_the_same_chain() {
+    use fletcher_core::config::{ChainFilter, render_fletcher_file};
+    let chain = [
+        ChainFilter {
+            enabled: true,
+            kind: FilterKind::Peaking,
+            fc_hz: 1000.0,
+            gain_db: 3.5,
+            q: 1.41,
+        },
+        ChainFilter {
+            enabled: false,
+            kind: FilterKind::LowShelfC,
+            fc_hz: 105.0,
+            gain_db: -2.0,
+            q: 0.7,
+        },
+    ];
+    let text = render_fletcher_file(-3.5, &chain);
+    let doc = ConfigDoc::parse(&text);
+    let filters: Vec<_> = doc
+        .directives()
+        .filter_map(|d| match d {
+            Parsed::Filter {
+                enabled,
+                kind,
+                fc_hz,
+                gain_db,
+                q,
+                ..
+            } => Some((
+                *enabled,
+                *kind,
+                fc_hz.unwrap(),
+                gain_db.unwrap(),
+                q.unwrap(),
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(filters.len(), 2);
+    assert_eq!(filters[0], (true, FilterKind::Peaking, 1000.0, 3.5, 1.41));
+    assert_eq!(filters[1], (false, FilterKind::LowShelfC, 105.0, -2.0, 0.7));
+    assert!(
+        doc.directives()
+            .any(|d| matches!(d, Parsed::Preamp { db } if *db == -3.5))
+    );
+}
+
+#[test]
+fn auto_preamp_counts_filter_interaction() {
+    use fletcher_core::dsp::{FilterSpec, auto_preamp_db};
+    // Two overlapping +3 dB bells sum past 3 dB at the crossover region:
+    // the naive max-single-gain rule (-3.0) is insufficient (TB-06).
+    let overlapping = [
+        FilterSpec {
+            kind: FilterKind::Peaking,
+            fc_hz: 900.0,
+            gain_db: 3.0,
+            q: 1.0,
+        },
+        FilterSpec {
+            kind: FilterKind::Peaking,
+            fc_hz: 1100.0,
+            gain_db: 3.0,
+            q: 1.0,
+        },
+    ];
+    let p = auto_preamp_db(&overlapping, 48000.0);
+    assert!(p < -3.0, "interaction must deepen preamp, got {p}");
+    assert!(p > -6.5, "sanity bound, got {p}");
+    // Pure cuts need no preamp.
+    let cut = [FilterSpec {
+        kind: FilterKind::Peaking,
+        fc_hz: 1000.0,
+        gain_db: -4.0,
+        q: 1.0,
+    }];
+    assert_eq!(auto_preamp_db(&cut, 48000.0), 0.0);
+}
+
+#[test]
 fn write_atomic_lands_whole_and_replaces() {
     let dir = std::env::temp_dir().join(format!("fletcher-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

@@ -355,6 +355,57 @@ button.ghost {
   color: var(--line-strong);
 }
 
+.cell.locked {
+  cursor: default;
+}
+
+.cell {
+  position: relative;
+}
+
+.cell-delete {
+  position: absolute;
+  top: 2px;
+  right: 5px;
+  font-size: 12px;
+  color: var(--dim);
+  cursor: pointer;
+}
+
+.cell-delete:hover {
+  color: var(--boost-dark);
+}
+
+.toggle-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1.5px solid var(--ok);
+  cursor: pointer;
+  flex: none;
+}
+
+.toggle-dot.on {
+  background: var(--ok);
+}
+
+.type-select {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10px;
+  background: var(--ink);
+  color: var(--paper);
+  border: 1px solid var(--dim);
+  padding: 0 1px;
+}
+
+.handle.editable {
+  cursor: grab;
+}
+
+.handle.locked {
+  opacity: 0.75;
+}
+
 .cell.selected .cell-q {
   color: var(--dim);
 }
