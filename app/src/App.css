@@ -1002,6 +1002,96 @@ button.ghost {
   color: var(--ink);
 }
 
+/* NEW TEST rail: the four decisions (LabHome artboard) */
+.lab-cfield {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.lab-ckey {
+  font-size: 8.5px;
+  letter-spacing: 0.1em;
+  color: #8b8578;
+}
+
+.contender {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--line-mid);
+  background: var(--paper);
+  padding: 6px 10px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.contender:hover {
+  border-color: var(--ink);
+}
+
+.contender-name {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.contender-menu {
+  max-height: 46vh;
+  min-width: 280px;
+  padding: 6px 0;
+}
+
+.c-opt {
+  padding: 6px 14px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.c-opt:hover {
+  background: var(--panel-alt, #ece8df);
+}
+
+.c-sect {
+  display: block;
+  padding: 8px 14px 3px;
+}
+
+.q-card {
+  border: 1px solid var(--line-mid);
+  padding: 7px 11px;
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.q-card.on {
+  border: 1.5px solid var(--ink);
+  background: var(--panel-alt, #ece8df);
+}
+
+.q-card:hover {
+  border-color: var(--ink);
+}
+
+.record-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.badge-pref {
+  font-size: 9.5px;
+  border: 1px solid var(--ink);
+  padding: 2px 7px;
+  flex: none;
+  align-self: flex-start;
+}
+
 .lab-note {
   line-height: 1.5;
 }

@@ -325,6 +325,16 @@ fn preset_switch(name: Option<String>) -> Result<EqState, String> {
     eq_state()
 }
 
+/// A preset's chain WITHOUT activating it — the Lab's contender picker
+/// hands it to trial_start.
+#[tauri::command]
+fn preset_chain(name: String) -> Result<Vec<PastedFilter>, String> {
+    let preset = store()?
+        .load(&name)
+        .ok_or_else(|| format!("preset {name:?} not found"))?;
+    Ok(dto_chain(&preset.filters))
+}
+
 /// Create a preset — `from_live` seeds it with everything currently audible
 /// (including filters owned by other tools); otherwise it starts empty.
 /// The new preset becomes active.
@@ -4443,6 +4453,7 @@ pub fn run() {
             trial_start,
             trial_finish_early,
             trial_resume,
+            preset_chain,
             autoeq_search,
             autoeq_import,
             preset_rename,

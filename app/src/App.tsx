@@ -1995,6 +1995,16 @@ type AbxState = {
   audition: string;
   levelMatched?: boolean;
   runningCorrect: number | null;
+  /** Unified trial engine fields (absent from nothing new — always sent). */
+  protocol?: "abx" | "pref";
+  material?: "system" | "clips";
+  adaptive?: boolean;
+  clipName?: string;
+  trackTitle?: string;
+  clipIndex?: number;
+  clipCount?: number;
+  batteryName?: string;
+  suspended?: boolean;
 };
 
 type SettingsState = {
@@ -2003,7 +2013,14 @@ type SettingsState = {
   apoInstallPath: string | null;
   apoConfigPath: string | null;
 };
-type AbxTrial = { xWasA: boolean; answeredA: boolean; correct: boolean };
+type AbxTrial = {
+  xWasA: boolean;
+  answeredA: boolean;
+  correct: boolean;
+  clipId?: number;
+  clipName?: string;
+  trackId?: number;
+};
 type AbxResult = {
   id: string;
   aName: string;
@@ -2014,11 +2031,35 @@ type AbxResult = {
   referenceDb?: number;
   levelMatched?: boolean;
   trials: number;
-  correct: number;
-  pValue: number;
+  /** ABX records; preference records carry preferredA/pValueTwoSided instead. */
+  correct?: number;
+  pValue?: number;
+  preferredA?: number;
+  pValueTwoSided?: number;
+  protocol?: "abx" | "pref";
+  material?: { kind: string; batteryId?: number | null; batteryName?: string | null; clipIds?: number[] };
+  stopRule?: { kind: string; planned?: number; maxTrials?: number };
+  sequential?: boolean;
+  decision?: "difference" | "noDifference" | "cap";
+  finishedEarly?: boolean;
   statsViewed: number[];
   log: AbxTrial[];
   startedMs: number;
+};
+
+/** A blind-test contender: what plays as A or as B. */
+type Contender =
+  | { kind: "active" }
+  | { kind: "flat" }
+  | { kind: "preset"; name: string }
+  | { kind: "node"; id: number };
+
+type BatteryRow = {
+  id: number;
+  name: string;
+  note: string | null;
+  clipIds: number[];
+  createdMs: number;
 };
 
 type TrackRow = {
@@ -2820,10 +2861,33 @@ function TimelineView({
 
 const fmtP = (p: number) => (p < 0.001 ? "< 0.001" : `= ${p.toFixed(3)}`);
 const fmtWhen = (ms: number) => new Date(ms).toLocaleString([], { dateStyle: "short", timeStyle: "short" });
-const verdictOf = (r: AbxResult) =>
-  r.pValue <= 0.05
-    ? { text: `you heard it — ${r.correct}/${r.trials} correct · p ${fmtP(r.pValue)}`, good: true }
-    : { text: `couldn't reliably tell — ${r.correct}/${r.trials} · p ${fmtP(r.pValue)} (guessing gets there ${Math.round(r.pValue * 100)}% of the time)`, good: false };
+const verdictOf = (r: AbxResult): { text: string; good: boolean } => {
+  // Preference: no correct answer exists (TB-15) — never the word "correct".
+  if (r.protocol === "pref") {
+    const n = r.trials;
+    const a = r.preferredA ?? 0;
+    const p = r.pValueTwoSided ?? 1;
+    const winner = a * 2 >= n ? r.aName : (r.bName ?? "B");
+    return p <= 0.05
+      ? { text: `preferred ${winner} — ${Math.max(a, n - a)}/${n} · p ${fmtP(p)} (two-sided)`, good: true }
+      : { text: `no reliable preference — ${a}/${n} for A · p ${fmtP(p)} (two-sided)`, good: false };
+  }
+  const correct = r.correct ?? 0;
+  const p = r.pValue ?? 1;
+  // Sequential sessions: the SPRT decision is the calibrated verdict; the p
+  // was computed at a data-dependent stop and is nominal.
+  if (r.sequential) {
+    const base = `${correct}/${r.trials} · p ${fmtP(p)} at stop`;
+    if (r.decision === "difference")
+      return { text: `you heard it — sequential verdict (α=β=0.05) · ${base}`, good: true };
+    if (r.decision === "noDifference")
+      return { text: `no difference at this sensitivity — sequential verdict · ${base}`, good: false };
+    return { text: `undecided at the ${r.trials}-trial cap — ${base}`, good: false };
+  }
+  return p <= 0.05
+    ? { text: `you heard it — ${correct}/${r.trials} correct · p ${fmtP(p)}`, good: true }
+    : { text: `couldn't reliably tell — ${correct}/${r.trials} · p ${fmtP(p)} (guessing gets there ${Math.round(p * 100)}% of the time)`, good: false };
+};
 
 // Deep teaching copy for the tooltip layer. A lot of detail, gated behind a
 // deliberate 1.5 s still-hover so it never gets in the way.
@@ -3708,9 +3772,81 @@ function MainApp() {
   const [sessions, setSessions] = useState<AbxResult[]>([]);
   const [trials, setTrials] = useState(16);
   const [expanded, setExpanded] = useState<string | null>(null);
+  // The four decisions of a new test (the LabHome artboard).
+  const [labA, setLabA] = useState<Contender>({ kind: "active" });
+  const [labB, setLabB] = useState<Contender>({ kind: "flat" });
+  const [labProto, setLabProto] = useState<"abx" | "pref">("abx");
+  const [labAdaptive, setLabAdaptive] = useState(false);
+  /** null = live system audio; a battery id = clip trials (L4). */
+  const [labMaterial, setLabMaterial] = useState<number | null>(null);
+  const [batteries, setBatteries] = useState<BatteryRow[]>([]);
+  const [labPick, setLabPick] = useState<null | "a" | "b">(null);
+  const [recordFilter, setRecordFilter] = useState<"all" | "abx" | "pref">("all");
+  const loadBatteries = () =>
+    invoke<{ batteries: BatteryRow[] }>("battery_state")
+      .then((s) => setBatteries(s.batteries))
+      .catch(() => {});
 
   const loadSessions = () =>
     invoke<AbxResult[]>("abx_sessions").then(setSessions).catch(() => {});
+
+  const contenderName = (c: Contender): string => {
+    switch (c.kind) {
+      case "active":
+        return presets.active ? `${presets.active} · active` : "Current chain";
+      case "flat":
+        return "Flat reference";
+      case "preset":
+        return c.name;
+      case "node": {
+        const n = hist.current?.nodes.get(c.id);
+        return n ? `node #${n.id} · ${n.label}` : `node #${c.id} (gone)`;
+      }
+    }
+  };
+
+  const resolveContender = async (c: Contender): Promise<{ chain: ChainSnap; name: string }> => {
+    switch (c.kind) {
+      case "flat":
+        return { chain: [], name: "Flat" };
+      case "active":
+        return { chain: ownSnap(), name: presetsRef.current.active ?? "Current chain" };
+      case "preset":
+        return { chain: await invoke<ChainSnap>("preset_chain", { name: c.name }), name: c.name };
+      case "node": {
+        const n = hist.current?.nodes.get(c.id);
+        if (!n) throw new Error(`node #${c.id} is gone from the history`);
+        return { chain: n.snap, name: `node #${n.id} · ${n.label}` };
+      }
+    }
+  };
+
+  /** Start from the full setup — the unified trial engine. */
+  const beginTrial = async () => {
+    try {
+      const [ra, rb] = await Promise.all([resolveContender(labA), resolveContender(labB)]);
+      const spec = {
+        protocol: labProto,
+        material:
+          labMaterial == null
+            ? { kind: "system" }
+            : { kind: "clips", batteryId: labMaterial },
+        a: ra.chain,
+        b: rb.chain,
+        aName: ra.name,
+        bName: rb.name,
+        stop:
+          labAdaptive && labProto === "abx"
+            ? { kind: "sprt" }
+            : { kind: "fixedN", trials },
+      };
+      const s = await invoke<AbxState>("trial_start", { spec });
+      setAbx(s);
+      setAbxResult(null);
+    } catch (e) {
+      showNotice(String(e));
+    }
+  };
 
   /** Classic mode (no chains): active preset vs flat. With chains: any two —
    *  node-vs-node from the history inspector, or a recorded session's re-run. */
@@ -3725,16 +3861,37 @@ function MainApp() {
       })
       .catch((e) => showNotice(String(e)));
   };
-  /** Re-run a recorded session: with its exact chains when recorded, else classic. */
-  const rerunAbx = (r: AbxResult) =>
-    startAbx(
-      r.trials,
-      r.aChain && r.bChain
-        ? { a: r.aChain, b: r.bChain, aName: r.aName, bName: r.bName ?? "Flat" }
-        : undefined,
-    );
+  /** Re-run a recorded session: exact chains, protocol, and material when
+   *  recorded (clip sessions re-test the same clips); else classic. */
+  const rerunAbx = (r: AbxResult) => {
+    if (!(r.aChain && r.bChain)) {
+      startAbx(r.trials);
+      return;
+    }
+    const spec = {
+      protocol: r.protocol ?? "abx",
+      material:
+        r.material?.kind === "clips" && r.material.clipIds?.length
+          ? { kind: "clips", clipIds: r.material.clipIds }
+          : { kind: "system" },
+      a: r.aChain,
+      b: r.bChain,
+      aName: r.aName,
+      bName: r.bName ?? "Flat",
+      stop:
+        r.stopRule?.kind === "sprt"
+          ? { kind: "sprt" }
+          : { kind: "fixedN", trials: r.trials },
+    };
+    invoke<AbxState>("trial_start", { spec })
+      .then((s) => {
+        setAbx(s);
+        setAbxResult(null);
+      })
+      .catch((e) => showNotice(String(e)));
+  };
 
-  const abxAudition = (target: "a" | "b" | "x") => {
+  const abxAudition = (target: string) => {
     invoke<AbxState>("abx_audition", { target })
       .then(setAbx)
       .catch((e) => showNotice(String(e)));
@@ -3771,10 +3928,14 @@ function MainApp() {
   // body must stay current across hot reloads mid-session too.
   const abxKeyRef = useRef<(e: KeyboardEvent) => void>(() => {});
   abxKeyRef.current = (e: KeyboardEvent) => {
+    const proto = abxRef.current?.protocol ?? "abx";
     const k = e.key.toLowerCase();
-    if (k === "a" || k === "b" || k === "x") {
+    if (proto === "abx" && (k === "a" || k === "b" || k === "x")) {
       e.preventDefault();
-      abxAudition(k as "a" | "b" | "x");
+      abxAudition(k);
+    } else if (proto === "pref" && (e.key === "1" || e.key === "2")) {
+      e.preventDefault();
+      abxAudition(e.key);
     } else if (e.key === "ArrowLeft") {
       e.preventDefault();
       abxVote(true);
@@ -3938,6 +4099,7 @@ function MainApp() {
     refresh();
     refreshPresets();
     loadSessions();
+    loadBatteries();
     loadSettings(); // the A/B bar's matched/unmatched state needs it
     loadAutostart();
     const unlisten = listen("apo-config-changed", () => pushRef.current.config());
@@ -5142,12 +5304,88 @@ function MainApp() {
         createPortal(
           <div className="trial-room">
             <div className="trial-top mono">
-              <span className="ink">ABX</span>
+              <span className="ink">{abx.protocol === "pref" ? "PREFERENCE" : "ABX"}</span>
               <span>{`${abx.aName} vs ${abx.bName ?? "Flat"}`}</span>
+              {abx.clipName && (
+                <span>{`· clip ${abx.clipIndex ?? "?"}/${abx.clipCount ?? "?"} — ${abx.clipName}`}</span>
+              )}
               <span className="spacer" />
-              <span>{`trial ${Math.min(abx.answered + 1, abx.planned)} of ${abx.planned}`}</span>
+              <span>
+                {abx.adaptive
+                  ? `trial ${abx.answered + 1} · adaptive — stops when settled (cap ${abx.planned})`
+                  : `trial ${Math.min(abx.answered + 1, abx.planned)} of ${abx.planned}`}
+              </span>
               <span className="trial-leave" onClick={abxCancel}>esc · leave</span>
             </div>
+            {abx.suspended && (
+              <div className="trial-center">
+                <div className="trial-q"><b>The audio device was lost.</b></div>
+                <p className="result-note">
+                  Your {abx.answered} answered trial{abx.answered === 1 ? "" : "s"} are safe. Resume
+                  when the device is back, keep what exists, or discard the session.
+                </p>
+                <div className="trial-vote">
+                  <button
+                    className="vote-btn"
+                    onClick={() =>
+                      invoke<AbxState>("trial_resume")
+                        .then(setAbx)
+                        .catch((e) => showNotice(String(e)))
+                    }
+                  >
+                    Resume
+                  </button>
+                  <button
+                    onClick={() =>
+                      invoke<AbxResult>("trial_finish_early")
+                        .then((r) => {
+                          setAbx(null);
+                          setAbxResult(r);
+                          loadSessions();
+                        })
+                        .catch((e) => showNotice(String(e)))
+                    }
+                  >
+                    Finish early — record what exists
+                  </button>
+                  <button onClick={abxCancel}>Discard</button>
+                </div>
+              </div>
+            )}
+            {!abx.suspended && abx.protocol === "pref" && (
+              <div className="trial-center">
+                <div className="trial-q">Listen freely. Then answer: <b>which do you prefer?</b></div>
+                <div className="trial-targets">
+                  {(["1", "2"] as const).map((t) => (
+                    <div
+                      key={t}
+                      className={`target ${abx.audition === t ? "playing" : ""}`}
+                      onClick={() => abxAudition(t)}
+                    >
+                      <span className="target-letter">{t}</span>
+                      <span className="mono target-sub">{abx.audition === t ? "● playing" : " "}</span>
+                    </div>
+                  ))}
+                </div>
+                <span className="mono dim-sm">
+                  press 1 · 2 to switch — the slots reshuffle every trial · there is no right answer
+                </span>
+                <div className="trial-vote">
+                  <button className="vote-btn" onClick={() => abxVote(true)}>
+                    I prefer 1 <span className="mono dim-sm">←</span>
+                  </button>
+                  <button className="vote-btn" onClick={() => abxVote(false)}>
+                    I prefer 2 <span className="mono dim-sm">→</span>
+                  </button>
+                </div>
+                <div className="trial-dots">
+                  {Array.from({ length: abx.planned }, (_, i) => (
+                    <span key={i} className={`t-dot ${i < abx.answered ? "done" : i === abx.answered ? "now" : ""}`} />
+                  ))}
+                </div>
+              </div>
+            )}
+            {!abx.suspended && abx.protocol !== "pref" && (
             <div className="trial-center">
               <div className="trial-q">Listen freely. Then answer: <b>which one is X?</b></div>
               <div className="trial-targets">
@@ -5164,17 +5402,20 @@ function MainApp() {
                   </div>
                 ))}
               </div>
-              <span className="mono dim-sm">press A · B · X to switch — seamless, level-matched · Ctrl·Shift·A cycles</span>
+              <span className="mono dim-sm">
+                {`press A · B · X to switch — ${abx.material === "clips" ? "sample-accurate, in-engine" : "seamless, level-matched"} · Ctrl·Shift·A cycles`}
+              </span>
               <div className="trial-vote">
                 <button className="vote-btn" onClick={() => abxVote(true)}>X is A <span className="mono dim-sm">←</span></button>
                 <button className="vote-btn" onClick={() => abxVote(false)}>X is B <span className="mono dim-sm">→</span></button>
               </div>
               <div className="trial-dots">
-                {Array.from({ length: abx.planned }, (_, i) => (
+                {Array.from({ length: abx.adaptive ? abx.answered + 1 : abx.planned }, (_, i) => (
                   <span key={i} className={`t-dot ${i < abx.answered ? "done" : i === abx.answered ? "now" : ""}`} />
                 ))}
               </div>
             </div>
+            )}
             <div className="trial-foot mono">
               {abx.levelMatched === false ? (
                 <span className="warn-text">▲ levels NOT matched — this result measures loudness too</span>
@@ -5184,10 +5425,16 @@ function MainApp() {
               <span>every trial recorded — replay with labels afterwards</span>
               <span className="spacer" />
               {abx.runningCorrect != null ? (
-                <span>{`running score ${abx.runningCorrect}/${abx.answered}`}</span>
+                <span>
+                  {abx.protocol === "pref"
+                    ? `running tally ${abx.runningCorrect}/${abx.answered} for A`
+                    : `running score ${abx.runningCorrect}/${abx.answered}`}
+                </span>
               ) : (
                 <span className="reveal-link" onClick={abxReveal}>
-                  show running score — viewing interim results can bias your remaining trials
+                  {abx.protocol === "pref"
+                    ? "show running tally — viewing it can bias your remaining votes"
+                    : "show running score — viewing interim results can bias your remaining trials"}
                 </span>
               )}
             </div>
@@ -5201,15 +5448,27 @@ function MainApp() {
             <div className="trial-center result-center">
               <span className="mono dim-sm">SESSION COMPLETE</span>
               <div className={`result-verdict ${verdictOf(abxResult).good ? "good" : "meh"}`}>
-                {verdictOf(abxResult).good ? "You heard it." : "You couldn't reliably tell."}
+                {abxResult.protocol === "pref"
+                  ? verdictOf(abxResult).good
+                    ? `You preferred ${(abxResult.preferredA ?? 0) * 2 >= abxResult.trials ? abxResult.aName : (abxResult.bName ?? "B")}.`
+                    : "No reliable preference."
+                  : verdictOf(abxResult).good
+                    ? "You heard it."
+                    : "You couldn't reliably tell."}
               </div>
               <div className="mono result-stats">
-                {`${abxResult.correct}/${abxResult.trials} correct · p ${fmtP(abxResult.pValue)}`}
+                {abxResult.protocol === "pref"
+                  ? `${abxResult.preferredA ?? 0}/${abxResult.trials} for A · p ${fmtP(abxResult.pValueTwoSided ?? 1)} (two-sided)`
+                  : `${abxResult.correct ?? 0}/${abxResult.trials} correct · p ${fmtP(abxResult.pValue ?? 1)}${abxResult.sequential ? " · sequential" : ""}`}
               </div>
               <p className="result-note">
-                {verdictOf(abxResult).good
-                  ? "Guessing alone would score this well less than 5% of the time — the difference is real to your ears."
-                  : "This result is within the range of guessing. That's not failure — it's information most listeners never get."}
+                {abxResult.protocol === "pref"
+                  ? verdictOf(abxResult).good
+                    ? "A split this lopsided happens by coin-flip less than 5% of the time — the preference is real."
+                    : "The votes are within coin-flip range: on this material the two are interchangeable to your taste. That's information too."
+                  : verdictOf(abxResult).good
+                    ? "Guessing alone would score this well less than 5% of the time — the difference is real to your ears."
+                    : "This result is within the range of guessing. That's not failure — it's information most listeners never get."}
               </p>
               <div className="trial-vote">
                 <button onClick={() => { setAbxResult(null); setExpanded(abxResult.id); setView("lab"); }}>
@@ -5298,19 +5557,119 @@ function MainApp() {
         <div className="lab">
           <div className="lab-setup">
             <span className="mono lab-label">NEW TEST</span>
-            <div className="lab-field">
-              <span className="mono lab-key">A</span>
-              <span className="lab-val">{presets.active ?? "no preset active"}</span>
+            {(["a", "b"] as const).map((side) => {
+              const c = side === "a" ? labA : labB;
+              const pick = (v: Contender) => {
+                (side === "a" ? setLabA : setLabB)(v);
+                setLabPick(null);
+              };
+              const nodes = (() => {
+                const h = hist.current;
+                if (!h) return [] as HistNode[];
+                const all = [...h.nodes.values()];
+                const pinned = all.filter((n) => n.pinned);
+                const recent = all
+                  .filter((n) => !n.pinned)
+                  .sort((x, y) => y.ts - x.ts)
+                  .slice(0, 6);
+                return [...pinned, ...recent];
+              })();
+              return (
+                <div key={side} className="lab-cfield">
+                  <span className="mono lab-ckey">{side.toUpperCase()}</span>
+                  <div
+                    className="contender"
+                    onClick={() => setLabPick(labPick === side ? null : side)}
+                  >
+                    <span className="contender-name">{contenderName(c)}</span>
+                    <span className="spacer" />
+                    <span className="dim-sm">▾</span>
+                  </div>
+                  {labPick === side && (
+                    <div className="preset-menu contender-menu">
+                      <div className="c-opt" onClick={() => pick({ kind: "flat" })}>
+                        Flat reference
+                      </div>
+                      <div className="c-opt" onClick={() => pick({ kind: "active" })}>
+                        {presets.active
+                          ? `${presets.active} · the live chain`
+                          : "Current chain (no preset active)"}
+                      </div>
+                      {presets.presets.length > 0 && (
+                        <span className="mono lab-label c-sect">PRESETS</span>
+                      )}
+                      {presets.presets.map((p) => (
+                        <div key={p} className="c-opt" onClick={() => pick({ kind: "preset", name: p })}>
+                          {p}
+                        </div>
+                      ))}
+                      {nodes.length > 0 && <span className="mono lab-label c-sect">HISTORY</span>}
+                      {nodes.map((n) => (
+                        <div key={n.id} className="c-opt" onClick={() => pick({ kind: "node", id: n.id })}>
+                          {`#${n.id} · ${n.label}`}
+                          {n.pinned ? <span className="dim-sm"> · pinned</span> : null}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            <div className="lab-cfield">
+              <span className="mono lab-ckey">QUESTION</span>
+              <div
+                className={`q-card ${labProto === "abx" ? "on" : ""}`}
+                onClick={() => setLabProto("abx")}
+              >
+                <b>Can I hear it?</b>
+                <span className="mono dim-sm">ABX · has a right answer</span>
+              </div>
+              <div
+                className={`q-card ${labProto === "pref" ? "on" : ""}`}
+                onClick={() => {
+                  setLabProto("pref");
+                  setLabAdaptive(false);
+                }}
+              >
+                <b>Which do I prefer?</b>
+                <span className="mono dim-sm">blind vote · taste</span>
+              </div>
             </div>
-            <div className="lab-field">
-              <span className="mono lab-key">B</span>
-              <span className="lab-val">{`Flat · matched ${fmtGain(ab.matchDb)} dB`}</span>
+            <div className="lab-cfield">
+              <span className="mono lab-ckey">MATERIAL</span>
+              <div
+                className={`q-card ${labMaterial == null ? "on" : ""}`}
+                onClick={() => setLabMaterial(null)}
+              >
+                Live system audio
+                <span className="mono dim-sm">whatever's playing</span>
+              </div>
+              {batteries.map((b) => (
+                <div
+                  key={b.id}
+                  className={`q-card ${labMaterial === b.id ? "on" : ""}`}
+                  onClick={() => setLabMaterial(b.id)}
+                >
+                  {b.name}
+                  <span className="mono dim-sm">{`${b.clipIds.length} clip${b.clipIds.length === 1 ? "" : "s"} · in-engine, sample-accurate`}</span>
+                </div>
+              ))}
+              {batteries.length === 0 && (
+                <span className="dim-sm">no batteries yet — build one from clips in the finder</span>
+              )}
             </div>
-            <div className="lab-field">
-              <span className="mono lab-key">TRIALS</span>
+            <div className="lab-cfield">
+              <span className="mono lab-ckey">TRIALS</span>
               <div className="trials-ctl">
                 {[8, 16, 24].map((n) => (
-                  <span key={n} className={`scale-opt ${trials === n ? "on" : ""}`} onClick={() => setTrials(n)}>
+                  <span
+                    key={n}
+                    className={`scale-opt ${!labAdaptive && trials === n ? "on" : ""}`}
+                    onClick={() => {
+                      setLabAdaptive(false);
+                      setTrials(n);
+                    }}
+                  >
                     {n}
                   </span>
                 ))}
@@ -5320,41 +5679,81 @@ function MainApp() {
                   min={4}
                   max={100}
                   value={trials}
+                  disabled={labAdaptive}
                   onChange={(e) => setTrials(Math.max(4, Math.min(100, +e.target.value || 16)))}
                 />
+                <span
+                  className={`scale-opt ${labAdaptive ? "on" : ""}`}
+                  title={
+                    labProto === "pref"
+                      ? "preference runs a fixed count — sequential stopping would inflate the preference score"
+                      : "sequential (SPRT): the test ends the moment the answer is statistically settled — usually ~10–20 trials, capped at 40. The stop rule is declared up front and recorded."
+                  }
+                  onClick={() => {
+                    if (labProto === "pref") return;
+                    setLabAdaptive((v) => !v);
+                  }}
+                  style={labProto === "pref" ? { opacity: 0.4, cursor: "default" } : undefined}
+                >
+                  adaptive
+                </span>
               </div>
             </div>
             <p className="dim-sm lab-note">
-              You'll hear A, B, and a mystery X — switch freely, then answer which one X is.
-              {" "}{trials} trials; the score stays hidden until the end unless you ask.
+              {labProto === "abx"
+                ? "You'll hear A, B, and a mystery X — switch freely, then answer which one X is. The score stays hidden until the end unless you ask."
+                : "Each trial presents the two, blind, as 1 and 2 (freshly shuffled every trial) — pick the one you prefer. There is no right answer; the tally stays hidden until the end."}
             </p>
             <span className="spacer" />
-            <button
-              className="primary lab-begin"
-              disabled={!presets.active}
-              title={presets.active ? undefined : "activate a preset first"}
-              onClick={() => startAbx()}
-            >
+            <span className="mono dim-sm ok-text">● level-matched by construction</span>
+            <button className="primary lab-begin" onClick={() => beginTrial()}>
               Begin — enters focus mode
             </button>
           </div>
 
           <div className="lab-record">
-            <span className="mono lab-label">THE RECORD</span>
+            <div className="record-head">
+              <span className="mono lab-label">THE RECORD</span>
+              <span className="spacer" />
+              <div className="seg seg-sm">
+                {(["all", "abx", "pref"] as const).map((f) => (
+                  <span
+                    key={f}
+                    className={`seg-opt ${recordFilter === f ? "on" : ""}`}
+                    onClick={() => setRecordFilter(f)}
+                  >
+                    {f === "all" ? "all" : f.toUpperCase()}
+                  </span>
+                ))}
+              </div>
+            </div>
             {sessions.length === 0 && (
               <p className="dim-sm">No sessions yet. Your first blind test writes history here.</p>
             )}
-            {sessions.map((r) => {
+            {sessions
+              .filter((r) => recordFilter === "all" || (r.protocol ?? "abx") === recordFilter)
+              .map((r) => {
               const v = verdictOf(r);
+              const pref = r.protocol === "pref";
               return (
                 <div key={r.id} className="session">
                   <div className="session-head" onClick={() => setExpanded(expanded === r.id ? null : r.id)}>
-                    <span className="mono badge-abx">ABX</span>
+                    <span className={`mono ${pref ? "badge-pref" : "badge-abx"}`}>
+                      {pref ? "PREF" : "ABX"}
+                    </span>
                     <div className="session-main">
-                      <div className="session-title">{`${r.aName} vs ${r.bName ?? "Flat"}`}</div>
+                      <div className="session-title">
+                        {`${r.aName} vs ${r.bName ?? "Flat"}`}
+                        {r.material?.kind === "clips" && (
+                          <span className="dim-sm">{` · ${r.material.batteryName ?? "clips"}`}</span>
+                        )}
+                      </div>
                       <div className={`session-verdict ${v.good ? "good" : "meh"}`}>{v.text}</div>
                       {r.levelMatched === false && (
                         <div className="dim-sm warn-text">levels were NOT matched — loudness was audible</div>
+                      )}
+                      {r.finishedEarly && (
+                        <div className="dim-sm">finished early — partial session, recorded honestly</div>
                       )}
                       {r.statsViewed.length > 0 && (
                         <div className="dim-sm">{`score viewed mid-session at trial ${r.statsViewed.join(", ")}`}</div>
@@ -5366,9 +5765,18 @@ function MainApp() {
                     <div className="session-detail">
                       <div className="trial-grid">
                         {r.log.map((t, i) => (
-                          <span key={i} className={`trial-chip ${t.correct ? "hit" : "miss"}`}
-                            title={`trial ${i + 1}: X was ${t.xWasA ? "A" : "B"}, you said ${t.answeredA ? "A" : "B"}`}>
-                            {`${i + 1}·X=${t.xWasA ? "A" : "B"} ${t.correct ? "✓" : "✗"}`}
+                          <span
+                            key={i}
+                            className={`trial-chip ${t.correct ? "hit" : "miss"}`}
+                            title={
+                              pref
+                                ? `trial ${i + 1}: preferred ${t.correct ? "A" : "B"}${t.clipName ? ` · ${t.clipName}` : ""}`
+                                : `trial ${i + 1}: X was ${t.xWasA ? "A" : "B"}, you said ${t.answeredA ? "A" : "B"}${t.clipName ? ` · ${t.clipName}` : ""}`
+                            }
+                          >
+                            {pref
+                              ? `${i + 1}·${t.correct ? "A" : "B"}`
+                              : `${i + 1}·X=${t.xWasA ? "A" : "B"} ${t.correct ? "✓" : "✗"}`}
                           </span>
                         ))}
                       </div>
