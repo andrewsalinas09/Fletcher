@@ -55,6 +55,7 @@ Nothing on the market does this. Its own tab, visibly its own setup:
 
 - Live **spectrogram/waveform** of what's playing, showing how the curve shapes it.
 - **Side-by-side spectrograms**: flat/default vs. your EQ — maybe a third with HRTF applied.
+- **FFT pane** (Clip Studio viewer): instantaneous spectrum at the playhead with the current EQ curve overlaid, and the regions the EQ acts on lightly shaded — orange where it boosts, blue where it cuts — so the curve's effect on the live spectrum is visible at a glance.
 - Filter handles + summed curve + (later) measured/target overlays on one graph.
 
 ## UX principles
