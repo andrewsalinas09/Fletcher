@@ -1,0 +1,191 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+  <style>
+    body { margin: 0; font-family: "IBM Plex Sans", "Segoe UI", sans-serif; }
+    a { color: #14171a; } a:hover { color: #c85a13; }
+  </style>
+</helmet>
+<div style="width: 1140px; height: 760px; background: #f2efe9; color: #14171a; overflow: hidden; display: flex; flex-direction: column;">
+
+  <!-- header -->
+  <div style="display: flex; align-items: center; gap: 18px; padding: 9px 24px; border-bottom: 2px solid #14171a;">
+    <span style="font-family: 'IBM Plex Mono', monospace; font-weight: 600; font-size: 15px; letter-spacing: 0.14em;">FLETCHER</span>
+    <div style="display: flex; gap: 2px;">
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; letter-spacing: 0.06em; padding: 6px 13px;">EQ</span>
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; letter-spacing: 0.06em; padding: 6px 13px; background: #14171a; color: #f2efe9;">LISTENING LAB</span>
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; letter-spacing: 0.06em; padding: 6px 13px;">CLIP STUDIO</span>
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; letter-spacing: 0.06em; padding: 6px 13px; color: #b3ac9c;">FINGERPRINTS</span>
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; letter-spacing: 0.06em; padding: 6px 13px;">SETTINGS</span>
+    </div>
+    <span style="flex: 1;"></span>
+    <span style="font-size: 11px; border: 1px solid #c9c2b0; padding: 4px 10px; color: #8b8578;">pop out</span>
+    <span style="font-size: 12px; border: 1px solid #c9c2b0; padding: 5px 12px; background: #f9f7f2;">Schiit Modi 3+</span>
+  </div>
+
+  <div style="display: flex; flex: 1; min-height: 0;">
+
+    <!-- NEW TEST: four decisions -->
+    <div style="flex: 0 0 322px; border-right: 2px solid #14171a; background: #f9f7f2; display: flex; flex-direction: column; padding: 12px 16px 10px; gap: 11px;">
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.12em; color: #8b8578;">NEW TEST</span>
+
+      <div style="display: flex; flex-direction: column; gap: 5px;">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 8.5px; letter-spacing: 0.1em; color: #8b8578;">A</span>
+        <span style="display: flex; align-items: center; gap: 7px; border: 1px solid #c9c2b0; background: #f2efe9; padding: 6px 10px;"><span style="font-size: 12.5px; font-weight: 600;">Sennheiser HD 650</span><span style="font-size: 10px; color: #8b8578;">AutoEQ · Harman</span><span style="flex: 1;"></span><span style="color: #8b8578;">▾</span></span>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 8.5px; letter-spacing: 0.1em; color: #8b8578; margin-top: 3px;">B</span>
+        <span style="display: flex; align-items: center; gap: 7px; border: 1px solid #c9c2b0; background: #f2efe9; padding: 6px 10px;"><span style="font-size: 12.5px;">Flat reference</span><span style="flex: 1;"></span><span style="color: #8b8578;">▾</span></span>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 5px;">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 8.5px; letter-spacing: 0.1em; color: #8b8578;">QUESTION</span>
+        <div style="display: flex; flex-direction: column; gap: 4px;">
+          <span style="border: 1.5px solid #14171a; background: #14171a; color: #f2efe9; padding: 7px 11px; font-size: 12px; font-weight: 600;">Can I hear it? <span style="font-family: 'IBM Plex Mono', monospace; font-size: 9.5px; color: #b3ac9c; font-weight: 400;">ABX · has a right answer</span></span>
+          <span style="border: 1px solid #c9c2b0; padding: 7px 11px; font-size: 12px;">Which do I prefer? <span style="font-family: 'IBM Plex Mono', monospace; font-size: 9.5px; color: #8b8578;">blind vote · taste</span></span>
+        </div>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 5px;">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 8.5px; letter-spacing: 0.1em; color: #8b8578;">MATERIAL</span>
+        <span style="border: 1px solid #c9c2b0; padding: 6px 11px; font-size: 12px; color: #55503f;">Live system audio</span>
+        <span style="border: 1.5px solid #14171a; padding: 6px 11px; font-size: 12px; background: #ece8df; display: flex; align-items: center; gap: 7px;"><b>Battery: Evening bass check</b><span style="font-size: 10px; color: #8b8578;">6 clips</span><span style="flex: 1;"></span><span style="font-size: 10px; color: #c85a13;">edit →</span></span>
+      </div>
+
+      <!-- advanced, greyed -->
+      <div style="display: flex; flex-direction: column; gap: 6px; opacity: 0.5; margin-top: 2px;">
+        <div style="display: flex; font-size: 11px; gap: 8px;"><span style="width: 90px; color: #8b8578;">Trials</span><span>16 fixed</span><span style="color: #8b8578;">· adaptive</span></div>
+        <div style="display: flex; font-size: 11px; gap: 8px;"><span style="width: 90px; color: #8b8578;">Switching</span><span>free A/B/X</span><span style="color: #8b8578;">· sequence</span></div>
+        <div style="display: flex; font-size: 11px; gap: 8px;"><span style="width: 90px; color: #8b8578;">Crossfade</span><span>15 ms</span></div>
+        <div style="display: flex; font-size: 11px; gap: 8px;"><span style="width: 90px; color: #8b8578;">Clip order</span><span>shuffled</span></div>
+      </div>
+
+      <div style="display: flex; align-items: center; gap: 8px; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; color: #3d7d43;">
+        <span style="width: 7px; height: 7px; background: #3d7d43; border-radius: 50%;"></span>levels matched · −0.8 dB on B
+      </div>
+
+      <span style="margin-top: auto; background: #c85a13; color: #f9f7f2; text-align: center; padding: 10px; font-size: 13.5px; font-weight: 600;">Begin — enters focus mode</span>
+    </div>
+
+    <!-- THE FINDER: battery builder -->
+    <div style="flex: 0 0 372px; border-right: 1px solid #b3ac9c; display: flex; flex-direction: column; background: #f2efe9;">
+      <div style="padding: 12px 14px 6px;">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.12em; color: #8b8578;">FINDER — build the battery</span>
+      </div>
+      <div style="padding: 4px 14px 8px; border-bottom: 1px solid #ddd6c4;">
+        <div style="display: flex; align-items: center; gap: 6px; border: 1px solid #14171a; padding: 6px 9px; background: #fffdf6;">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="#14171a" stroke-width="1.5"><circle cx="7" cy="7" r="4.5"></circle><path d="M10.5 10.5L14 14"></path></svg>
+          <span style="font-size: 11.5px; font-family: 'IBM Plex Mono', monospace;">tag:lows genre:electronic note:"sub"</span>
+        </div>
+        <div style="display: flex; gap: 8px; margin-top: 6px; font-size: 10px; color: #8b8578;">
+          <span>9 clips match</span><span style="flex: 1;"></span><span>sort: most tested ▾</span>
+        </div>
+      </div>
+      <div style="flex: 1; overflow: hidden;">
+        <div style="display: flex; align-items: center; gap: 8px; padding: 7px 14px; border-bottom: 1px solid #e5dfd1; background: #ece8df;">
+          <span style="width: 13px; height: 13px; border: 1.5px solid #14171a; background: #14171a; display: inline-flex; align-items: center; justify-content: center; color: #f2efe9; font-size: 10px;">✓</span>
+          <span style="width: 7px; height: 7px; background: #3f6d9e;"></span>
+          <span style="font-size: 11.5px; font-weight: 600;">Bass groove</span>
+          <span style="font-size: 9.5px; color: #8b8578;">Get Lucky · 0:22</span>
+          <span style="flex: 1;"></span><span style="font-size: 9px; color: #8b8578; font-family: 'IBM Plex Mono', monospace;">tested 5×</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px; padding: 7px 14px; border-bottom: 1px solid #e5dfd1; background: #ece8df;">
+          <span style="width: 13px; height: 13px; border: 1.5px solid #14171a; background: #14171a; display: inline-flex; align-items: center; justify-content: center; color: #f2efe9; font-size: 10px;">✓</span>
+          <span style="width: 7px; height: 7px; background: #3f6d9e;"></span>
+          <span style="font-size: 11.5px; font-weight: 600;">The drop</span>
+          <span style="font-size: 9.5px; color: #8b8578;">Limit To Your Love · 0:29</span>
+          <span style="flex: 1;"></span><span style="font-size: 9px; color: #8b8578; font-family: 'IBM Plex Mono', monospace;">tested 2×</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px; padding: 7px 14px; border-bottom: 1px solid #e5dfd1;">
+          <span style="width: 13px; height: 13px; border: 1.5px solid #b3ac9c;"></span>
+          <span style="width: 7px; height: 7px; background: #3f6d9e;"></span>
+          <span style="font-size: 11.5px;">Kick pattern</span>
+          <span style="font-size: 9.5px; color: #8b8578;">Bohemian Rhapsody · 0:18</span>
+          <span style="flex: 1;"></span><span style="font-size: 9px; color: #b3ac9c; font-family: 'IBM Plex Mono', monospace;">new</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px; padding: 7px 14px; border-bottom: 1px solid #e5dfd1; background: #ece8df;">
+          <span style="width: 13px; height: 13px; border: 1.5px solid #14171a; background: #14171a; display: inline-flex; align-items: center; justify-content: center; color: #f2efe9; font-size: 10px;">✓</span>
+          <svg width="9" height="9" viewBox="0 0 10 10"><path d="M1 9 L1 1 L9 5 z" fill="#3f6d9e"></path></svg>
+          <span style="font-size: 11.5px; font-weight: 600; font-style: italic;">sub swell</span>
+          <span style="font-size: 9.5px; color: #8b8578;">moment · 41 Hz region</span>
+          <span style="flex: 1;"></span><span style="font-size: 9px; color: #8b8578; font-family: 'IBM Plex Mono', monospace;">tested 1×</span>
+        </div>
+        <div style="padding: 7px 14px; font-size: 10px; color: #b3ac9c;">5 more…</div>
+      </div>
+      <div style="padding: 9px 14px; border-top: 1px solid #b3ac9c; display: flex; align-items: center; gap: 8px;">
+        <span style="font-size: 11px; color: #55503f;">6 selected</span>
+        <span style="flex: 1;"></span>
+        <span style="font-size: 11px; border: 1px solid #14171a; padding: 4px 10px;">Save battery ▾</span>
+      </div>
+    </div>
+
+    <!-- THE RECORD -->
+    <div style="flex: 1; display: flex; flex-direction: column; background: #f9f7f2;">
+      <div style="padding: 12px 16px 6px; display: flex; align-items: baseline; gap: 10px;">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.12em; color: #8b8578;">THE RECORD</span>
+        <span style="flex: 1;"></span>
+        <span style="font-size: 10px; color: #8b8578;">filter: all ▾</span>
+      </div>
+
+      <div style="margin: 4px 16px 0; border: 1px solid #b3ac9c; background: #f2efe9; padding: 8px 12px;">
+        <div style="font-size: 10.5px; color: #8b8578; margin-bottom: 5px;">across 12 sessions · HD 650</div>
+        <div style="display: flex; gap: 14px; align-items: center;">
+          <span style="font-size: 11px;">ABX success by tag</span>
+          <span style="display: flex; align-items: center; gap: 5px; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px;"><span style="width: 46px; height: 7px; background: #3f6d9e;"></span>lows 92%</span>
+          <span style="display: flex; align-items: center; gap: 5px; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px;"><span style="width: 30px; height: 7px; background: #3d7d43;"></span>mids 61%</span>
+          <span style="display: flex; align-items: center; gap: 5px; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px;"><span style="width: 44px; height: 7px; background: #c85a13;"></span>highs 88%</span>
+        </div>
+      </div>
+
+      <div style="flex: 1; margin: 8px 16px 10px; display: flex; flex-direction: column; gap: 6px; overflow: hidden;">
+        <div style="border: 1px solid #b3ac9c; background: #f2efe9; padding: 8px 12px; display: flex; align-items: center; gap: 10px;">
+          <span style="font-family: 'IBM Plex Mono', monospace; font-size: 9.5px; background: #14171a; color: #f2efe9; padding: 2px 7px;">ABX</span>
+          <div style="flex: 1;">
+            <div style="font-size: 12px; font-weight: 600;">HD 650 vs Flat · Evening bass check</div>
+            <div style="font-size: 10.5px; color: #3d7d43; font-weight: 500;">heard it — 14/16 correct · p = 0.002</div>
+          </div>
+          <span style="font-family: 'IBM Plex Mono', monospace; font-size: 9.5px; color: #8b8578;">today 21:40</span>
+          <span style="font-size: 10.5px; border: 1px solid #14171a; padding: 3px 9px;">replay labeled ▸</span>
+        </div>
+        <div style="border: 1px solid #b3ac9c; background: #f2efe9; padding: 8px 12px; display: flex; align-items: center; gap: 10px;">
+          <span style="font-family: 'IBM Plex Mono', monospace; font-size: 9.5px; border: 1px solid #14171a; padding: 2px 7px;">PREF</span>
+          <div style="flex: 1;">
+            <div style="font-size: 12px; font-weight: 600;">+2 dB shelf vs current · mids battery</div>
+            <div style="font-size: 10.5px; color: #55503f;">no preference — 9/16 for A · inconclusive</div>
+          </div>
+          <span style="font-family: 'IBM Plex Mono', monospace; font-size: 9.5px; color: #8b8578;">today 20:12</span>
+          <span style="font-size: 10.5px; border: 1px solid #14171a; padding: 3px 9px;">replay labeled ▸</span>
+        </div>
+        <div style="border: 1px solid #b3ac9c; background: #f2efe9; padding: 8px 12px; display: flex; align-items: center; gap: 10px;">
+          <span style="font-family: 'IBM Plex Mono', monospace; font-size: 9.5px; background: #14171a; color: #f2efe9; padding: 2px 7px;">ABX</span>
+          <div style="flex: 1;">
+            <div style="font-size: 12px; font-weight: 600;">History: branch tip vs 20 min ago</div>
+            <div style="font-size: 10.5px; color: #a3552e;">couldn't hear it — 9/16 · p = 0.40 <span style="color: #8b8578;">· stats viewed at trial 11</span></div>
+          </div>
+          <span style="font-family: 'IBM Plex Mono', monospace; font-size: 9.5px; color: #8b8578;">yesterday</span>
+          <span style="font-size: 10.5px; border: 1px solid #14171a; padding: 3px 9px;">replay labeled ▸</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- A/B bar -->
+  <div style="border-top: 2px solid #14171a; background: #ece8df; display: flex; align-items: center; gap: 14px; padding: 9px 24px;">
+    <div style="display: flex; border: 1px solid #14171a;">
+      <span style="font-size: 12px; padding: 5px 14px; background: #14171a; color: #f2efe9; font-weight: 600;">A · HD 650</span>
+      <span style="font-size: 12px; padding: 5px 14px; border-left: 1px solid #14171a;">B · Flat</span>
+    </div>
+    <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #8b8578;">Ctrl·Shift·A</span>
+    <span style="display: flex; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #3d7d43;"><span style="width: 7px; height: 7px; background: #3d7d43; border-radius: 50%;"></span>levels matched</span>
+    <span style="flex: 1;"></span>
+    <span style="font-size: 12px; background: #c85a13; color: #f9f7f2; padding: 7px 16px; font-weight: 600;">Blind test</span>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

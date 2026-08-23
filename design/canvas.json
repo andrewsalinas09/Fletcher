@@ -2,7 +2,9 @@
   "artboards": [
     { "file": "Main.dc.html", "title": "EQ tab · v2", "x": 0, "y": 0, "w": 1140, "h": 760, "page": "page-1" },
     { "file": "Settings.dc.html", "title": "Settings", "x": 1240, "y": 0, "w": 1140, "h": 760, "page": "page-1" },
-    { "file": "ClipStudio.dc.html", "title": "Clip Studio · v1", "x": 0, "y": 900, "w": 1140, "h": 760, "page": "page-1" },
+    { "file": "ClipStudio.dc.html", "title": "Clip Studio · v2", "x": 0, "y": 900, "w": 1140, "h": 760, "page": "page-1" },
+    { "file": "LabHome.dc.html", "title": "Listening Lab · home", "x": 1240, "y": 900, "w": 1140, "h": 760, "page": "page-1" },
+    { "file": "TrialRoom.dc.html", "title": "Trial room · focus mode", "x": 2480, "y": 900, "w": 1140, "h": 760, "page": "page-1" },
     { "file": "Notebook.dc.html", "title": "B · Notebook (unchosen)", "x": 0, "y": 0, "w": 1140, "h": 760, "page": "page-2" },
     { "file": "Swiss.dc.html", "title": "C · Swiss (rejected)", "x": 1240, "y": 0, "w": 1140, "h": 760, "page": "page-2" }
   ],

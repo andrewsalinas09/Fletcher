@@ -1,0 +1,89 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+  <style>
+    body { margin: 0; font-family: "IBM Plex Sans", "Segoe UI", sans-serif; }
+    a { color: #14171a; } a:hover { color: #c85a13; }
+  </style>
+</helmet>
+<div style="width: 1140px; height: 760px; background: #f2efe9; color: #14171a; overflow: hidden; display: flex; flex-direction: column;">
+
+  <!-- whisper-thin session line: focus mode has no tabs, no chrome -->
+  <div style="display: flex; align-items: center; gap: 14px; padding: 12px 28px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #8b8578;">
+    <span style="color: #14171a; font-weight: 600;">ABX</span>
+    <span>HD 650 vs Flat</span>
+    <span>·</span>
+    <span>clip 2/6 — Bass groove</span>
+    <span style="flex: 1;"></span>
+    <span>trial 7 of 16</span>
+    <span style="border: 1px solid #c9c2b0; padding: 3px 10px; color: #55503f;">esc · leave</span>
+  </div>
+
+  <!-- the room -->
+  <div style="flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 34px;">
+
+    <div style="font-size: 15px; color: #55503f;">Listen freely. Then answer: <b style="color: #14171a;">which one is X?</b></div>
+
+    <!-- the three targets -->
+    <div style="display: flex; gap: 26px; align-items: center;">
+      <div style="width: 168px; height: 168px; background: #14171a; color: #f2efe9; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;">
+        <span style="font-size: 52px; font-weight: 600;">A</span>
+        <span style="display: flex; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #e89a5f;"><span style="width: 7px; height: 7px; background: #e89a5f; border-radius: 50%;"></span>playing</span>
+      </div>
+      <div style="width: 168px; height: 168px; border: 1.5px solid #14171a; background: #f9f7f2; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;">
+        <span style="font-size: 52px; font-weight: 600;">B</span>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #b3ac9c;">&nbsp;</span>
+      </div>
+      <div style="width: 168px; height: 168px; border: 2px dashed #14171a; background: #f9f7f2; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;">
+        <span style="font-size: 52px; font-weight: 600;">X</span>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #8b8578;">the mystery</span>
+      </div>
+    </div>
+
+    <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; color: #b3ac9c;">press A · B · X to switch — seamless, mid-playback</span>
+
+    <!-- the vote -->
+    <div style="display: flex; gap: 18px;">
+      <span style="border: 1.5px solid #14171a; padding: 12px 38px; font-size: 15px; font-weight: 600; background: #f9f7f2;">X is A <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #8b8578; font-weight: 400;">←</span></span>
+      <span style="border: 1.5px solid #14171a; padding: 12px 38px; font-size: 15px; font-weight: 600; background: #f9f7f2;">X is B <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #8b8578; font-weight: 400;">→</span></span>
+    </div>
+
+    <!-- progress: filled = answered; deliberately no right/wrong coloring -->
+    <div style="display: flex; gap: 7px; margin-top: 4px;">
+      <span style="width: 9px; height: 9px; border-radius: 50%; background: #14171a;"></span>
+      <span style="width: 9px; height: 9px; border-radius: 50%; background: #14171a;"></span>
+      <span style="width: 9px; height: 9px; border-radius: 50%; background: #14171a;"></span>
+      <span style="width: 9px; height: 9px; border-radius: 50%; background: #14171a;"></span>
+      <span style="width: 9px; height: 9px; border-radius: 50%; background: #14171a;"></span>
+      <span style="width: 9px; height: 9px; border-radius: 50%; background: #14171a;"></span>
+      <span style="width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid #14171a; background: #f2efe9;"></span>
+      <span style="width: 9px; height: 9px; border-radius: 50%; border: 1px solid #c9c2b0;"></span>
+      <span style="width: 9px; height: 9px; border-radius: 50%; border: 1px solid #c9c2b0;"></span>
+      <span style="width: 9px; height: 9px; border-radius: 50%; border: 1px solid #c9c2b0;"></span>
+      <span style="width: 9px; height: 9px; border-radius: 50%; border: 1px solid #c9c2b0;"></span>
+      <span style="width: 9px; height: 9px; border-radius: 50%; border: 1px solid #c9c2b0;"></span>
+      <span style="width: 9px; height: 9px; border-radius: 50%; border: 1px solid #c9c2b0;"></span>
+      <span style="width: 9px; height: 9px; border-radius: 50%; border: 1px solid #c9c2b0;"></span>
+      <span style="width: 9px; height: 9px; border-radius: 50%; border: 1px solid #c9c2b0;"></span>
+      <span style="width: 9px; height: 9px; border-radius: 50%; border: 1px solid #c9c2b0;"></span>
+    </div>
+  </div>
+
+  <!-- quiet footer -->
+  <div style="display: flex; align-items: center; gap: 16px; padding: 12px 28px; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; color: #8b8578;">
+    <span style="display: flex; align-items: center; gap: 6px; color: #3d7d43;"><span style="width: 7px; height: 7px; background: #3d7d43; border-radius: 50%;"></span>levels matched · −0.8 dB on B</span>
+    <span>every trial recorded — replay with labels afterwards</span>
+    <span style="flex: 1;"></span>
+    <span style="border-bottom: 1px dotted #8b8578;">show running score — viewing interim results can bias your remaining trials</span>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>
