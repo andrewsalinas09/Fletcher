@@ -2075,7 +2075,6 @@ function MainApp() {
     applySnap(node.snap);
     buildRail(node.id);
     setHistVersion((v) => v + 1);
-    showNotice(`copied #${src.id} under #${onto.id} — “${node.label}” is a new node (and current)`);
   };
 
   /** Rename / annotate / pin — labels become intentions, notes become memory. */
