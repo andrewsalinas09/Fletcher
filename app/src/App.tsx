@@ -1169,6 +1169,7 @@ function FftView({
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [spectrum, setSpectrum] = useState<number[] | null>(null);
+  const [cur, setCur] = useState<{ x: number; y: number } | null>(null);
   const busy = useRef(false);
 
   useEffect(() => {
@@ -1269,9 +1270,43 @@ function FftView({
     ctx.font = "9.5px 'IBM Plex Mono', monospace";
     const legend = "FFT at playhead · — your EQ · ▮▮ where it boosts/cuts";
     ctx.fillText(legend, w - ctx.measureText(legend).width - 8, 12);
-  }, [spectrum, eq]);
 
-  return <canvas ref={canvasRef} className="fft-pane" />;
+    // cursor readout: frequency + level under the pointer, and the signal's
+    // actual dB at that frequency.
+    if (cur && cur.x >= 0 && cur.x <= w) {
+      const f = 10 ** (Math.log10(20) + (cur.x / w) * (Math.log10(20000) - Math.log10(20)));
+      const curDb = ((h - cur.y) / (h - 14)) * 80 - 90;
+      let sig = "";
+      if (spectrum) {
+        const i = Math.min(
+          Math.max(Math.round((cur.x / w) * (spectrum.length - 1)), 0),
+          spectrum.length - 1,
+        );
+        sig = ` · signal ${spectrum[i].toFixed(1)} dB`;
+      }
+      const label = `${fmtHz(f)}Hz · ${curDb.toFixed(1)} dB${sig}`;
+      ctx.font = "10px 'IBM Plex Mono', monospace";
+      const tw = ctx.measureText(label).width;
+      ctx.fillStyle = "rgba(242, 239, 233, 0.92)";
+      ctx.fillRect(6, 4, tw + 10, 15);
+      ctx.strokeStyle = "#c9c2b0";
+      ctx.strokeRect(5.5, 3.5, tw + 11, 16);
+      ctx.fillStyle = "#55503f";
+      ctx.fillText(label, 11, 15);
+    }
+  }, [spectrum, eq, cur]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      className="fft-pane"
+      onPointerMove={(e) => {
+        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+        setCur({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+      }}
+      onPointerLeave={() => setCur(null)}
+    />
+  );
 }
 
 /** The pop-out window: renders the shared tree, fed by the main window over events. */
@@ -1886,6 +1921,8 @@ function TimelineView({
   heightPx,
   decimals = 1,
   syncKey,
+  focus,
+  onFocusDone,
 }: {
   trackId: number;
   durationS: number;
@@ -1902,6 +1939,10 @@ function TimelineView({
   decimals?: number;
   /// Participate in cross-window view sync under this window label.
   syncKey?: string;
+  /// A double-clicked clip: jump + zoom the view to this range once the
+  /// waveform is ready (synced windows follow via the normal broadcast).
+  focus?: { a: number; b: number; trackId: number } | null;
+  onFocusDone?: () => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [wave, setWave] = useState<WaveData | null>(null);
@@ -1919,9 +1960,14 @@ function TimelineView({
   const regionRef = useRef(region);
   regionRef.current = region;
   const specCanvas = useRef<HTMLCanvasElement | null>(null);
+  const specBytes = useRef<Uint8Array | null>(null);
   useEffect(() => {
     specCanvas.current = spec ? specToCanvas(spec) : null;
+    specBytes.current = spec ? Uint8Array.from(atob(spec.data), (c) => c.charCodeAt(0)) : null;
   }, [spec]);
+  // Cursor readout: where the pointer is in data terms (time / amplitude /
+  // frequency+level), drawn on the canvas so satellites get it for free.
+  const [cur, setCur] = useState<{ x: number; y: number } | null>(null);
 
   // Clamp the SPAN first, then anchor — clamping after anchoring made every
   // wheel notch at the zoom limit drift the view sideways.
@@ -1971,6 +2017,18 @@ function TimelineView({
       alive = false;
     };
   }, [trackId]);
+
+  // A double-clicked clip: zoom to its range with breathing room. Waits for
+  // the waveform (a fresh session resets the view when it lands), then fires
+  // once — MainApp clears the request via onFocusDone.
+  useEffect(() => {
+    if (!focus || !wave || focus.trackId !== trackId) return;
+    const len = Math.max(focus.b - focus.a, MIN_SPAN);
+    const span = Math.min(len * 1.3, durationS || len * 1.3);
+    setViewSynced(clampView(focus.a - len * 0.15, span));
+    onFocusDone?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus, wave]);
 
   // Deep zoom: fetch a raw-sample window (with margin) when the view drops
   // below the peak-bucket resolution; refetch only when the view escapes it.
@@ -2270,7 +2328,48 @@ function TimelineView({
       ctx.closePath();
       ctx.fill();
     }
-  }, [wave, view, win, posS, durationS, region, spec, showSpec, showWave, decimals]);
+
+    // cursor readout — the coordinates under the pointer, in data terms:
+    // time everywhere; + frequency/level in the spectrogram lane (z from the
+    // tile grid); + amplitude/dBFS in the waveform lane.
+    if (cur && cur.y > RULER_H && cur.x >= 0 && cur.x <= w) {
+      const tC = Math.min(Math.max(start + (cur.x / w) * span, 0), durationS || 0);
+      let label: string;
+      if (showSpec && cur.y >= lanesTop && cur.y < lanesTop + specH) {
+        const frac = 1 - (cur.y - lanesTop) / specH; // bottom 20 Hz → top 20 kHz, log
+        const f = 10 ** (Math.log10(20) + frac * (Math.log10(20000) - Math.log10(20)));
+        let z = "";
+        const bytes = specBytes.current;
+        if (spec && bytes && spec.durationS > 0) {
+          const c = Math.min(Math.max(Math.floor((tC / spec.durationS) * spec.cols), 0), spec.cols - 1);
+          const r = Math.min(Math.max(Math.floor(frac * spec.rows), 0), spec.rows - 1);
+          const v = bytes[r * spec.cols + c];
+          z =
+            v === 0
+              ? ` · ≤${spec.minDb.toFixed(0)} dB`
+              : ` · ${(spec.minDb + (v / 255) * (spec.maxDb - spec.minDb)).toFixed(1)} dB`;
+        }
+        label = `${fmtTcN(tC, decimals)} · ${fmtHz(f)}Hz${z}`;
+      } else if (showWave && cur.y >= laneTop) {
+        const amp = (mid - cur.y) / (laneH / 2);
+        const dbfs =
+          Math.abs(amp) > 1e-4 ? `${(20 * Math.log10(Math.abs(amp))).toFixed(1)} dBFS` : "−∞";
+        label = `${fmtTcN(tC, decimals)} · ${amp >= 0 ? "+" : ""}${amp.toFixed(2)} (${dbfs})`;
+      } else {
+        label = fmtTcN(tC, decimals);
+      }
+      ctx.font = "10px 'IBM Plex Mono', monospace";
+      const tw = ctx.measureText(label).width;
+      const bx = w - tw - 14;
+      const by = h - 24;
+      ctx.fillStyle = "rgba(242, 239, 233, 0.92)";
+      ctx.fillRect(bx - 5, by - 11, tw + 10, 15);
+      ctx.strokeStyle = "#c9c2b0";
+      ctx.strokeRect(bx - 5.5, by - 11.5, tw + 11, 16);
+      ctx.fillStyle = "#55503f";
+      ctx.fillText(label, bx, by);
+    }
+  }, [wave, view, win, posS, durationS, region, spec, showSpec, showWave, decimals, cur]);
 
   return (
     <canvas
@@ -2302,6 +2401,7 @@ function TimelineView({
         );
         // C = seek to the cursor: report where the mouse hovers, always.
         onHover?.(tAt);
+        setCur({ x: e.clientX - rect.left, y: e.clientY - rect.top });
         const d = drag.current;
         if (!d) {
           // Near an I/O edge → the resize cursor announces the trim grab.
@@ -2330,7 +2430,10 @@ function TimelineView({
         d.moved = true;
         setViewSynced(clampView(d.start0 - (dx / rect.width) * v.span, v.span));
       }}
-      onPointerLeave={() => onHover?.(null)}
+      onPointerLeave={() => {
+        onHover?.(null);
+        setCur(null);
+      }}
       onPointerUp={(e) => {
         const d = drag.current;
         drag.current = null;
@@ -2812,6 +2915,16 @@ function MainApp() {
       const t = libraryRef.current?.tracks.find((x) => x.id === c.trackId);
       if (t) playTrack(t);
     }
+  };
+
+  // Double-click: open the clip AND zoom the timeline to it (satellites
+  // follow through the normal view-sync broadcast).
+  const [clipFocus, setClipFocus] = useState<{ a: number; b: number; trackId: number } | null>(
+    null,
+  );
+  const focusClip = (c: ClipRow) => {
+    openClip(c);
+    setClipFocus({ a: c.tIn, b: c.tOut, trackId: c.trackId });
   };
 
   const loadLibrary = () =>
@@ -4684,7 +4797,8 @@ function MainApp() {
                           key={c.id}
                           className={`clips-clip ${c.id === activeClipId ? "active" : ""}`}
                           onClick={() => openClip(c)}
-                          title="solo this clip on loop"
+                          onDoubleClick={() => focusClip(c)}
+                          title="solo this clip on loop · double-click zooms to it"
                         >
                           <span className="clip-dot" style={{ background: clipDotColor(c.tags) }} />
                           <span className="clip-name">{c.name}</span>
@@ -4932,6 +5046,8 @@ function MainApp() {
                       }
                       decimals={tcDec}
                       syncKey="main"
+                      focus={clipFocus}
+                      onFocusDone={() => setClipFocus(null)}
                     />
                     {specOn && !popped.spec && (
                       <span
