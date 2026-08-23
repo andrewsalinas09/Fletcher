@@ -1496,7 +1496,7 @@ function ScopeRoomMenu() {
           <div className="room-row">
             <span
               className="room-key"
-              title="One-click view setups. Melody: 8k window, spectrogram solo, log axis, ~10 s zoom at the playhead — pitch lines read like the tune. Standard: all scopes, 2k window, whole track."
+              title="One-click view setups. Melody: 8k window, spectrogram solo, log axis, ~1 ms view at the playhead — the harmonics become live pitch lines that ride the melody as it plays. Standard: all scopes, 2k window, whole track."
             >
               View preset
             </span>
@@ -3185,7 +3185,10 @@ function MainApp() {
       pickSpecParam("speclinear", 0); // pitch is log-natural
       const dur = trackSessRef.current?.durationS ?? 0;
       if (dur > 0) {
-        const span = Math.min(10, dur);
+        // ~1 ms wide (user-calibrated): the view is essentially one FFT
+        // column stretched across the screen — harmonics become horizontal
+        // lines, and playhead-follow makes them ride the melody live.
+        const span = Math.min(0.001, dur);
         const start = Math.max(0, Math.min(trackPosRef.current.posS - span / 2, dur - span));
         emit("scope-view", { start, span, src: "preset" });
       }
@@ -5971,7 +5974,7 @@ function MainApp() {
                     <div className="room-row">
                       <span
                         className="room-key"
-                        title="One-click view setups. Melody: 8k window, spectrogram solo, log axis, ~10 s zoom at the playhead — pitch lines read like the tune. Standard: all scopes, 2k window, whole track."
+                        title="One-click view setups. Melody: 8k window, spectrogram solo, log axis, ~1 ms view at the playhead — the harmonics become live pitch lines that ride the melody as it plays. Standard: all scopes, 2k window, whole track."
                       >
                         View preset
                       </span>
