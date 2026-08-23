@@ -348,6 +348,11 @@ nav {
   overflow: auto;
   cursor: grab;
   background: var(--panel);
+  user-select: none; /* drag-pan must never highlight text */
+}
+
+.hist-panel {
+  user-select: none;
 }
 
 .hist-viewport:active {

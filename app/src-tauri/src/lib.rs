@@ -627,6 +627,36 @@ async fn autoeq_import(name: String, path: String) -> Result<EqState, String> {
     eq_state()
 }
 
+// ---------------- history persistence (Q-17: trees survive restarts) ----------------
+
+fn history_dir() -> PathBuf {
+    data_dir().join("history")
+}
+
+#[tauri::command]
+fn history_save(preset: String, data: String) -> Result<(), String> {
+    let name = sanitize_name(&preset).ok_or("bad preset name")?;
+    std::fs::create_dir_all(history_dir()).map_err(|e| e.to_string())?;
+    fsx::write_atomic(&history_dir().join(format!("{name}.json")), &data).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn history_load(preset: String) -> Option<String> {
+    let name = sanitize_name(&preset)?;
+    std::fs::read_to_string(history_dir().join(format!("{name}.json"))).ok()
+}
+
+/// Write a history file to a user-chosen path (export via save dialog).
+#[tauri::command]
+fn history_export(path: String, data: String) -> Result<(), String> {
+    fsx::write_atomic(std::path::Path::new(&path), &data).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn history_import(path: String) -> Result<String, String> {
+    std::fs::read_to_string(&path).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn preset_rename(from: String, to: String) -> Result<PresetsState, String> {
     let to = sanitize_name(&to).ok_or("invalid preset name")?;
@@ -1197,6 +1227,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             spawn_config_watcher(app.handle().clone());
             let _ = setup_tray(app);
@@ -1234,7 +1265,11 @@ pub fn run() {
             abx_sessions,
             autoeq_search,
             autoeq_import,
-            preset_rename
+            preset_rename,
+            history_save,
+            history_load,
+            history_export,
+            history_import
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -625,8 +625,10 @@ function MainApp() {
     invoke<EqState>("autoeq_import", { name: entry.name, path: entry.path })
       .then((s) => {
         setState(s);
-        initHistory(snapOf(s.filters));
         refreshPresets();
+        invoke<PresetsState>("presets_state")
+          .then((p) => loadOrInitHistory(p.active ?? "chain", snapOf(s.filters)))
+          .catch(() => initHistory(snapOf(s.filters)));
         setMenuOpen(false);
         setAeq("");
         setAeqResults([]);
@@ -776,12 +778,18 @@ function MainApp() {
       refreshPresets();
       setMenuOpen(false);
       setNewName("");
-      initHistory(snapOf(s.filters)); // a different preset is a fresh timeline
+      invoke<PresetsState>("presets_state")
+        .then((p) => loadOrInitHistory(p.active ?? "chain", snapOf(s.filters)))
+        .catch(() => initHistory(snapOf(s.filters))); // each preset keeps its own timeline
     }).catch((e) => showNotice(String(e)));
 
   // Root the history at the first loaded state.
   useEffect(() => {
-    if (state && !hist.current) initHistory(snapOf(state.filters));
+    if (state && !hist.current) {
+      invoke<PresetsState>("presets_state")
+        .then((p) => loadOrInitHistory(p.active ?? "chain", snapOf(state.filters)))
+        .catch(() => initHistory(snapOf(state.filters)));
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state != null]);
 
@@ -988,6 +996,131 @@ function MainApp() {
   };
 
   
+
+  // ---- history persistence: trees survive restarts; files are the export ----
+  const serializeHistory = (): string | null => {
+    const h = hist.current;
+    if (!h) return null;
+    return JSON.stringify({
+      version: 1,
+      current: h.current,
+      nodes: [...h.nodes.values()].map((n) => ({
+        id: n.id,
+        parent: n.parent,
+        children: [...n.children],
+        label: n.label,
+        ts: n.ts,
+        snap: n.snap,
+      })),
+    });
+  };
+
+  const installHistory = (raw: string): boolean => {
+    try {
+      const d = JSON.parse(raw);
+      if (d?.version !== 1 || !Array.isArray(d.nodes)) return false;
+      const nodes = new Map<number, HistNode>();
+      for (const n of d.nodes) {
+        nodes.set(n.id, {
+          id: n.id,
+          parent: n.parent ?? null,
+          children: [...(n.children ?? [])],
+          snap: n.snap ?? [],
+          label: String(n.label ?? "step"),
+          ts: n.ts ?? Date.now(),
+        });
+      }
+      if (!nodes.has(0)) return false;
+      const next = Math.max(...nodes.keys()) + 1;
+      const current = nodes.has(d.current) ? d.current : 0;
+      hist.current = { nodes, current, next };
+      setHistVersion((v) => v + 1);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  /** Load a preset's saved tree, or root a fresh one. If the live chain has
+   *  drifted from the tree's current node, append a "resumed" node. */
+  const loadOrInitHistory = (name: string, currentSnap: ChainSnap) => {
+    invoke<string | null>("history_load", { preset: name })
+      .then((raw) => {
+        if (raw && installHistory(raw)) {
+          const h = hist.current!;
+          const nodeSnap = h.nodes.get(h.current)!.snap;
+          if (JSON.stringify(nodeSnap) !== JSON.stringify(currentSnap)) {
+            const cur = h.nodes.get(h.current)!;
+            const node: HistNode = {
+              id: h.next++,
+              parent: cur.id,
+              children: [],
+              snap: currentSnap,
+              label: "resumed",
+              ts: Date.now(),
+            };
+            cur.children.push(node.id);
+            h.nodes.set(node.id, node);
+            h.current = node.id;
+            setHistVersion((v) => v + 1);
+          }
+        } else {
+          initHistory(currentSnap);
+        }
+      })
+      .catch(() => initHistory(currentSnap));
+  };
+
+  // Debounced autosave of the tree, keyed by the active preset.
+  useEffect(() => {
+    if (!hist.current) return;
+    const t = window.setTimeout(() => {
+      const data = serializeHistory();
+      if (data) {
+        invoke("history_save", { preset: presets.active ?? "chain", data }).catch(() => {});
+      }
+    }, 400);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [histVersion, presets.active]);
+
+  const exportHistory = async () => {
+    try {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const path = await save({
+        defaultPath: `${presets.active ?? "chain"} history.json`,
+        filters: [{ name: "Fletcher history", extensions: ["json"] }],
+      });
+      if (!path) return;
+      const data = serializeHistory();
+      if (!data) return;
+      await invoke("history_export", { path, data });
+      showNotice(`history exported to ${path}`);
+    } catch (e) {
+      showNotice(String(e));
+    }
+  };
+
+  const importHistory = async () => {
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const path = await open({
+        multiple: false,
+        filters: [{ name: "Fletcher history", extensions: ["json"] }],
+      });
+      if (typeof path !== "string") return;
+      const raw = await invoke<string>("history_import", { path });
+      if (installHistory(raw)) {
+        const h = hist.current!;
+        applySnap(h.nodes.get(h.current)!.snap);
+        showNotice("history imported — you're on its latest node, audibly");
+      } else {
+        showNotice("that file isn't a Fletcher history");
+      }
+    } catch (e) {
+      showNotice(String(e));
+    }
+  };
 
   // Serializable tree (snapshots stripped) for the shared canvas + pop-out sync.
   const treeData = useMemo<HistTreeData | null>(() => {
@@ -1781,6 +1914,12 @@ function MainApp() {
                         <span className="mono hist-title">{`HISTORY — ${presets.active ?? "chain"}`}</span>
                         <span className="mono dim-sm">{`${histStats.edits} steps${histStats.branches ? ` · ${histStats.branches} branch points` : ""}`}</span>
                         <span className="spacer" />
+                        <button onClick={importHistory} title="load a history file — its tree replaces this one and you land on its current node">
+                          import
+                        </button>
+                        <button onClick={exportHistory} title="save this tree (with every branch and snapshot) as a shareable file">
+                          export
+                        </button>
                         <button onClick={popOutHistory} title="open the history tree in its own window — stays live-synced">
                           ⇱ pop out
                         </button>

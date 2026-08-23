@@ -33,6 +33,28 @@ For "import a song and flip between EQ'd/bypass." **Trap:** anything Fletcher pl
 | UI shell | Tauri 2 + TypeScript/React; draws only — receives compact Rust-computed binary frames over Tauri channels for live visuals | ADR-0005 |
 | Tray/hotkeys | Background presence, global A/B toggle | |
 
+## On-disk layout (v1, settled 2026-08-23)
+
+Everything under `%APPDATA%\Fletcher\`. Design rules: **human-readable and
+portable wherever feasible** (presets are plain APO syntax; records are
+pretty JSON), **export = the file itself** (sharing a preset, a history
+tree, or later a fingerprint means handing someone the file), and each
+subsystem owns one folder.
+
+| Path | Contents | Format |
+|---|---|---|
+| `state.json` | active preset, A/B side, reference level | JSON |
+| `presets/<name>.txt` | EQ chains | APO config syntax (portable, Peace/AutoEQ-compatible) |
+| `history/<preset>.json` | undo graphs, one tree per preset (survive restarts; export/import = this file) | JSON `{version, current, nodes[]}` with full snapshots |
+| `sessions/<id>.json` | ABX session records — labeled trial logs, provenance | JSON |
+| `autoeq/` | cached AutoEQ index + fetched preset files | md / APO syntax |
+| `clips/` *(Phase 3)* | clip libraries: per-track folders for media references + annotations; queryable records in the database | folders + SQLite |
+| `fingerprints/` *(Phase 4)* | measured fingerprint library; the interchange files (Q-15) are these, exported | TBD by Q-15 (metadata-rich) |
+| `calibration/` *(Phase 4)* | mic calibration curves | freq/dB text |
+
+Media itself (imported tracks) is referenced in place, never copied, unless
+the user asks; annotations and derived data live in Fletcher's folders.
+
 ## Committed so far
 
 - Rust core (ADR-0001).
