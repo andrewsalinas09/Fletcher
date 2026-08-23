@@ -2860,7 +2860,9 @@ function MainApp() {
       return dflt;
     }
   };
-  const [specWin, setSpecWin] = useState(() => lsNum("fletcher.specwin", 2048, [1024, 2048, 4096]));
+  const [specWin, setSpecWin] = useState(() =>
+    lsNum("fletcher.specwin", 2048, [256, 512, 1024, 2048, 4096, 8192]),
+  );
   const [specFloor, setSpecFloor] = useState(() =>
     lsNum("fletcher.specfloor", -90, [-70, -90, -110]),
   );
@@ -5660,13 +5662,21 @@ function MainApp() {
                       </div>
                     </div>
                     <div className="room-row">
-                      <span className="room-key">Spectrogram window</span>
+                      <span
+                        className="room-key"
+                        title="FFT window: smaller = sharper in time (transients, rhythm), bigger = sharper in frequency (tones, harmonics). 256 ≈ 5 ms slices; 8k ≈ 170 ms."
+                      >
+                        Spectrogram window
+                      </span>
                       <div className="seg seg-sm">
                         {(
                           [
-                            [1024, "1k · fine time"],
+                            [256, "256"],
+                            [512, "512"],
+                            [1024, "1k"],
                             [2048, "2k"],
-                            [4096, "4k · fine freq"],
+                            [4096, "4k"],
+                            [8192, "8k"],
                           ] as const
                         ).map(([v, label]) => (
                           <span
