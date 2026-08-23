@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -629,8 +629,12 @@ export default function App() {
     armedTimer.current = window.setTimeout(() => setArmedDel(null), 3000);
   };
 
-  // Canvas navigation: plain wheel zooms at the cursor (non-passive listener —
-  // React's root wheel handlers are passive and can't preventDefault).
+  // Canvas navigation: plain wheel zooms anchored at the cursor. Non-passive
+  // listener (React's root wheel handlers can't preventDefault), with the
+  // scroll correction applied in a layout effect AFTER the canvas has resized
+  // — correcting before the resize gets clamped and drifts off the cursor.
+  const pendingZoom = useRef<{ ox: number; oy: number; sl: number; st: number; prevZ: number } | null>(null);
+
   useEffect(() => {
     const vp = histVp.current;
     if (!histOpen || !vp) return;
@@ -640,20 +644,39 @@ export default function App() {
       const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
       setHistZoom((z) => {
         const z2 = Math.max(0.3, Math.min(3, z * factor));
-        const ratio = z2 / z;
-        const ox = e.clientX - rect.left;
-        const oy = e.clientY - rect.top;
-        const sl = vp.scrollLeft;
-        const st = vp.scrollTop;
-        requestAnimationFrame(() => {
-          vp.scrollLeft = (sl + ox) * ratio - ox;
-          vp.scrollTop = (st + oy) * ratio - oy;
-        });
+        if (z2 !== z) {
+          pendingZoom.current = {
+            ox: e.clientX - rect.left,
+            oy: e.clientY - rect.top,
+            sl: vp.scrollLeft,
+            st: vp.scrollTop,
+            prevZ: z,
+          };
+        }
         return z2;
       });
     };
     vp.addEventListener("wheel", onWheel, { passive: false });
     return () => vp.removeEventListener("wheel", onWheel);
+  }, [histOpen]);
+
+  useLayoutEffect(() => {
+    const p = pendingZoom.current;
+    const vp = histVp.current;
+    if (!p || !vp) return;
+    pendingZoom.current = null;
+    const ratio = histZoom / p.prevZ;
+    vp.scrollLeft = (p.sl + p.ox) * ratio - p.ox;
+    vp.scrollTop = (p.st + p.oy) * ratio - p.oy;
+  }, [histZoom]);
+
+  // Opening centers the tree in the viewport.
+  useLayoutEffect(() => {
+    if (!histOpen) return;
+    const vp = histVp.current;
+    if (!vp) return;
+    vp.scrollLeft = (vp.scrollWidth - vp.clientWidth) / 2;
+    vp.scrollTop = 0;
   }, [histOpen]);
 
   const treePanDown = (e: React.PointerEvent) => {
@@ -1564,8 +1587,10 @@ export default function App() {
                   };
                   assign(0, 0);
                   const maxDepth = histRows.reduce((m, r) => Math.max(m, r.depth), 0);
-                  const W = Math.max(Math.max(leaf, 1) * NODE_W + PAD * 2, 900);
-                  const H = Math.max((maxDepth + 1) * LEVEL_H + PAD * 2, 600);
+                  const W = Math.max(Math.max(leaf, 1) * NODE_W + PAD * 2, 1400);
+                  const H = Math.max((maxDepth + 1) * LEVEL_H + PAD * 2, 900);
+                  // Center the tree horizontally on the canvas.
+                  const PADX = (W - Math.max(leaf - 1, 0) * NODE_W) / 2;
                   return (
                     <>
                       <div className="hist-backdrop" onClick={() => setHistOpen(false)} />
@@ -1591,9 +1616,9 @@ export default function App() {
                                   if (!n || n.parent == null) return null;
                                   const p = pos.get(n.parent)!;
                                   const c = pos.get(r.id)!;
-                                  const px = p.x + PAD;
+                                  const px = p.x + PADX;
                                   const py = p.y + PAD;
-                                  const cxx = c.x + PAD;
+                                  const cxx = c.x + PADX;
                                   const cyy = c.y + PAD;
                                   return (
                                     <path
@@ -1605,7 +1630,7 @@ export default function App() {
                                 })}
                                 {histRows.map((r) => {
                                   const c = pos.get(r.id)!;
-                                  const x = c.x + PAD;
+                                  const x = c.x + PADX;
                                   const y = c.y + PAD;
                                   const inf = info.get(r.id)!;
                                   const armed = armedDel?.id === r.id;
