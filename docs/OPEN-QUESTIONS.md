@@ -64,5 +64,8 @@ Raised 2026-08-22 during design: any tab can pop out into its own OS window (cur
 ## Q-21 · The track/clip flow: what happens after "Load a track"? — **Open**
 "Load a track" on the A/B bar is a doorway, but the destination isn't designed yet: where do you switch between clips, search/browse the clip library, pick loop points mid-listen? Likely answer: loading a track lands you in the Listening Lab with the track's clip library docked (Clip Studio one click/pop-out away), and the A/B bar grows track-transport controls while a track session is active. Resolve by designing the Listening Lab + Clip Studio artboards — the next design work.
 
+## Q-22 · Mini clip picker on the EQ tab — **Open (deferred until real use)**
+User idea 2026-08-22: the EQ tab's spare space above the A/B bar could host a compact track/clip picker so you can flip test material without leaving the curve. Explicitly gated on dogfooding ("we'd have to really use it first") — decide after living with the app, not on the mockup.
+
 ## Q-14 · Tuning × testing fusion mechanics — **Open**
 "Move a slider and it goes through the clips to highlight specific stuff." How literally: does adjusting a bass filter auto-queue the bass-heavy clip? Replay the full battery on demand? A/B against the pre-tweak state per clip, with optional randomized voting? Define the interaction loop so tuning and testing share one engine.
