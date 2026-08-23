@@ -275,6 +275,46 @@ nav {
   border-color: var(--ink);
 }
 
+.hist-chip {
+  font-size: 11px;
+  border: 1px solid var(--line-mid);
+  background: var(--panel);
+  padding: 5px 10px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.hist-chip:hover {
+  border-color: var(--ink);
+}
+
+.hist-menu {
+  min-width: 250px;
+}
+
+.hist-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 12px;
+  font-size: 11.5px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--line);
+}
+
+.hist-row:hover {
+  background: var(--panel-alt);
+}
+
+.hist-row.current {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.hist-row.off-path {
+  opacity: 0.6;
+}
+
 .warn-chip {
   font-size: 11px;
   color: var(--boost);

@@ -342,6 +342,7 @@ export default function App() {
     invoke<EqState>("autoeq_import", { name: entry.name, path: entry.path })
       .then((s) => {
         setState(s);
+        initHistory(snapOf(s.filters));
         refreshPresets();
         setMenuOpen(false);
         setAeq("");
@@ -492,7 +493,15 @@ export default function App() {
       refreshPresets();
       setMenuOpen(false);
       setNewName("");
+      initHistory(snapOf(s.filters)); // a different preset is a fresh timeline
     }).catch((e) => showNotice(String(e)));
+
+  // Root the history at the first loaded state.
+  useEffect(() => {
+    if (state && !hist.current) initHistory(snapOf(state.filters));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state != null]);
+
 
   const switchPreset = (name: string | null) =>
     presetAction(invoke<EqState>("preset_switch", { name }));
@@ -568,25 +577,69 @@ export default function App() {
     }
   };
 
-  // ---- undo/redo: snapshots of Fletcher's own chain, gesture-coalesced ----
+  // ---- the undo graph (Q-17 v1): nodes are COMPLETED gestures ----
+  // A snapshot lands only when a gesture finishes: mouse drop, Enter commit,
+  // or a wheel burst settling for 250 ms. Undoing then editing doesn't discard
+  // the future — it branches. Session-scoped for now.
   type ChainSnap = { enabled: boolean; kind: string; fcHz: number; gainDb: number; q: number }[];
-  const undoStack = useRef<ChainSnap[]>([]);
-  const redoStack = useRef<ChainSnap[]>([]);
-  const lastRecord = useRef(0);
+  type HistNode = {
+    id: number;
+    parent: number | null;
+    children: number[];
+    snap: ChainSnap;
+    label: string;
+    ts: number;
+  };
+  const hist = useRef<{ nodes: Map<number, HistNode>; current: number; next: number } | null>(null);
+  const [histVersion, setHistVersion] = useState(0);
+  const [histOpen, setHistOpen] = useState(false);
+  const wheelCommit = useRef<number | null>(null);
 
-  const ownSnap = (): ChainSnap =>
-    (stateRef.current?.filters ?? [])
+  const snapOf = (filters: EqFilter[]): ChainSnap =>
+    filters
       .filter((f) => f.sourceFile === OWN_FILE)
       .map(({ enabled, kind, fcHz, gainDb, q }) => ({ enabled, kind, fcHz, gainDb, q }));
 
-  /** Record the pre-change state. Changes within 500 ms coalesce into one step. */
-  const recordHistory = (force = false) => {
-    const now = Date.now();
-    if (!force && now - lastRecord.current < 500) return;
-    lastRecord.current = now;
-    undoStack.current.push(ownSnap());
-    if (undoStack.current.length > 200) undoStack.current.shift();
-    redoStack.current = [];
+  const ownSnap = (): ChainSnap => snapOf(stateRef.current?.filters ?? []);
+
+  const initHistory = (snap: ChainSnap) => {
+    hist.current = {
+      nodes: new Map([
+        [0, { id: 0, parent: null, children: [], snap, label: "start", ts: Date.now() }],
+      ]),
+      current: 0,
+      next: 1,
+    };
+    setHistVersion((v) => v + 1);
+  };
+
+  /** A gesture finished: record the resulting state as a new node. */
+  const commitGesture = (label: string) => {
+    const h = hist.current;
+    if (!h) return;
+    const snap = ownSnap();
+    const cur = h.nodes.get(h.current)!;
+    if (JSON.stringify(snap) === JSON.stringify(cur.snap)) return; // no-op gesture
+    const node: HistNode = {
+      id: h.next++,
+      parent: cur.id,
+      children: [],
+      snap,
+      label,
+      ts: Date.now(),
+    };
+    cur.children.push(node.id);
+    h.nodes.set(node.id, node);
+    h.current = node.id;
+    setHistVersion((v) => v + 1);
+  };
+
+  const settleWheelGesture = () => {
+    if (wheelCommit.current != null) window.clearTimeout(wheelCommit.current);
+    wheelCommit.current = window.setTimeout(() => {
+      wheelCommit.current = null;
+      commitGesture("Q scroll");
+    }, 250);
   };
 
   const applySnap = (snap: ChainSnap) => {
@@ -604,21 +657,68 @@ export default function App() {
     pushChain(filters, true);
   };
 
+  const jumpTo = (id: number) => {
+    const h = hist.current;
+    const node = h?.nodes.get(id);
+    if (!h || !node) return;
+    h.current = id;
+    applySnap(node.snap);
+    setHistVersion((v) => v + 1);
+  };
+
   const undo = () => {
-    const snap = undoStack.current.pop();
-    if (snap == null) return;
-    redoStack.current.push(ownSnap());
-    lastRecord.current = 0;
-    applySnap(snap);
+    const h = hist.current;
+    if (!h) return;
+    const parent = h.nodes.get(h.current)?.parent;
+    if (parent != null) jumpTo(parent);
   };
 
   const redo = () => {
-    const snap = redoStack.current.pop();
-    if (snap == null) return;
-    undoStack.current.push(ownSnap());
-    lastRecord.current = 0;
-    applySnap(snap);
+    const h = hist.current;
+    if (!h) return;
+    const kids = h.nodes.get(h.current)?.children ?? [];
+    if (kids.length) jumpTo(kids[kids.length - 1]); // most recent branch
   };
+
+  const histRows = useMemo(() => {
+    const h = hist.current;
+    if (!h) return [];
+    const path = new Set<number>();
+    let c: number | null | undefined = h.current;
+    while (c != null) {
+      path.add(c);
+      c = h.nodes.get(c)?.parent;
+    }
+    const depth = new Map<number, number>();
+    return [...h.nodes.keys()]
+      .sort((a, b) => a - b)
+      .map((id) => {
+        const n = h.nodes.get(id)!;
+        const d = n.parent == null ? 0 : (depth.get(n.parent) ?? 0) + 1;
+        depth.set(id, d);
+        return {
+          id,
+          label: n.label,
+          ts: n.ts,
+          depth: d,
+          branchPoint: n.children.length > 1,
+          onPath: path.has(id),
+          isCurrent: id === h.current,
+        };
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [histVersion]);
+
+  const histStats = useMemo(() => {
+    const h = hist.current;
+    if (!h) return { edits: 0, branches: 0 };
+    let branches = 0;
+    h.nodes.forEach((n) => {
+      if (n.children.length > 1) branches++;
+    });
+    return { edits: h.nodes.size - 1, branches };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [histVersion]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -640,7 +740,6 @@ export default function App() {
   const mutateFilter = (i: number, patch: Partial<EqFilter>, immediate = false) => {
     const cur = stateRef.current;
     if (!cur) return;
-    if (cur.filters[i]?.sourceFile === OWN_FILE) recordHistory();
     const filters = cur.filters.map((f, j) => (j === i ? { ...f, ...patch } : f));
     setState({ ...cur, filters });
     pushChain(filters, immediate);
@@ -649,17 +748,16 @@ export default function App() {
   const deleteFilter = (i: number) => {
     const cur = stateRef.current;
     if (!cur) return;
-    recordHistory(true);
     const filters = cur.filters.filter((_, j) => j !== i);
     setState({ ...cur, filters });
     setSelected(null);
     pushChain(filters, true);
+    window.setTimeout(() => commitGesture("delete"), 0);
   };
 
   const addFilter = () => {
     const cur = stateRef.current;
     if (!cur) return;
-    recordHistory(true);
     const fresh: EqFilter = {
       enabled: true,
       kind: "PK",
@@ -673,6 +771,7 @@ export default function App() {
     setState({ ...cur, filters });
     setSelected(filters.length - 1);
     pushChain(filters, true);
+    window.setTimeout(() => commitGesture("add filter"), 0);
   };
 
   const ordered = useMemo(() => {
@@ -824,6 +923,7 @@ export default function App() {
     dragging.current = false;
     const cur = stateRef.current;
     if (cur) pushChain(cur.filters, true);
+    window.setTimeout(() => commitGesture("move"), 0);
   };
 
   const onWheelQ = (i: number) => (e: React.WheelEvent) => {
@@ -831,6 +931,7 @@ export default function App() {
     if (!f || f.sourceFile !== OWN_FILE) return;
     const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
     mutateFilter(i, { q: +Math.max(0.05, Math.min(50, f.q * factor)).toFixed(2) }, true);
+    settleWheelGesture(); // the burst becomes one history node 250ms after it stops
   };
 
   return (
@@ -1000,6 +1101,7 @@ export default function App() {
                     onClick={() => {
                       mutateFilter(typeMenu.i, { kind: k }, true);
                       setTypeMenu(null);
+                      window.setTimeout(() => commitGesture(`type → ${k}`), 0);
                     }}
                     {...tipProps(
                       <div>
@@ -1313,6 +1415,44 @@ export default function App() {
                 </div>
               )}
             </span>
+            <span className="preset-wrap">
+              <span
+                className="hist-chip mono"
+                onClick={() => setHistOpen((o) => !o)}
+                {...tipProps(
+                  <div>
+                    <div className="t-title">The undo graph</div>
+                    <p>
+                      Every finished gesture (a drag, a typed value, a settled scroll) is a
+                      node. Ctrl+Z walks up, Ctrl+Y walks down the newest branch — and
+                      editing after an undo doesn't erase the future, it forks a new
+                      branch. Click any node to jump straight there, audibly.
+                    </p>
+                  </div>,
+                )}
+              >
+                {`⟲ ${histStats.edits}${histStats.branches ? ` · ⑂${histStats.branches}` : ""}`}
+              </span>
+              {histOpen && (
+                <div className="preset-menu hist-menu">
+                  {histRows.map((r) => (
+                    <div
+                      key={r.id}
+                      className={`hist-row ${r.isCurrent ? "current" : ""} ${r.onPath ? "" : "off-path"}`}
+                      style={{ paddingLeft: 12 + r.depth * 11 }}
+                      onClick={() => jumpTo(r.id)}
+                    >
+                      <span>{r.label}</span>
+                      {r.branchPoint && <span className="mono dim-sm">⑂</span>}
+                      <span className="spacer" />
+                      <span className="mono dim-sm">
+                        {new Date(r.ts).toLocaleTimeString([], { timeStyle: "short" })}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </span>
             <span className="dim-sm">
               drag handles · scroll for Q · locked filters: duplicate from live to edit
             </span>
@@ -1437,7 +1577,10 @@ export default function App() {
                       className={`toggle-dot ${f.enabled ? "on" : ""}`}
                       onClick={(e) => {
                         e.stopPropagation();
-                        if (editable) mutateFilter(i, { enabled: !f.enabled }, true);
+                        if (editable) {
+                          mutateFilter(i, { enabled: !f.enabled }, true);
+                          window.setTimeout(() => commitGesture(f.enabled ? "bypass" : "enable"), 0);
+                        }
                       }}
                     />
                     <span
@@ -1466,21 +1609,30 @@ export default function App() {
                     display={fmtGain(f.gainDb)}
                     value={f.gainDb}
                     disabled={!editable}
-                    onCommit={(v) => mutateFilter(i, { gainDb: Math.max(-30, Math.min(30, v)) }, true)}
+                    onCommit={(v) => {
+                      mutateFilter(i, { gainDb: Math.max(-30, Math.min(30, v)) }, true);
+                      window.setTimeout(() => commitGesture("gain typed"), 0);
+                    }}
                   />
                   <ValueEdit
                     className="cell-fc mono"
                     display={fmtHz(f.fcHz)}
                     value={f.fcHz}
                     disabled={!editable}
-                    onCommit={(v) => mutateFilter(i, { fcHz: Math.max(10, Math.min(24000, v)) }, true)}
+                    onCommit={(v) => {
+                      mutateFilter(i, { fcHz: Math.max(10, Math.min(24000, v)) }, true);
+                      window.setTimeout(() => commitGesture("Fc typed"), 0);
+                    }}
                   />
                   <ValueEdit
                     className="cell-q"
                     display={`Q ${f.q}`}
                     value={f.q}
                     disabled={!editable}
-                    onCommit={(v) => mutateFilter(i, { q: Math.max(0.05, Math.min(50, v)) }, true)}
+                    onCommit={(v) => {
+                      mutateFilter(i, { q: Math.max(0.05, Math.min(50, v)) }, true);
+                      window.setTimeout(() => commitGesture("Q typed"), 0);
+                    }}
                   />
                   {isSel && editable && (
                     <span
