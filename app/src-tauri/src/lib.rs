@@ -46,6 +46,9 @@ struct EqState {
     sum_db: Vec<f64>,
     filters: Vec<EqFilter>,
     source_files: Vec<String>,
+    /// Every Include in config.txt, contributing or not (external EQs show
+    /// in the preset menu even when currently inactive).
+    includes: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -151,6 +154,7 @@ fn eq_state() -> Result<EqState, String> {
         })
         .collect();
 
+    let includes = docs.iter().skip(1).map(|(n, _)| n.clone()).collect();
     Ok(EqState {
         device_name: devices::default_render_device_name(),
         preamp_db,
@@ -158,6 +162,7 @@ fn eq_state() -> Result<EqState, String> {
         sum_db,
         filters: filter_dtos,
         source_files,
+        includes,
     })
 }
 

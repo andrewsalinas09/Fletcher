@@ -20,6 +20,7 @@ type EqState = {
   sumDb: number[];
   filters: EqFilter[];
   sourceFiles: string[];
+  includes: string[];
 };
 
 const OWN_FILE = "fletcher.txt";
@@ -252,6 +253,19 @@ export default function App() {
     return out;
   }, [dbRange]);
 
+  // The flag sits above everything drawn: the curve's highest point and the
+  // highest handle, whichever is taller. It never covers the plot.
+  const flagY = useMemo(() => {
+    if (!state) return 6;
+    const ys = [
+      ...state.sumDb.map((db) => yOf(db - state.preampDb)),
+      ...state.filters.map((f) => yOf(f.gainDb)),
+    ];
+    const top = ys.length ? Math.min(...ys) : GH / 2;
+    return Math.max(4, top - 34);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state, dbRange]);
+
   const graphPoint = (e: React.PointerEvent) => {
     const rect = svgRef.current!.getBoundingClientRect();
     const x = ((e.clientX - rect.left) / rect.width) * GW;
@@ -343,6 +357,27 @@ export default function App() {
                   >
                     <span>Flat — no Fletcher filters</span>
                   </div>
+                  {state.includes
+                    .filter((inc) => inc.toLowerCase() !== OWN_FILE)
+                    .map((inc) => {
+                      const count = state.filters.filter(
+                        (f) => f.sourceFile === inc && f.enabled,
+                      ).length;
+                      return (
+                        <div
+                          key={inc}
+                          className={`preset-row external ${count ? "" : "inactive"}`}
+                          title={`External — managed by another tool (${inc}). Turn it on or off there, or duplicate From live to make it yours.`}
+                        >
+                          <span>{inc.replace(/\.txt$/i, "")}</span>
+                          <span className="ext-badge">external</span>
+                          <span className="spacer" />
+                          <span className="dim-sm">
+                            {count ? `${count} filters on` : "inactive"}
+                          </span>
+                        </div>
+                      );
+                    })}
                   {presets.presets.map((p) => (
                     <div
                       key={p}
@@ -393,11 +428,6 @@ export default function App() {
               drag handles · scroll for Q · locked filters: duplicate from live to edit
             </span>
             <span className="spacer" />
-            {sel && (
-              <span className="sel-readout mono">
-                {`${sel.kind} ${fmtHz(sel.fcHz)} Hz ${fmtGain(sel.gainDb)} dB Q ${sel.q}${sel.enabled ? "" : " · bypassed"}`}
-              </span>
-            )}
             {state.filters.some((f) => f.enabled && f.sourceFile !== OWN_FILE) &&
               state.filters.some((f) => f.enabled && f.sourceFile === OWN_FILE) && (
                 <span className="warn-chip" title="Filters from another tool (e.g. Peace) are active alongside Fletcher's — you may be hearing both EQs stacked.">
@@ -447,6 +477,18 @@ export default function App() {
                   </title>
                 </circle>
               ))}
+
+              {sel && (
+                <g
+                  className="flag"
+                  transform={`translate(${Math.max(4, Math.min(xOf(sel.fcHz) - 94, GW - 216))}, ${flagY})`}
+                >
+                  <rect width="212" height="24" />
+                  <text x="9" y="16">
+                    {`${sel.kind} ${fmtHz(sel.fcHz)} Hz ${fmtGain(sel.gainDb)} dB Q ${sel.q}${sel.enabled ? "" : " · off"}`}
+                  </text>
+                </g>
+              )}
 
               <g className="axis">
                 {[30, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000].map((f) => (

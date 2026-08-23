@@ -499,11 +499,22 @@ button.ghost {
   stroke: var(--ink);
 }
 
-.sel-readout {
-  font-size: 11.5px;
-  background: var(--ink);
-  color: var(--paper);
-  padding: 4px 10px;
+.preset-row.external {
+  cursor: default;
+  background: var(--panel);
+}
+
+.preset-row.external.inactive {
+  opacity: 0.55;
+}
+
+.ext-badge {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 8.5px;
+  letter-spacing: 0.08em;
+  color: var(--cut);
+  border: 1px solid var(--cut);
+  padding: 1px 5px;
 }
 
 .cell.selected .cell-q {
