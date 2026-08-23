@@ -46,7 +46,7 @@
     <span style="font-size: 10.5px; color: #8b8578;">drag handles or numbers — graph and strip stay in sync</span>
   </div>
 
-  <!-- graph: all 11 handles, selected filter's contribution only -->
+  <!-- graph -->
   <div style="margin: 0 24px; border: 1px solid #b3ac9c; background: #f9f7f2;">
     <svg width="1090" height="330" viewBox="0 0 1090 330">
       <g stroke="#eee9dd" stroke-width="1">
@@ -72,13 +72,10 @@
       </g>
       <line x1="0" y1="155" x2="1090" y2="155" stroke="#8b8578" stroke-width="1.3"></line>
 
-      <!-- selected filter's contribution (LSC 105) -->
       <path d="M0 123 C 90 123, 160 126, 220 137 C 260 144, 300 152, 350 155" fill="none" stroke="#c85a13" stroke-width="1.4" opacity="0.55"></path>
 
-      <!-- summed response -->
       <path d="M0 120 C 50 121, 100 124, 150 131 C 195 138, 215 158, 262 156 C 310 153, 360 151, 420 152 C 470 152, 490 154, 530 154 C 570 155, 600 159, 640 158 C 680 158, 700 153, 730 154 C 760 156, 790 160, 820 158 C 850 155, 880 132, 920 130 C 950 128, 975 138, 1010 141 C 1040 143, 1065 143, 1090 142" fill="none" stroke="#14171a" stroke-width="2.4"></path>
 
-      <!-- handles at each filter's (Fc, gain) — draggable both axes -->
       <g>
         <circle cx="100" cy="148" r="5" fill="#f9f7f2" stroke="#c85a13" stroke-width="1.5"></circle>
         <circle cx="176" cy="135" r="5" fill="#f9f7f2" stroke="#c85a13" stroke-width="1.5"></circle>
@@ -116,101 +113,110 @@
     </svg>
   </div>
 
-  <!-- transposed filter strip: one column per filter, hairline-divided -->
+  <!-- filter strip: name·glyph·caret / arc gauge / gain / Fc / Q -->
   <div style="position: relative; margin: 8px 24px 0; border: 1px solid #b3ac9c; background: #f9f7f2; display: flex; align-items: stretch;">
 
-    <!-- tooltip demo (replaces the old right panel) -->
     <div style="position: absolute; left: 150px; top: -46px; border: 1px solid #14171a; background: #fffdf6; padding: 7px 12px; box-shadow: 3px 3px 0 rgb(20 23 26 / 10%); font-size: 11px; color: #55503f; max-width: 330px;">
       <b style="color: #14171a;">LSC</b> — low shelf, corner form: Fc + Q set where and how fast it bends. AutoEQ's shelf type.
     </div>
 
     <!-- preamp cell -->
-    <div style="flex: 0 0 88px; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 9px 4px 8px; border-right: 1px dashed #b3ac9c; background: #ece8df;">
-      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 9.5px; letter-spacing: 0.08em; color: #8b8578;">PRE · AUTO</span>
-      <svg width="26" height="26" viewBox="0 0 22 22"><circle cx="11" cy="11" r="8" fill="none" stroke="#c9c2b0" stroke-width="1.5"></circle><line x1="11" y1="11" x2="4.4" y2="6.5" stroke="#14171a" stroke-width="2" stroke-linecap="round"></line><circle cx="11" cy="11" r="1.6" fill="#14171a"></circle></svg>
+    <div style="flex: 0 0 92px; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 9px 4px 8px; border-right: 1px dashed #b3ac9c; background: #ece8df;">
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.08em; color: #8b8578;">PRE · AUTO</span>
+      <svg width="26" height="26" viewBox="0 0 22 22" fill="none"><line x1="11" y1="1.5" x2="11" y2="4" stroke="#b3ac9c" stroke-width="1.2"></line><path d="M5.34 16.66 A8 8 0 1 1 16.66 16.66" stroke="#ddd6c4" stroke-width="3"></path><path d="M3 10.84 A8 8 0 0 1 11 3" stroke="#14171a" stroke-width="3.5" stroke-linecap="round"></path></svg>
       <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600;">−8.1</span>
       <span style="font-size: 9px; color: #8b8578;">no clip</span>
     </div>
 
-    <!-- filter cells -->
+    <!-- 37 Hz PK +0.7 -->
     <div style="flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 9px 2px 8px; border-right: 1px solid #e5dfd1;">
-      <svg width="20" height="13" viewBox="0 0 16 12" fill="none" stroke="#c85a13" stroke-width="1.5"><path d="M1 10 C4 10 5 4 8 4 C11 4 12 10 15 10"></path></svg>
-      <svg width="26" height="26" viewBox="0 0 22 22"><circle cx="11" cy="11" r="8" fill="none" stroke="#c9c2b0" stroke-width="1.5"></circle><line x1="11" y1="11" x2="12.1" y2="3.1" stroke="#c85a13" stroke-width="2" stroke-linecap="round"></line><circle cx="11" cy="11" r="1.6" fill="#14171a"></circle></svg>
+      <div style="display: flex; align-items: center; gap: 3px;"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #55503f;">PK</span><svg width="18" height="12" viewBox="0 0 16 12" fill="none" stroke="#c85a13" stroke-width="1.5"><path d="M1 10 C4 10 5 4 8 4 C11 4 12 10 15 10"></path></svg><svg width="8" height="8" viewBox="0 0 16 16" fill="none" stroke="#8b8578" stroke-width="2"><path d="M4 6l4 4 4-4"></path></svg></div>
+      <svg width="26" height="26" viewBox="0 0 22 22" fill="none"><line x1="11" y1="1.5" x2="11" y2="4" stroke="#b3ac9c" stroke-width="1.2"></line><path d="M5.34 16.66 A8 8 0 1 1 16.66 16.66" stroke="#ddd6c4" stroke-width="3"></path><path d="M11 3 A8 8 0 0 1 12.1 3.08" stroke="#c85a13" stroke-width="3.5" stroke-linecap="round"></path></svg>
       <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; font-weight: 600; color: #c85a13;">+0.7</span>
       <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px;">37</span>
       <span style="font-size: 9px; color: #b3ac9c;">Q 3.96</span>
     </div>
+    <!-- 60 LSC +2.0 -->
     <div style="flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 9px 2px 8px; border-right: 1px solid #e5dfd1;">
-      <svg width="20" height="13" viewBox="0 0 16 12" fill="none" stroke="#c85a13" stroke-width="1.5"><path d="M1 4 L5 4 C9 4 10 9 13 9 L15 9"></path></svg>
-      <svg width="26" height="26" viewBox="0 0 22 22"><circle cx="11" cy="11" r="8" fill="none" stroke="#c9c2b0" stroke-width="1.5"></circle><line x1="11" y1="11" x2="14.1" y2="3.6" stroke="#c85a13" stroke-width="2" stroke-linecap="round"></line><circle cx="11" cy="11" r="1.6" fill="#14171a"></circle></svg>
+      <div style="display: flex; align-items: center; gap: 3px;"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #55503f;">LSC</span><svg width="18" height="12" viewBox="0 0 16 12" fill="none" stroke="#c85a13" stroke-width="1.5"><path d="M1 4 L5 4 C9 4 10 9 13 9 L15 9"></path></svg><svg width="8" height="8" viewBox="0 0 16 16" fill="none" stroke="#8b8578" stroke-width="2"><path d="M4 6l4 4 4-4"></path></svg></div>
+      <svg width="26" height="26" viewBox="0 0 22 22" fill="none"><line x1="11" y1="1.5" x2="11" y2="4" stroke="#b3ac9c" stroke-width="1.2"></line><path d="M5.34 16.66 A8 8 0 1 1 16.66 16.66" stroke="#ddd6c4" stroke-width="3"></path><path d="M11 3 A8 8 0 0 1 14.06 3.61" stroke="#c85a13" stroke-width="3.5" stroke-linecap="round"></path></svg>
       <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; font-weight: 600; color: #c85a13;">+2.0</span>
       <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px;">60</span>
       <span style="font-size: 9px; color: #b3ac9c;">Q 0.70</span>
     </div>
+    <!-- 105 LSC +6.4 · selected -->
     <div style="flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 9px 2px 8px; border-right: 1px solid #e5dfd1; background: #14171a; color: #f2efe9;">
-      <svg width="20" height="13" viewBox="0 0 16 12" fill="none" stroke="#e89a5f" stroke-width="1.5"><path d="M1 4 L5 4 C9 4 10 9 13 9 L15 9"></path></svg>
-      <svg width="26" height="26" viewBox="0 0 22 22"><circle cx="11" cy="11" r="8" fill="none" stroke="#55503f" stroke-width="1.5"></circle><line x1="11" y1="11" x2="18.6" y2="8.5" stroke="#e89a5f" stroke-width="2" stroke-linecap="round"></line><circle cx="11" cy="11" r="1.6" fill="#f2efe9"></circle></svg>
+      <div style="display: flex; align-items: center; gap: 3px;"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; font-weight: 600; color: #f2efe9;">LSC</span><svg width="18" height="12" viewBox="0 0 16 12" fill="none" stroke="#e89a5f" stroke-width="1.5"><path d="M1 4 L5 4 C9 4 10 9 13 9 L15 9"></path></svg><svg width="8" height="8" viewBox="0 0 16 16" fill="none" stroke="#b3ac9c" stroke-width="2"><path d="M4 6l4 4 4-4"></path></svg></div>
+      <svg width="26" height="26" viewBox="0 0 22 22" fill="none"><line x1="11" y1="1.5" x2="11" y2="4" stroke="#55503f" stroke-width="1.2"></line><path d="M5.34 16.66 A8 8 0 1 1 16.66 16.66" stroke="#3a3e36" stroke-width="3"></path><path d="M11 3 A8 8 0 0 1 18.61 8.53" stroke="#e89a5f" stroke-width="3.5" stroke-linecap="round"></path></svg>
       <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; font-weight: 600; color: #e89a5f;">+6.4</span>
       <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px;">105</span>
       <span style="font-size: 9px; color: #8b8578;">Q 0.70</span>
     </div>
+    <!-- 118 PK −3.1 -->
     <div style="flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 9px 2px 8px; border-right: 1px solid #e5dfd1;">
-      <svg width="20" height="13" viewBox="0 0 16 12" fill="none" stroke="#3f6d9e" stroke-width="1.5"><path d="M1 3 C4 3 5 9 8 9 C11 9 12 3 15 3"></path></svg>
-      <svg width="26" height="26" viewBox="0 0 22 22"><circle cx="11" cy="11" r="8" fill="none" stroke="#c9c2b0" stroke-width="1.5"></circle><line x1="11" y1="11" x2="6.4" y2="4.4" stroke="#3f6d9e" stroke-width="2" stroke-linecap="round"></line><circle cx="11" cy="11" r="1.6" fill="#14171a"></circle></svg>
+      <div style="display: flex; align-items: center; gap: 3px;"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #55503f;">PK</span><svg width="18" height="12" viewBox="0 0 16 12" fill="none" stroke="#3f6d9e" stroke-width="1.5"><path d="M1 3 C4 3 5 9 8 9 C11 9 12 3 15 3"></path></svg><svg width="8" height="8" viewBox="0 0 16 16" fill="none" stroke="#8b8578" stroke-width="2"><path d="M4 6l4 4 4-4"></path></svg></div>
+      <svg width="26" height="26" viewBox="0 0 22 22" fill="none"><line x1="11" y1="1.5" x2="11" y2="4" stroke="#b3ac9c" stroke-width="1.2"></line><path d="M5.34 16.66 A8 8 0 1 1 16.66 16.66" stroke="#ddd6c4" stroke-width="3"></path><path d="M6.43 4.44 A8 8 0 0 1 11 3" stroke="#3f6d9e" stroke-width="3.5" stroke-linecap="round"></path></svg>
       <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; font-weight: 600; color: #3f6d9e;">−3.1</span>
       <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px;">118</span>
       <span style="font-size: 9px; color: #b3ac9c;">Q 0.50</span>
     </div>
+    <!-- 587 PK +0.4 -->
     <div style="flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 9px 2px 8px; border-right: 1px solid #e5dfd1;">
-      <svg width="20" height="13" viewBox="0 0 16 12" fill="none" stroke="#c85a13" stroke-width="1.5"><path d="M1 10 C4 10 5 4 8 4 C11 4 12 10 15 10"></path></svg>
-      <svg width="26" height="26" viewBox="0 0 22 22"><circle cx="11" cy="11" r="8" fill="none" stroke="#c9c2b0" stroke-width="1.5"></circle><line x1="11" y1="11" x2="11.6" y2="3" stroke="#c85a13" stroke-width="2" stroke-linecap="round"></line><circle cx="11" cy="11" r="1.6" fill="#14171a"></circle></svg>
+      <div style="display: flex; align-items: center; gap: 3px;"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #55503f;">PK</span><svg width="18" height="12" viewBox="0 0 16 12" fill="none" stroke="#c85a13" stroke-width="1.5"><path d="M1 10 C4 10 5 4 8 4 C11 4 12 10 15 10"></path></svg><svg width="8" height="8" viewBox="0 0 16 16" fill="none" stroke="#8b8578" stroke-width="2"><path d="M4 6l4 4 4-4"></path></svg></div>
+      <svg width="26" height="26" viewBox="0 0 22 22" fill="none"><line x1="11" y1="1.5" x2="11" y2="4" stroke="#b3ac9c" stroke-width="1.2"></line><path d="M5.34 16.66 A8 8 0 1 1 16.66 16.66" stroke="#ddd6c4" stroke-width="3"></path><path d="M11 3 A8 8 0 0 1 11.63 3.03" stroke="#c85a13" stroke-width="3.5" stroke-linecap="round"></path></svg>
       <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; font-weight: 600; color: #c85a13;">+0.4</span>
       <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px;">587</span>
       <span style="font-size: 9px; color: #b3ac9c;">Q 1.19</span>
     </div>
+    <!-- 1227 PK −1.2 -->
     <div style="flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 9px 2px 8px; border-right: 1px solid #e5dfd1;">
-      <svg width="20" height="13" viewBox="0 0 16 12" fill="none" stroke="#3f6d9e" stroke-width="1.5"><path d="M1 3 C4 3 5 9 8 9 C11 9 12 3 15 3"></path></svg>
-      <svg width="26" height="26" viewBox="0 0 22 22"><circle cx="11" cy="11" r="8" fill="none" stroke="#c9c2b0" stroke-width="1.5"></circle><line x1="11" y1="11" x2="9.1" y2="3.2" stroke="#3f6d9e" stroke-width="2" stroke-linecap="round"></line><circle cx="11" cy="11" r="1.6" fill="#14171a"></circle></svg>
+      <div style="display: flex; align-items: center; gap: 3px;"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #55503f;">PK</span><svg width="18" height="12" viewBox="0 0 16 12" fill="none" stroke="#3f6d9e" stroke-width="1.5"><path d="M1 3 C4 3 5 9 8 9 C11 9 12 3 15 3"></path></svg><svg width="8" height="8" viewBox="0 0 16 16" fill="none" stroke="#8b8578" stroke-width="2"><path d="M4 6l4 4 4-4"></path></svg></div>
+      <svg width="26" height="26" viewBox="0 0 22 22" fill="none"><line x1="11" y1="1.5" x2="11" y2="4" stroke="#b3ac9c" stroke-width="1.2"></line><path d="M5.34 16.66 A8 8 0 1 1 16.66 16.66" stroke="#ddd6c4" stroke-width="3"></path><path d="M9.13 3.22 A8 8 0 0 1 11 3" stroke="#3f6d9e" stroke-width="3.5" stroke-linecap="round"></path></svg>
       <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; font-weight: 600; color: #3f6d9e;">−1.2</span>
       <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px;">1227</span>
       <span style="font-size: 9px; color: #b3ac9c;">Q 2.53</span>
     </div>
+    <!-- 2055 PK +1.2 -->
     <div style="flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 9px 2px 8px; border-right: 1px solid #e5dfd1;">
-      <svg width="20" height="13" viewBox="0 0 16 12" fill="none" stroke="#c85a13" stroke-width="1.5"><path d="M1 10 C4 10 5 4 8 4 C11 4 12 10 15 10"></path></svg>
-      <svg width="26" height="26" viewBox="0 0 22 22"><circle cx="11" cy="11" r="8" fill="none" stroke="#c9c2b0" stroke-width="1.5"></circle><line x1="11" y1="11" x2="12.9" y2="3.2" stroke="#c85a13" stroke-width="2" stroke-linecap="round"></line><circle cx="11" cy="11" r="1.6" fill="#14171a"></circle></svg>
+      <div style="display: flex; align-items: center; gap: 3px;"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #55503f;">PK</span><svg width="18" height="12" viewBox="0 0 16 12" fill="none" stroke="#c85a13" stroke-width="1.5"><path d="M1 10 C4 10 5 4 8 4 C11 4 12 10 15 10"></path></svg><svg width="8" height="8" viewBox="0 0 16 16" fill="none" stroke="#8b8578" stroke-width="2"><path d="M4 6l4 4 4-4"></path></svg></div>
+      <svg width="26" height="26" viewBox="0 0 22 22" fill="none"><line x1="11" y1="1.5" x2="11" y2="4" stroke="#b3ac9c" stroke-width="1.2"></line><path d="M5.34 16.66 A8 8 0 1 1 16.66 16.66" stroke="#ddd6c4" stroke-width="3"></path><path d="M11 3 A8 8 0 0 1 12.87 3.22" stroke="#c85a13" stroke-width="3.5" stroke-linecap="round"></path></svg>
       <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; font-weight: 600; color: #c85a13;">+1.2</span>
       <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px;">2055</span>
       <span style="font-size: 9px; color: #b3ac9c;">Q 3.23</span>
     </div>
+    <!-- 3169 PK −1.7 -->
     <div style="flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 9px 2px 8px; border-right: 1px solid #e5dfd1;">
-      <svg width="20" height="13" viewBox="0 0 16 12" fill="none" stroke="#3f6d9e" stroke-width="1.5"><path d="M1 3 C4 3 5 9 8 9 C11 9 12 3 15 3"></path></svg>
-      <svg width="26" height="26" viewBox="0 0 22 22"><circle cx="11" cy="11" r="8" fill="none" stroke="#c9c2b0" stroke-width="1.5"></circle><line x1="11" y1="11" x2="8.4" y2="3.4" stroke="#3f6d9e" stroke-width="2" stroke-linecap="round"></line><circle cx="11" cy="11" r="1.6" fill="#14171a"></circle></svg>
+      <div style="display: flex; align-items: center; gap: 3px;"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #55503f;">PK</span><svg width="18" height="12" viewBox="0 0 16 12" fill="none" stroke="#3f6d9e" stroke-width="1.5"><path d="M1 3 C4 3 5 9 8 9 C11 9 12 3 15 3"></path></svg><svg width="8" height="8" viewBox="0 0 16 16" fill="none" stroke="#8b8578" stroke-width="2"><path d="M4 6l4 4 4-4"></path></svg></div>
+      <svg width="26" height="26" viewBox="0 0 22 22" fill="none"><line x1="11" y1="1.5" x2="11" y2="4" stroke="#b3ac9c" stroke-width="1.2"></line><path d="M5.34 16.66 A8 8 0 1 1 16.66 16.66" stroke="#ddd6c4" stroke-width="3"></path><path d="M8.38 3.44 A8 8 0 0 1 11 3" stroke="#3f6d9e" stroke-width="3.5" stroke-linecap="round"></path></svg>
       <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; font-weight: 600; color: #3f6d9e;">−1.7</span>
       <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px;">3169</span>
       <span style="font-size: 9px; color: #b3ac9c;">Q 3.89</span>
     </div>
+    <!-- 5332 PK −1.1 -->
     <div style="flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 9px 2px 8px; border-right: 1px solid #e5dfd1;">
-      <svg width="20" height="13" viewBox="0 0 16 12" fill="none" stroke="#3f6d9e" stroke-width="1.5"><path d="M1 3 C4 3 5 9 8 9 C11 9 12 3 15 3"></path></svg>
-      <svg width="26" height="26" viewBox="0 0 22 22"><circle cx="11" cy="11" r="8" fill="none" stroke="#c9c2b0" stroke-width="1.5"></circle><line x1="11" y1="11" x2="9.3" y2="3.2" stroke="#3f6d9e" stroke-width="2" stroke-linecap="round"></line><circle cx="11" cy="11" r="1.6" fill="#14171a"></circle></svg>
+      <div style="display: flex; align-items: center; gap: 3px;"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #55503f;">PK</span><svg width="18" height="12" viewBox="0 0 16 12" fill="none" stroke="#3f6d9e" stroke-width="1.5"><path d="M1 3 C4 3 5 9 8 9 C11 9 12 3 15 3"></path></svg><svg width="8" height="8" viewBox="0 0 16 16" fill="none" stroke="#8b8578" stroke-width="2"><path d="M4 6l4 4 4-4"></path></svg></div>
+      <svg width="26" height="26" viewBox="0 0 22 22" fill="none"><line x1="11" y1="1.5" x2="11" y2="4" stroke="#b3ac9c" stroke-width="1.2"></line><path d="M5.34 16.66 A8 8 0 1 1 16.66 16.66" stroke="#ddd6c4" stroke-width="3"></path><path d="M9.29 3.19 A8 8 0 0 1 11 3" stroke="#3f6d9e" stroke-width="3.5" stroke-linecap="round"></path></svg>
       <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; font-weight: 600; color: #3f6d9e;">−1.1</span>
       <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px;">5332</span>
       <span style="font-size: 9px; color: #b3ac9c;">Q 5.75</span>
     </div>
+    <!-- 8800 PK +5.1 -->
     <div style="flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 9px 2px 8px; border-right: 1px solid #e5dfd1;">
-      <svg width="20" height="13" viewBox="0 0 16 12" fill="none" stroke="#c85a13" stroke-width="1.5"><path d="M1 10 C4 10 5 4 8 4 C11 4 12 10 15 10"></path></svg>
-      <svg width="26" height="26" viewBox="0 0 22 22"><circle cx="11" cy="11" r="8" fill="none" stroke="#c9c2b0" stroke-width="1.5"></circle><line x1="11" y1="11" x2="17.7" y2="6.7" stroke="#c85a13" stroke-width="2" stroke-linecap="round"></line><circle cx="11" cy="11" r="1.6" fill="#14171a"></circle></svg>
+      <div style="display: flex; align-items: center; gap: 3px;"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #55503f;">PK</span><svg width="18" height="12" viewBox="0 0 16 12" fill="none" stroke="#c85a13" stroke-width="1.5"><path d="M1 10 C4 10 5 4 8 4 C11 4 12 10 15 10"></path></svg><svg width="8" height="8" viewBox="0 0 16 16" fill="none" stroke="#8b8578" stroke-width="2"><path d="M4 6l4 4 4-4"></path></svg></div>
+      <svg width="26" height="26" viewBox="0 0 22 22" fill="none"><line x1="11" y1="1.5" x2="11" y2="4" stroke="#b3ac9c" stroke-width="1.2"></line><path d="M5.34 16.66 A8 8 0 1 1 16.66 16.66" stroke="#ddd6c4" stroke-width="3"></path><path d="M11 3 A8 8 0 0 1 17.74 6.69" stroke="#c85a13" stroke-width="3.5" stroke-linecap="round"></path></svg>
       <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; font-weight: 600; color: #c85a13;">+5.1</span>
       <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px;">8800</span>
       <span style="font-size: 9px; color: #b3ac9c;">Q 1.42</span>
     </div>
+    <!-- 10k HSC −2.1 -->
     <div style="flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 9px 2px 8px; border-right: 1px solid #e5dfd1;">
-      <svg width="20" height="13" viewBox="0 0 16 12" fill="none" stroke="#3f6d9e" stroke-width="1.5"><path d="M1 9 L3 9 C6 9 7 4 10 4 L15 4"></path></svg>
-      <svg width="26" height="26" viewBox="0 0 22 22"><circle cx="11" cy="11" r="8" fill="none" stroke="#c9c2b0" stroke-width="1.5"></circle><line x1="11" y1="11" x2="7.8" y2="3.7" stroke="#3f6d9e" stroke-width="2" stroke-linecap="round"></line><circle cx="11" cy="11" r="1.6" fill="#14171a"></circle></svg>
+      <div style="display: flex; align-items: center; gap: 3px;"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #55503f;">HSC</span><svg width="18" height="12" viewBox="0 0 16 12" fill="none" stroke="#3f6d9e" stroke-width="1.5"><path d="M1 9 L3 9 C6 9 7 4 10 4 L15 4"></path></svg><svg width="8" height="8" viewBox="0 0 16 16" fill="none" stroke="#8b8578" stroke-width="2"><path d="M4 6l4 4 4-4"></path></svg></div>
+      <svg width="26" height="26" viewBox="0 0 22 22" fill="none"><line x1="11" y1="1.5" x2="11" y2="4" stroke="#b3ac9c" stroke-width="1.2"></line><path d="M5.34 16.66 A8 8 0 1 1 16.66 16.66" stroke="#ddd6c4" stroke-width="3"></path><path d="M7.79 3.67 A8 8 0 0 1 11 3" stroke="#3f6d9e" stroke-width="3.5" stroke-linecap="round"></path></svg>
       <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; font-weight: 600; color: #3f6d9e;">−2.1</span>
       <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px;">10k</span>
       <span style="font-size: 9px; color: #b3ac9c;">Q 0.70</span>
     </div>
-    <!-- add cell -->
+    <!-- add -->
     <div style="flex: 0 0 56px; display: flex; align-items: center; justify-content: center; color: #b3ac9c;">
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#8b8578" stroke-width="1.5"><path d="M8 3v10M3 8h10"></path></svg>
     </div>
