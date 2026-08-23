@@ -1084,6 +1084,34 @@ button.ghost {
   gap: 10px;
 }
 
+.agg-strip {
+  border: 1px solid var(--line-mid);
+  background: var(--paper);
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.agg-bars {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+}
+
+.agg-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+}
+
+.agg-bar {
+  height: 7px;
+  display: inline-block;
+}
+
 /* FINDER — the battery builder column */
 .lab-finder {
   flex: 0 0 360px;

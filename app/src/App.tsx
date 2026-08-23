@@ -5920,6 +5920,48 @@ function MainApp() {
             {sessions.length === 0 && (
               <p className="dim-sm">No sessions yet. Your first blind test writes history here.</p>
             )}
+            {(() => {
+              // Per-tag ABX success across every clip trial (provenance join:
+              // log[].clipId → clip tags). Tags under 8 trials are hidden —
+              // small-N percentages mislead (TB-10).
+              const acc: Record<string, { hit: number; total: number }> = {};
+              for (const s of sessions) {
+                if ((s.protocol ?? "abx") !== "abx") continue;
+                for (const t of s.log) {
+                  if (t.clipId == null) continue;
+                  const clip = library?.clips.find((c) => c.id === t.clipId);
+                  if (!clip) continue;
+                  for (const tag of clip.tags) {
+                    const e = (acc[tag] ??= { hit: 0, total: 0 });
+                    e.total += 1;
+                    if (t.correct) e.hit += 1;
+                  }
+                }
+              }
+              const rows = Object.entries(acc)
+                .filter(([, v]) => v.total >= 8)
+                .sort((a, b) => b[1].total - a[1].total)
+                .slice(0, 6);
+              return rows.length > 0 ? (
+                <div className="agg-strip">
+                  <div className="dim-sm">ABX success by tag · every clip trial you've recorded</div>
+                  <div className="agg-bars">
+                    {rows.map(([tag, v]) => (
+                      <span key={tag} className="agg-item mono">
+                        <span
+                          className="agg-bar"
+                          style={{
+                            width: Math.max(6, Math.round((v.hit / v.total) * 56)),
+                            background: clipDotColor([tag]),
+                          }}
+                        />
+                        {`${tag} ${Math.round((v.hit / v.total) * 100)}% · ${v.total} trials`}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ) : null;
+            })()}
             {sessions
               .filter((r) => recordFilter === "all" || (r.protocol ?? "abx") === recordFilter)
               .map((r) => {
