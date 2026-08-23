@@ -97,6 +97,7 @@ function GainGauge({ gainDb, dark }: { gainDb: number; dark?: boolean }) {
 }
 
 type PresetsState = { presets: string[]; active: string | null };
+type AbInfo = { side: string; matchDb: number };
 
 // Deep teaching copy for the tooltip layer. A lot of detail, gated behind a
 // deliberate 1.5 s still-hover so it never gets in the way.
@@ -217,8 +218,12 @@ export default function App() {
       })
       .catch((e) => setError(String(e)));
 
-  const refreshPresets = () =>
+  const [ab, setAb] = useState<AbInfo>({ side: "a", matchDb: 0 });
+
+  const refreshPresets = () => {
     invoke<PresetsState>("presets_state").then(setPresets).catch(() => {});
+    invoke<AbInfo>("ab_info").then(setAb).catch(() => {});
+  };
 
   useEffect(() => {
     refresh();
@@ -226,12 +231,30 @@ export default function App() {
     // Push-based updates from the Rust config watcher — no polling. Ignored
     // mid-drag (our own writes fire it; the drag state is fresher).
     const unlisten = listen("apo-config-changed", () => {
-      if (!dragging.current) refresh();
+      if (!dragging.current) {
+        refresh();
+        invoke<AbInfo>("ab_info").then(setAb).catch(() => {});
+      }
+    });
+    // Hotkey / tray flips land here.
+    const unlistenAb = listen<string>("ab-changed", (e) => {
+      setAb((cur) => ({ ...cur, side: e.payload }));
     });
     return () => {
       unlisten.then((f) => f());
+      unlistenAb.then((f) => f());
     };
   }, []);
+
+  const setSide = (side: "a" | "b") => {
+    if (side === ab.side) return;
+    invoke<EqState>("ab_set", { side })
+      .then((s) => {
+        setState(s);
+        setAb((cur) => ({ ...cur, side }));
+      })
+      .catch((e) => showNotice(String(e)));
+  };
 
   const presetAction = (p: Promise<EqState>) =>
     p.then((s) => {
@@ -986,13 +1009,45 @@ export default function App() {
 
       <footer className="ab-bar">
         <div className="ab-toggle">
-          <span className="ab-side active">A · Live config</span>
-          <span className="ab-side">B · Flat</span>
+          <span
+            className={`ab-side ${ab.side === "a" ? "active" : ""}`}
+            onClick={() => setSide("a")}
+            {...tipProps(
+              <div>
+                <div className="t-title">A — your chain</div>
+                <p>
+                  {`The active preset (${presets.active ?? "none — Fletcher adds nothing"}).
+                  Flip with Ctrl+Shift+A from anywhere — Fletcher listens even while hidden
+                  in the tray.`}
+                </p>
+              </div>,
+            )}
+          >
+            {`A · ${presets.active ?? "Fletcher chain"}`}
+          </span>
+          <span
+            className={`ab-side ${ab.side === "b" ? "active" : ""}`}
+            onClick={() => setSide("b")}
+            {...tipProps(
+              <div>
+                <div className="t-title">B — flat, level-matched</div>
+                <p>
+                  No filters — but not naive bypass: B carries a preamp equal to your
+                  chain's average loudness across the spectrum (pink-noise weighted), so
+                  flipping compares tone, not volume. Louder always sounds better; matched
+                  is honest.
+                </p>
+                <p className="t-vals mono">{`match offset ${fmtGain(ab.matchDb)} dB`}</p>
+              </div>,
+            )}
+          >
+            B · Flat
+          </span>
         </div>
         <span className="mono dim-sm">Ctrl·Shift·A</span>
         <span className="matched mono">
           <span className="dot" />
-          levels matched
+          {`matched · B ${fmtGain(ab.matchDb)} dB`}
         </span>
         <span className="spacer" />
         <button className="ghost" disabled title="Track engine — Phase 3">

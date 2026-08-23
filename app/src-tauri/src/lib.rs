@@ -19,19 +19,38 @@ fn store() -> Result<PresetStore, String> {
     PresetStore::open(&data_dir().join("presets")).map_err(|e| e.to_string())
 }
 
+fn read_state() -> serde_json::Value {
+    std::fs::read_to_string(data_dir().join("state.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_else(|| serde_json::json!({}))
+}
+
+fn write_state_field(key: &str, value: serde_json::Value) {
+    let _ = std::fs::create_dir_all(data_dir());
+    let mut state = read_state();
+    state[key] = value;
+    let _ = fsx::write_atomic(&data_dir().join("state.json"), &state.to_string());
+}
+
 fn active_preset() -> Option<String> {
-    let text = std::fs::read_to_string(data_dir().join("state.json")).ok()?;
-    serde_json::from_str::<serde_json::Value>(&text)
-        .ok()?
-        .get("activePreset")?
-        .as_str()
-        .map(String::from)
+    read_state().get("activePreset")?.as_str().map(String::from)
 }
 
 fn set_active_preset(name: Option<&str>) {
-    let _ = std::fs::create_dir_all(data_dir());
-    let json = serde_json::json!({ "activePreset": name });
-    let _ = fsx::write_atomic(&data_dir().join("state.json"), &json.to_string());
+    write_state_field("activePreset", serde_json::json!(name));
+}
+
+fn ab_side() -> String {
+    read_state()
+        .get("abSide")
+        .and_then(|v| v.as_str())
+        .unwrap_or("a")
+        .to_string()
+}
+
+fn set_ab_side(side: &str) {
+    write_state_field("abSide", serde_json::json!(side));
 }
 
 const FS: f64 = 48000.0;
@@ -218,6 +237,8 @@ fn set_fletcher_chain(filters: Vec<FilterIn>) -> Result<EqState, String> {
     if let Some(name) = active_preset() {
         let _ = store()?.save(&name, preamp, &chain);
     }
+    // Editing implies listening to the chain: land on A.
+    set_ab_side("a");
 
     eq_state()
 }
@@ -287,6 +308,7 @@ fn preset_switch(name: Option<String>) -> Result<EqState, String> {
         None => activate_chain(&[])?,
     }
     set_active_preset(name.as_deref());
+    set_ab_side("a");
     eq_state()
 }
 
@@ -390,6 +412,92 @@ fn preset_duplicate(from: String, to: String) -> Result<PresetsState, String> {
     st.save(&to, p.preamp_db, &p.filters)
         .map_err(|e| e.to_string())?;
     presets_state()
+}
+
+/// The active preset's chain (empty when no preset is active).
+fn active_chain() -> Vec<ChainFilter> {
+    active_preset()
+        .and_then(|n| store().ok()?.load(&n))
+        .map(|p| p.filters)
+        .unwrap_or_default()
+}
+
+fn specs_of(chain: &[ChainFilter]) -> Vec<FilterSpec> {
+    chain
+        .iter()
+        .filter(|f| f.enabled)
+        .map(|f| FilterSpec {
+            kind: f.kind,
+            fc_hz: f.fc_hz,
+            gain_db: f.gain_db,
+            q: f.q,
+        })
+        .collect()
+}
+
+/// Level-matching offset for the flat side: the chain's mean response over a
+/// log-frequency grid (≈ pink-noise weighting — equal energy per octave).
+/// First implementation of Q-06's estimation method; clamped to never boost.
+fn flat_match_db(chain: &[ChainFilter]) -> f64 {
+    let specs = specs_of(chain);
+    if specs.is_empty() {
+        return 0.0;
+    }
+    let preamp = auto_preamp_db(&specs, FS);
+    let freqs = log_freqs(20.0, 20000.0, 200);
+    let resp = chain_response_db(&specs, preamp, FS, &freqs);
+    let mean = resp.iter().sum::<f64>() / resp.len() as f64;
+    ((mean * 10.0).round() / 10.0).clamp(-30.0, 0.0)
+}
+
+/// Write fletcher.txt for the given side: A = the active chain; B = flat,
+/// level-matched to the chain's average loudness.
+fn apply_side(side: &str) -> Result<(), String> {
+    let chain = active_chain();
+    match side {
+        "b" => {
+            let install = apo::detect().map_err(|e| e.to_string())?;
+            fsx::write_atomic(
+                &install.config_path.join("fletcher.txt"),
+                &render_fletcher_file(flat_match_db(&chain), &[]),
+            )
+            .map_err(|e| e.to_string())
+        }
+        _ => activate_chain(&chain),
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AbInfo {
+    side: String,
+    match_db: f64,
+}
+
+#[tauri::command]
+fn ab_info() -> AbInfo {
+    AbInfo {
+        side: ab_side(),
+        match_db: flat_match_db(&active_chain()),
+    }
+}
+
+#[tauri::command]
+fn ab_set(side: String) -> Result<EqState, String> {
+    let side = if side == "b" { "b" } else { "a" };
+    apply_side(side)?;
+    set_ab_side(side);
+    eq_state()
+}
+
+/// Flip A/B (hotkey + tray path); emits `ab-changed` with the new side.
+fn ab_flip(app: &tauri::AppHandle) {
+    use tauri::Emitter;
+    let next = if ab_side() == "a" { "b" } else { "a" };
+    if apply_side(next).is_ok() {
+        set_ab_side(next);
+        let _ = app.emit("ab-changed", next);
+    }
 }
 
 #[tauri::command]
@@ -587,13 +695,71 @@ fn spawn_config_watcher(handle: tauri::AppHandle) {
     });
 }
 
+fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem};
+    use tauri::tray::TrayIconBuilder;
+    use tauri::Manager;
+
+    let show = MenuItem::with_id(app, "show", "Show Fletcher", true, None::<&str>)?;
+    let flip = MenuItem::with_id(app, "flip", "Flip A/B\tCtrl+Shift+A", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit Fletcher", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &flip, &quit])?;
+
+    let mut tray = TrayIconBuilder::new()
+        .menu(&menu)
+        .tooltip("Fletcher — honest EQ")
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show" => {
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.show();
+                    let _ = win.unminimize();
+                    let _ = win.set_focus();
+                }
+            }
+            "flip" => ab_flip(app),
+            "quit" => app.exit(0),
+            _ => {}
+        });
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.build(app)?;
+    Ok(())
+}
+
+fn setup_hotkey(app: &tauri::App) {
+    use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+    let result = app
+        .global_shortcut()
+        .on_shortcut("ctrl+shift+a", |app, _shortcut, event| {
+            if event.state == ShortcutState::Pressed {
+                ab_flip(app);
+            }
+        });
+    if result.is_err() {
+        eprintln!("fletcher: could not register Ctrl+Shift+A (in use by another app?)");
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
             spawn_config_watcher(app.handle().clone());
+            let _ = setup_tray(app);
+            setup_hotkey(app);
+            // Make the config reflect the stored side deterministically at launch.
+            let _ = apply_side(&ab_side());
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Close hides to the tray: hotkeys and profiles keep working.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
         })
         .invoke_handler(tauri::generate_handler![
             apo_status,
@@ -604,7 +770,9 @@ pub fn run() {
             preset_create,
             preset_copy_from_source,
             preset_duplicate,
-            preset_delete
+            preset_delete,
+            ab_info,
+            ab_set
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

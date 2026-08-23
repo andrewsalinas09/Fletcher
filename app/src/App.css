@@ -631,6 +631,8 @@ button.ghost {
 .ab-side {
   font-size: 12px;
   padding: 5px 14px;
+  cursor: pointer;
+  user-select: none;
 }
 
 .ab-side.active {
