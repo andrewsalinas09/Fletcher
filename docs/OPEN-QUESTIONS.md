@@ -10,8 +10,8 @@ Tauri 2 + TypeScript/React. The one identified risk (IPC bandwidth for live visu
 ## Q-02 · Audience and the meaning of "most user-friendly ever" — **Resolved (UI model) → ADR-0002**
 One UI for everyone; advanced features greyed with hover explainers, never hidden. Also settled 2026-08-22: Fletcher does **not** install Equalizer APO itself — "no, at least not yet" — it detects and guides instead (revisit post-v1). Residual open: exact first-run wizard design.
 
-## Q-03 · Coexistence with Peace / existing configs — **Open**
-Does Fletcher own `config.txt` outright, or install itself as one `Include:` line and leave the rest untouched? Import Peace presets? Import raw APO config files? Migration story determines whether existing users can even try it safely (TB-02).
+## Q-03 · Coexistence with Peace / existing configs — **Resolved (wiring) → ADR-0007**
+One `Include: fletcher.txt` line; Fletcher owns only its own file. Residual open: importing Peace presets (`.peace` files) and raw APO configs into Fletcher's preset store.
 
 ## Q-04 · Track-mode output path: how does in-app playback bypass APO? — **Open**
 Candidates: (a) WASAPI exclusive mode (bypasses APO but hijacks the device), (b) temporarily write a bypass/empty config for that device during the session (restore guarantees needed — TB-11), (c) route to a device APO isn't installed on. Each has failure modes; needs a research spike.
@@ -25,8 +25,8 @@ Flat reference always exists; everything matched against it by default, app-wide
 ## Q-07 · Scope model — **Resolved → ADR-0006**
 Nothing is cut; everything in FEATURES.md is committed scope, ordered into phases by importance and dependency. The phase plan itself lives in ROADMAP.md (the scope authority).
 
-## Q-08 · AutoEQ database delivery — **Open**
-Bundle a snapshot (offline, stale) vs. fetch from the AutoEQ repo (fresh, network + licensing questions) vs. both. Also: which targets (Harman variants, oratory1990)?
+## Q-08 · AutoEQ database delivery — **Resolved → ADR-0008**
+Fetch on demand with mandatory caching; no bundled snapshot. Residual open: which targets to surface (Harman variants, oratory1990) and the offline-degradation UX.
 
 ## Q-09 · APO config-grammar coverage — **Open**
 Full grammar (Convolution, Copy, Delay, expressions, device/channel selectors, If/Eval) or the parametric-EQ subset first? Round-tripping *unknown* directives without loss is the likely requirement either way (never destroy what we don't understand).

@@ -18,3 +18,7 @@ Named for the [Fletcher–Munson equal-loudness curves](https://en.wikipedia.org
 | [docs/OPEN-QUESTIONS.md](docs/OPEN-QUESTIONS.md) | Open design questions |
 | [docs/TESTBED.md](docs/TESTBED.md) | Edge-case acceptance suite (normative) |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Phases and current focus |
+
+## License
+
+[Apache 2.0](LICENSE)
