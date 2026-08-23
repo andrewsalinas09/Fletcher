@@ -27,7 +27,12 @@
 - **Reference level** — the single global loudness (dB, default −8) every chain is normalized to via `matched_preamp`; makes all comparisons level-matched by construction (Q-06, ADR-0003).
 - **Undo graph / history tree** — branching record of completed gestures; nodes hold full chain snapshots; per-preset, persisted, exportable (Q-17).
 - **The rail** — the fixed undo/redo track laid when you click a node: its ancestry up to root plus its descent via latest-created children; Ctrl+Z/Shift+Z walk it without re-deriving.
-- **Trial room** — the full-window focus mode where an ABX session runs (A/B/X targets, neutral progress dots, hidden-by-default score).
+- **Trial room** — the full-window focus mode where a blind session runs (A/B/X targets — or unlabeled 1/2 slots for preference — neutral progress dots, hidden-by-default score).
+- **Trial engine** — the unified server-side blind-test core (ADR-0012): one session across protocol (ABX | preference), material (system audio | clips), and stop rule (fixed N | sequential). Assignments never leave the server mid-session.
+- **Battery** — a named, ordered set of clips saved in the Lab's finder; the material of a clip trial. Batteries reference clips; session records denormalize names, so history survives deletion.
+- **The finder** — the Lab's search-and-assemble column: query clips across every track (`tag:` `genre:` `note:` + free text), see tested-counts, save selections as batteries. Clip Studio curates; the Lab finds.
+- **Sequential test (SPRT)** — adaptive ABX stopping rule (Wald): the session ends the moment the running score crosses a pre-declared evidence bound (H1 p=0.75, α=β=0.05, cap 40). The decision carries the calibrated error rates; the p at stop is nominal.
+- **Testing play method** — ADR-0011's third method, live since ADR-0012: exclusive-mode dual-bus playback with both contender chains processed every frame and a 15 ms equal-power crossfade — sample-accurate blind switching over clips.
 - **The Record** — the Lab's session history: plain-language verdicts, labeled replay, provenance (including mid-session score reveals).
 - **Fingerprint** — Fletcher's term for one measured headphone response at one person's ears: the coupled HpTF∘ear transfer function, with reseating statistics attached.
 - **Bridging** — transferring a fingerprint across people via a headphone both have measured: (X_on_them − shared_on_them) + shared_on_you ≈ X on your ears. Valid mainly below ~5–6 kHz (TB-18).
