@@ -63,6 +63,7 @@ pub fn list_render_devices() -> Vec<RenderDevice> {
 // declared as opaque stubs we never call.
 const CLSID_POLICY_CONFIG: GUID = GUID::from_u128(0x870af99c_171d_4f9e_af0d_e63df40c2bc9);
 
+#[allow(non_snake_case, clippy::too_many_arguments)]
 #[interface("f8679f50-850a-41cf-9c72-430f290290c8")]
 unsafe trait IPolicyConfig: IUnknown {
     unsafe fn GetMixFormat(&self, dev: PCWSTR, fmt: *mut *mut core::ffi::c_void) -> HRESULT;
