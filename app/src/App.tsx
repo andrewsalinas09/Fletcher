@@ -1416,7 +1416,15 @@ type AbxState = {
   planned: number;
   answered: number;
   audition: string;
+  levelMatched?: boolean;
   runningCorrect: number | null;
+};
+
+type SettingsState = {
+  referenceDb: number;
+  levelMatching: boolean;
+  apoInstallPath: string | null;
+  apoConfigPath: string | null;
 };
 type AbxTrial = { xWasA: boolean; answeredA: boolean; correct: boolean };
 type AbxResult = {
@@ -1427,6 +1435,7 @@ type AbxResult = {
   aChain?: ChainSnap;
   bChain?: ChainSnap;
   referenceDb?: number;
+  levelMatched?: boolean;
   trials: number;
   correct: number;
   pValue: number;
@@ -1636,8 +1645,78 @@ function MainApp() {
       .finally(() => setImporting(false));
   };
 
+  // ---- Settings (v1: the approved artboard) ----
+  const [view, setView] = useState<"eq" | "lab" | "settings">("eq");
+  const [settings, setSettings] = useState<SettingsState | null>(null);
+  const [autostart, setAutostart] = useState<boolean | null>(null);
+  const loadSettings = () => invoke<SettingsState>("settings_state").then(setSettings).catch(() => {});
+  const loadAutostart = () =>
+    import("@tauri-apps/plugin-autostart")
+      .then((m) => m.isEnabled())
+      .then(setAutostart)
+      .catch(() => setAutostart(null));
+  const toggleAutostart = async () => {
+    try {
+      const m = await import("@tauri-apps/plugin-autostart");
+      if (await m.isEnabled()) await m.disable();
+      else await m.enable();
+      setAutostart(await m.isEnabled());
+    } catch (e) {
+      showNotice(String(e));
+    }
+  };
+  const setReference = (db: number) =>
+    invoke<EqState>("set_reference_db", { db })
+      .then((s) => {
+        setState(s);
+        loadSettings();
+        refreshPresets();
+      })
+      .catch((e) => showNotice(String(e)));
+  const toggleLevelMatching = () => {
+    if (!settings) return;
+    invoke<EqState>("set_level_matching", { on: !settings.levelMatching })
+      .then((s) => {
+        setState(s);
+        loadSettings();
+        refreshPresets();
+      })
+      .catch((e) => showNotice(String(e)));
+  };
+  // Display-only preferences live client-side (like the y-scale).
+  const [ordering, setOrdering] = useState<"freq" | "importance" | "file">(() => {
+    try {
+      const v = localStorage.getItem("fletcher.order");
+      return v === "importance" || v === "file" ? v : "freq";
+    } catch {
+      return "freq";
+    }
+  });
+  const pickOrdering = (v: "freq" | "importance" | "file") => {
+    setOrdering(v);
+    try {
+      localStorage.setItem("fletcher.order", v);
+    } catch {
+      /* per-viewer nicety only */
+    }
+  };
+  const [uiMode, setUiMode] = useState<"standard" | "advanced">(() => {
+    try {
+      return localStorage.getItem("fletcher.mode") === "advanced" ? "advanced" : "standard";
+    } catch {
+      return "standard";
+    }
+  });
+  const pickUiMode = (v: "standard" | "advanced") => {
+    setUiMode(v);
+    try {
+      localStorage.setItem("fletcher.mode", v);
+    } catch {
+      /* per-viewer nicety only */
+    }
+  };
+
   // ---- Listening Lab state ----
-  const [view, setView] = useState<"eq" | "lab">("eq");
   const [abx, setAbx] = useState<AbxState | null>(null);
   const abxRef = useRef<AbxState | null>(null);
   abxRef.current = abx;
@@ -1772,6 +1851,8 @@ function MainApp() {
     refresh();
     refreshPresets();
     loadSessions();
+    loadSettings(); // the A/B bar's matched/unmatched state needs it
+    loadAutostart();
     const unlisten = listen("apo-config-changed", () => pushRef.current.config());
     const unlistenAb = listen<string>("ab-changed", (e) => pushRef.current.ab(e.payload));
     const unlistenAbx = listen<string>("abx-audition", (e) => pushRef.current.abx(e.payload));
@@ -2580,8 +2661,11 @@ function MainApp() {
 
   const ordered = useMemo(() => {
     if (!state) return [];
-    return state.filters.map((f, i) => ({ f, i })).sort((a, b) => a.f.fcHz - b.f.fcHz);
-  }, [state]);
+    const rows = state.filters.map((f, i) => ({ f, i }));
+    if (ordering === "file") return rows; // as parsed — never reordered on disk
+    if (ordering === "importance") return rows.sort((a, b) => Math.abs(b.f.gainDb) - Math.abs(a.f.gainDb));
+    return rows.sort((a, b) => a.f.fcHz - b.f.fcHz);
+  }, [state, ordering]);
 
   const orderedRef = useRef(ordered);
   orderedRef.current = ordered;
@@ -2828,8 +2912,26 @@ function MainApp() {
           <span className={`tab ${view === "eq" ? "active" : ""}`} onClick={() => setView("eq")}>EQ</span>
           <span className={`tab ${view === "lab" ? "active" : ""}`} onClick={() => setView("lab")}>LISTENING LAB</span>
           <span className="tab disabled" title="Annotate tracks, build clip libraries — coming with the track engine">CLIP STUDIO</span>
-          <span className="tab advanced" title="Measure and match headphones. Advanced: needs a measurement microphone.">FINGERPRINTS</span>
-          <span className="tab disabled" title="Coming soon">SETTINGS</span>
+          <span
+            className={`tab ${uiMode === "advanced" ? "disabled" : "advanced"}`}
+            title={
+              uiMode === "advanced"
+                ? "Fingerprint Lab — measure and match headphones. Coming in Phase 4."
+                : "Measure and match headphones. Advanced: needs a measurement microphone — switch to Advanced mode in Settings."
+            }
+          >
+            FINGERPRINTS
+          </span>
+          <span
+            className={`tab ${view === "settings" ? "active" : ""}`}
+            onClick={() => {
+              setView("settings");
+              loadSettings();
+              loadAutostart();
+            }}
+          >
+            SETTINGS
+          </span>
         </nav>
         <span className="spacer" />
         <span className="preset-wrap">
@@ -2919,7 +3021,11 @@ function MainApp() {
               </div>
             </div>
             <div className="trial-foot mono">
-              <span className="ok-text">● levels matched</span>
+              {abx.levelMatched === false ? (
+                <span className="warn-text">▲ levels NOT matched — this result measures loudness too</span>
+              ) : (
+                <span className="ok-text">● levels matched</span>
+              )}
               <span>every trial recorded — replay with labels afterwards</span>
               <span className="spacer" />
               {abx.runningCorrect != null ? (
@@ -3092,6 +3198,9 @@ function MainApp() {
                     <div className="session-main">
                       <div className="session-title">{`${r.aName} vs ${r.bName ?? "Flat"}`}</div>
                       <div className={`session-verdict ${v.good ? "good" : "meh"}`}>{v.text}</div>
+                      {r.levelMatched === false && (
+                        <div className="dim-sm warn-text">levels were NOT matched — loudness was audible</div>
+                      )}
                       {r.statsViewed.length > 0 && (
                         <div className="dim-sm">{`score viewed mid-session at trial ${r.statsViewed.join(", ")}`}</div>
                       )}
@@ -3136,6 +3245,143 @@ function MainApp() {
                 </div>
               );
             })}
+          </div>
+        </div>
+      )}
+
+      {view === "settings" && settings && (
+        <div className="settings">
+          <div className="set-col">
+            <div className="set-sect">
+              <span className="mono set-head">DISPLAY</span>
+              <div className="set-row">
+                <span className="set-key">Filter ordering</span>
+                <div className="seg">
+                  {(
+                    [
+                      ["freq", "By frequency"],
+                      ["importance", "By importance"],
+                      ["file", "File order"],
+                    ] as const
+                  ).map(([v, label]) => (
+                    <span key={v} className={`seg-opt ${ordering === v ? "on" : ""}`} onClick={() => pickOrdering(v)}>
+                      {label}
+                    </span>
+                  ))}
+                </div>
+              </div>
+              <span className="set-note">
+                How the strip below the graph is sorted. AutoEQ writes filters biggest-correction-first; "by
+                importance" sorts by correction size. Files on disk are never reordered.
+              </span>
+            </div>
+
+            <div className="set-sect">
+              <span className="mono set-head">HONESTY</span>
+              <div className="set-row">
+                <span className="set-key">Level matching</span>
+                <div className={`switch ${settings.levelMatching ? "on ok" : ""}`} onClick={toggleLevelMatching}>
+                  <div className="knob" />
+                </div>
+                {settings.levelMatching ? (
+                  <span className="set-live ok-text">on — every comparison loudness-matched to the reference</span>
+                ) : (
+                  <span className="set-live warn-text">off — every comparison is marked unmatched</span>
+                )}
+              </div>
+              <span className="set-note">
+                Louder reliably sounds better; matched is honest. Off keeps only clip protection — the A/B bar,
+                trial room, and session records all mark comparisons as unmatched.
+              </span>
+            </div>
+
+            <div className="set-sect">
+              <span className="mono set-head">REFERENCE</span>
+              <div className="set-row">
+                <span className="set-key">Reference loudness</span>
+                <ValueEdit
+                  className="set-val mono"
+                  display={`${fmtGain(settings.referenceDb)} dB`}
+                  value={settings.referenceDb}
+                  onCommit={(v) => setReference(Math.max(-30, Math.min(0, v)))}
+                />
+              </div>
+              <span className="set-note">
+                Everything — flat, every preset, chains mid-edit — is normalized to this loudness. A guided
+                calibration (adjust your volume against generated noise, press accept) arrives with Clip
+                Studio's signal generator.
+              </span>
+            </div>
+
+            <div className="set-sect">
+              <span className="mono set-head">SYSTEM</span>
+              <div className="set-row">
+                <span className="set-key">Start with Windows</span>
+                <div className={`switch ${autostart ? "on" : ""}`} onClick={toggleAutostart}>
+                  <div className="knob" />
+                </div>
+                <span className="set-live dim-sm">runs in the tray for hotkeys and profiles</span>
+              </div>
+              <div className="set-row">
+                <span className="set-key">A/B hotkey</span>
+                <span className="mono set-kbd">Ctrl + Shift + A</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="set-col">
+            <div className="set-sect">
+              <span className="mono set-head">INTERFACE</span>
+              <div className="set-row">
+                <span className="set-key">Mode</span>
+                <div className="seg">
+                  <span className={`seg-opt ${uiMode === "standard" ? "on" : ""}`} onClick={() => pickUiMode("standard")}>
+                    Standard
+                  </span>
+                  <span className={`seg-opt ${uiMode === "advanced" ? "on" : ""}`} onClick={() => pickUiMode("advanced")}>
+                    Advanced
+                  </span>
+                </div>
+              </div>
+              <span className="set-note">
+                Same layout in both. Standard greys out advanced tools instead of hiding them — hover any greyed
+                control to learn what it does.
+              </span>
+            </div>
+
+            <div className="set-demo">
+              <span className="mono set-head no-line">HOW GREYED CONTROLS BEHAVE</span>
+              <div className="set-demo-row">
+                <span className="mono">FINGERPRINTS</span>
+                <span>Fingerprint Lab — measure and match headphones</span>
+              </div>
+              <div className="set-demo-tip">
+                <div className="t-title">Fingerprint Lab</div>
+                <p>
+                  Measures how a headphone actually sounds at your ears using sweeps, so two headphones can be
+                  matched or auditioned virtually. Advanced because it needs a measurement microphone and a quiet
+                  room. Switch to Advanced mode to enable it when it ships (Phase 4).
+                </p>
+              </div>
+            </div>
+
+            <div className="set-sect">
+              <span className="mono set-head">EQUALIZER APO</span>
+              <div className="set-row">
+                <span className={`apo-dot ${settings.apoInstallPath ? "ok" : "bad"}`} />
+                {settings.apoInstallPath ? (
+                  <span className="set-text">
+                    Installed · <span className="mono">{settings.apoInstallPath}</span>
+                  </span>
+                ) : (
+                  <span className="set-text">Not detected — install from sourceforge.net/projects/equalizerapo</span>
+                )}
+              </div>
+              <span className="set-note">
+                Fletcher writes only fletcher.txt and one Include line. Peace and hand-written configs are never
+                touched.
+              </span>
+            </div>
           </div>
         </div>
       )}
@@ -3625,10 +3871,20 @@ function MainApp() {
           </span>
         </div>
         <span className="mono dim-sm">Ctrl·Shift·A</span>
-        <span className="matched mono">
-          <span className="dot" />
-          {`matched · B ${fmtGain(ab.matchDb)} dB`}
-        </span>
+        {settings?.levelMatching === false ? (
+          <span
+            className="matched mono unmatched"
+            title="Level matching is off (Settings → Honesty) — the louder side reliably sounds better."
+          >
+            <span className="dot bad" />
+            unmatched — louder side wins
+          </span>
+        ) : (
+          <span className="matched mono">
+            <span className="dot" />
+            {`matched · B ${fmtGain(ab.matchDb)} dB`}
+          </span>
+        )}
         <span className="spacer" />
       </footer>
     </div>

@@ -12,6 +12,7 @@
     "core:window:allow-set-focus",
     "core:window:allow-show",
     "core:webview:allow-create-webview-window",
-    "dialog:default"
+    "dialog:default",
+    "autostart:default"
   ]
 }

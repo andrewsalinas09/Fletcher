@@ -50,6 +50,15 @@ fn reference_db() -> f64 {
         .unwrap_or(-8.0)
 }
 
+/// The honesty switch (ADR-0003): level matching is ON unless deliberately
+/// disabled in Settings; off means comparisons are marked unmatched in the UI.
+fn level_matching() -> bool {
+    read_state()
+        .get("levelMatching")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true)
+}
+
 fn ab_side() -> String {
     read_state()
         .get("abSide")
@@ -429,6 +438,11 @@ fn specs_of(chain: &[ChainFilter]) -> Vec<FilterSpec> {
 /// mid-edit chains — normalizes to the same reference (Q-06/ADR-0003).
 fn matched_preamp(specs: &[FilterSpec]) -> f64 {
     let clip_safe = auto_preamp_db(specs, FS);
+    if !level_matching() {
+        // Honesty switch off: clip safety only, no reference normalization —
+        // every comparison is then louder-vs-quieter and the UI says so.
+        return (clip_safe.clamp(-30.0, 0.0) * 10.0).round() / 10.0;
+    }
     let reference = reference_db().min(0.0);
     if specs.is_empty() {
         return (reference * 10.0).round() / 10.0;
@@ -736,6 +750,53 @@ fn preset_create_from_chain(name: String, filters: Vec<FilterIn>) -> Result<Stri
     Ok(name)
 }
 
+// ---------------- Settings (v1: the approved artboard) ----------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SettingsState {
+    reference_db: f64,
+    level_matching: bool,
+    apo_install_path: Option<String>,
+    apo_config_path: Option<String>,
+}
+
+#[tauri::command]
+fn settings_state() -> SettingsState {
+    let apo = apo::detect().ok();
+    SettingsState {
+        reference_db: reference_db(),
+        level_matching: level_matching(),
+        apo_install_path: apo.as_ref().map(|i| i.install_path.display().to_string()),
+        apo_config_path: apo.as_ref().map(|i| i.config_path.display().to_string()),
+    }
+}
+
+/// Set the global reference loudness (Q-06/Q-16 placeholder — the noise
+/// calibration flow replaces the raw number once the signal generator exists).
+/// Re-applies the current side so the change is immediately audible.
+#[tauri::command]
+fn set_reference_db(db: f64) -> Result<EqState, String> {
+    if ABX.lock().unwrap().is_some() {
+        return Err("a blind test is running — finish or cancel it first".into());
+    }
+    write_state_field("referenceDb", serde_json::json!(db.clamp(-30.0, 0.0)));
+    apply_side(&ab_side())?;
+    eq_state()
+}
+
+/// The honesty switch. Refused mid-ABX: changing levels under a running blind
+/// test would corrupt what the trials are measuring.
+#[tauri::command]
+fn set_level_matching(on: bool) -> Result<EqState, String> {
+    if ABX.lock().unwrap().is_some() {
+        return Err("a blind test is running — finish or cancel it first".into());
+    }
+    write_state_field("levelMatching", serde_json::json!(on));
+    apply_side(&ab_side())?;
+    eq_state()
+}
+
 // ---------------- history persistence (Q-17: trees survive restarts) ----------------
 
 fn history_dir() -> PathBuf {
@@ -881,6 +942,8 @@ struct AbxSession {
     answers: Vec<bool>,     // per answered trial: user said "X is A"
     stats_viewed: Vec<usize>,
     audition: String, // "a" | "b" | "x"
+    /// Whether the honesty switch was on when the session started (provenance).
+    level_matched: bool,
     started_ms: u64,
 }
 
@@ -915,6 +978,7 @@ struct AbxState {
     planned: usize,
     answered: usize,
     audition: String,
+    level_matched: bool,
     /// Correct count so far — present only after an explicit reveal (TB-24).
     running_correct: Option<usize>,
 }
@@ -924,6 +988,7 @@ fn abx_state_of(session: &AbxSession, revealed: bool) -> AbxState {
         active: true,
         a_name: session.a_name.clone(),
         b_name: session.b_name.clone(),
+        level_matched: session.level_matched,
         planned: session.planned,
         answered: session.answers.len(),
         audition: session.audition.clone(),
@@ -1003,6 +1068,7 @@ fn abx_start(
         answers: Vec::new(),
         stats_viewed: Vec::new(),
         audition: "a".into(),
+        level_matched: level_matching(),
         started_ms: now_ms(),
     };
     abx_apply_audition(&mut session, "a")?;
@@ -1042,6 +1108,7 @@ struct AbxResult {
     a_chain: Vec<PastedFilter>,
     b_chain: Vec<PastedFilter>,
     reference_db: f64,
+    level_matched: bool,
     trials: usize,
     correct: usize,
     p_value: f64,
@@ -1072,6 +1139,7 @@ fn abx_result_of(session: &AbxSession) -> AbxResult {
         a_chain: dto_chain(&session.a),
         b_chain: dto_chain(&session.b),
         reference_db: reference_db(),
+        level_matched: session.level_matched,
         trials: session.answers.len(),
         correct,
         p_value: fletcher_core::stats::binomial_p_one_sided(
@@ -1440,6 +1508,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .setup(|app| {
             spawn_config_watcher(app.handle().clone());
             let _ = setup_tray(app);
@@ -1507,6 +1579,9 @@ pub fn run() {
             chain_curves,
             preview_chain,
             preset_create_from_chain,
+            settings_state,
+            set_reference_db,
+            set_level_matching,
             history_save,
             history_load,
             history_export,
