@@ -74,5 +74,16 @@ User idea 2026-08-22: the EQ tab's spare space above the A/B bar could host a co
 ## Q-23 · Rich preset/profile search and management — **Open (deliberately deferred)**
 User direction 2026-08-22: presets start simple (list, switch, duplicate-from-anything, delete) but will eventually deserve a full first-class subsystem — rich search, organization, metadata — on the product principle that **anything non-trivial gets built out into its own complete "software within the software"** (as Clip Studio and the Lab are). Filed to keep v1 lean without forgetting the ambition. Relates: Q-17 (history tree), per-device profiles.
 
+## Q-24 · The history inspector — **Open (designed 2026-08-23, build pending)**
+A right-side inspector in the history view; clicking a node fills it. Candidate feature set (user + discussion):
+- **Diff vs. parent by default**; a compare mode picks any node (cross-branch) as base.
+- **Parametric diff**: added/removed filters, Fc moves, gain/Q deltas, type changes, preamp delta — boost/cut colored.
+- **Spectral diff**: mini overlay of both response curves + the **difference curve** (node − base in dB, boost/cut shaded) — the sonic change as one picture.
+- **Listen node / listen base** (level-matched apply) and **"Blind test these two nodes"** — resolves Q-17's last residual; the inspector is the natural home for node-vs-node ABX.
+- **Audibility estimate** from the difference curve ("max 0.4 dB near 2 kHz — likely inaudible; blind test to confirm") — a clearly-labeled heuristic that sets honest expectations, never a verdict.
+- **Node utilities**: rename/annotate (gesture labels become intentions), pin/star, promote-to-preset, copy chain as APO text.
+- **Edge weight on the canvas**: mean |spectral diff| per edge rendered as edge thickness — the tree's shape shows where the big sonic decisions happened.
+Open: layout (fixed right panel vs. collapsible), compare-mode UX, audibility heuristic choice.
+
 ## Q-14 · Tuning × testing fusion mechanics — **Open**
 "Move a slider and it goes through the clips to highlight specific stuff." How literally: does adjusting a bass filter auto-queue the bass-heavy clip? Replay the full battery on demand? A/B against the pre-tweak state per clip, with optional randomized voting? Define the interaction loop so tuning and testing share one engine.
