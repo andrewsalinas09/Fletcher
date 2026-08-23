@@ -445,8 +445,9 @@ export default function App() {
   const [dragRange, setDragRange] = useState<number | null>(null);
   const dbRange = dragRange ?? autoRange;
 
-  const yOf = (db: number) => GH / 2 - (db / dbRange) * (GH / 2 - 30);
-  const dbOf = (y: number) => ((GH / 2 - y) / (GH / 2 - 30)) * dbRange;
+  const yOfR = (db: number, r: number) => GH / 2 - (db / r) * (GH / 2 - 30);
+  const dbOfR = (y: number, r: number) => ((GH / 2 - y) / (GH / 2 - 30)) * r;
+  const yOf = (db: number) => yOfR(db, dbRange);
 
   const gridSteps = useMemo(() => {
     const minor: number[] = [];
@@ -530,10 +531,14 @@ export default function App() {
     const p = svgPoint(e);
     const x = Math.max(0, Math.min(GW, p.x + grabOffset.current.dx));
     const f = fOf(x);
-    const db = dbOf(p.y + grabOffset.current.dy);
+    const db = dbOfR(p.y + grabOffset.current.dy, dbRange);
     const clamped = Math.max(-dbRange, Math.min(dbRange, db));
     if (Math.abs(clamped) >= dbRange * 0.65 && dbRange < 48) {
-      setDragRange(dbRange * 2); // hit the peak → double, in one jump
+      // Double the scale — and re-anchor the grab so the filter's current
+      // value stays exactly under the cursor in the new scale. No jump.
+      const newRange = dbRange * 2;
+      grabOffset.current.dy = yOfR(clamped, newRange) - p.y;
+      setDragRange(newRange);
     }
     mutateFilter(i, {
       fcHz: +f.toFixed(f < 100 ? 1 : 0),
