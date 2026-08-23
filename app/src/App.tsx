@@ -1449,6 +1449,19 @@ function PopoutScopeSpec() {
   const [spec, setSpec] = useState<SpecData | null>(null);
   const posRef = useRef(pos);
   posRef.current = pos;
+  // The I/O region lives in the main window's state — it broadcasts changes
+  // and answers our hello with the current value (satellite law: same view
+  // everywhere).
+  const [region, setRegion] = useState<{ a: number; b: number } | null>(null);
+  useEffect(() => {
+    const un = listen<{ a: number; b: number } | null>("io-region", (e) =>
+      setRegion(e.payload ?? null),
+    );
+    emit("scope-hello", "scope-spec");
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
   // C arrives as a forwarded OS shortcut with press/release (Q-20 law):
   // held C = scrub mode, same semantics as the main window.
   const hover = useRef<number | null>(null);
@@ -1518,6 +1531,7 @@ function PopoutScopeSpec() {
                 invoke("track_seek", { seconds: t }).catch(() => {});
               }
             }}
+            region={region}
             spec={spec}
             showSpec
             showWave={false}
@@ -1773,8 +1787,72 @@ type TrackRow = {
   genre: string | null;
   path: string | null;
   sourceUrl: string | null;
+  signalParams: string | null;
   durationS: number | null;
   addedMs: number;
+};
+
+/** A generated signal's recipe (mirrors the Rust SigSpec). */
+type SigSpec = {
+  kind: "white" | "pink" | "sine" | "sweepLog" | "sweepLinear" | "band";
+  seconds: number;
+  levelDb: number;
+  hz?: number;
+  fromHz?: number;
+  toHz?: number;
+  sweepS?: number;
+  loHz?: number;
+  hiHz?: number;
+};
+
+/** A typed number field for the generator: commit on blur/Enter, clamped. */
+function GenNum({
+  value,
+  min,
+  max,
+  unit,
+  onCommit,
+}: {
+  value: number | undefined;
+  min: number;
+  max: number;
+  unit: string;
+  onCommit: (v: number) => void;
+}) {
+  return (
+    <span className="gen-num">
+      <input
+        key={value}
+        className="trials-input mono"
+        type="number"
+        min={min}
+        max={max}
+        defaultValue={value}
+        onBlur={(e) => {
+          const v = +e.target.value;
+          if (Number.isFinite(v) && v !== value) onCommit(Math.min(max, Math.max(min, v)));
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+        }}
+      />
+      <span className="dim-sm">{unit}</span>
+    </span>
+  );
+}
+
+/** The rail's metadata line for a signal row — what the title doesn't say. */
+const sigSummary = (t: TrackRow): string => {
+  try {
+    const s = JSON.parse(t.signalParams ?? "") as SigSpec;
+    const sweep =
+      s.kind === "sweepLog" || s.kind === "sweepLinear"
+        ? ` · ${s.sweepS ?? s.seconds} s per sweep`
+        : "";
+    return `${s.levelDb} dB peak${sweep}`;
+  } catch {
+    return "generated signal";
+  }
 };
 type ClipRow = {
   id: number;
@@ -2873,6 +2951,10 @@ function MainApp() {
     setLoopOn(false);
     setActiveClipId(null);
   };
+  // Satellites render the region too — broadcast every change.
+  useEffect(() => {
+    emit("io-region", ioRegion ?? null);
+  }, [ioRegion]);
 
   // The engine's loop follows the region + toggle (session-scoped).
   useEffect(() => {
@@ -2926,6 +3008,63 @@ function MainApp() {
     openClip(c);
     setClipFocus({ a: c.tIn, b: c.tOut, trackId: c.trackId });
   };
+
+  // The signal generator: primitives → library items (kind='signal'). The
+  // recipe lives on the row; audio synthesizes deterministically on first use.
+  const [genOpen, setGenOpen] = useState(false);
+  const [genSpec, setGenSpec] = useState<SigSpec>({ kind: "pink", seconds: 30, levelDb: -18 });
+  const [genPreview, setGenPreview] = useState(false);
+  const genPreviewRef = useRef(genPreview);
+  genPreviewRef.current = genPreview;
+  const genPreviewSet = (spec: SigSpec | null) => {
+    invoke("signal_preview", { spec })
+      .then(() => setGenPreview(!!spec))
+      .catch((e) => {
+        setGenPreview(false);
+        showNotice(String(e));
+      });
+  };
+  // Param edits retune a running preview live.
+  const updateGen = (patch: Partial<SigSpec>) => {
+    setGenSpec((cur) => {
+      const next = { ...cur, ...patch };
+      if (genPreviewRef.current) invoke("signal_preview", { spec: next }).catch(() => {});
+      return next;
+    });
+  };
+  const pickGenKind = (kind: SigSpec["kind"]) => {
+    const defaults: Partial<SigSpec> =
+      kind === "sine"
+        ? { hz: genSpec.hz ?? 1000 }
+        : kind === "sweepLog" || kind === "sweepLinear"
+          ? { fromHz: genSpec.fromHz ?? 20, toHz: genSpec.toHz ?? 20000, sweepS: genSpec.sweepS ?? 4 }
+          : kind === "band"
+            ? { loHz: genSpec.loHz ?? 500, hiHz: genSpec.hiHz ?? 2000 }
+            : {};
+    updateGen({ kind, ...defaults });
+  };
+  const closeGen = () => {
+    if (genPreviewRef.current) genPreviewSet(null);
+    setGenOpen(false);
+  };
+  const addSignal = () => {
+    invoke<LibraryState>("signal_create", { spec: genSpec })
+      .then((l) => {
+        setLibrary(l);
+        closeGen();
+        showNotice("added to the library — it synthesizes the first time you play it");
+      })
+      .catch((e) => showNotice(String(e)));
+  };
+  // If anything else claims the aux stream (track play, calibration), the
+  // preview thread ends and tells us — un-stick the button.
+  useEffect(() => {
+    if (!genOpen) return;
+    const un = listen("sig-preview-ended", () => setGenPreview(false));
+    return () => {
+      un.then((f) => f());
+    };
+  }, [genOpen]);
 
   const loadLibrary = () =>
     invoke<LibraryState>("library_state").then(setLibrary).catch((e) => showNotice(String(e)));
@@ -3191,6 +3330,7 @@ function MainApp() {
     trackPos: (_p: { posS: number; paused: boolean }) => {},
     scopeClosed: (_label: string) => {},
     scopeKey: (_p: { key: string; state: string }) => {},
+    scopeHello: () => {},
   });
   pushRef.current = {
     // Push-based updates from the Rust config watcher — no polling. Ignored
@@ -3221,6 +3361,11 @@ function MainApp() {
       if (!trackSessRef.current || trackSessRef.current.phase || p.state !== "down") return;
       if (p.key === "i") setIn(trackPosRef.current.posS);
       else if (p.key === "o") setOut(trackPosRef.current.posS);
+      else if (p.key === "escape") clearRegion();
+    },
+    // A satellite just opened and wants the shared state it can't derive.
+    scopeHello: () => {
+      emit("io-region", ioRegionRef.current ?? null);
     },
     trackState: (p) => {
       const id = p.trackId as number;
@@ -3291,7 +3436,9 @@ function MainApp() {
     const unlistenScopeKey = listen<{ key: string; state: string }>("scope-key", (e) =>
       pushRef.current.scopeKey(e.payload),
     );
+    const unlistenScopeHello = listen("scope-hello", () => pushRef.current.scopeHello());
     return () => {
+      unlistenScopeHello.then((f) => f());
       unlistenScopeClosed.then((f) => f());
       unlistenScopeKey.then((f) => f());
       unlisten.then((f) => f());
@@ -4751,9 +4898,17 @@ function MainApp() {
               {library?.tracks.length === 0 && (
                 <p className="dim-sm rail-pad">No tracks yet — import one below.</p>
               )}
-              {library?.tracks.map((t) => {
+              {[
+                { label: "IMPORTED", rows: (library?.tracks ?? []).filter((t) => t.kind !== "signal") },
+                { label: "CREATED", rows: (library?.tracks ?? []).filter((t) => t.kind === "signal") },
+              ]
+                .filter((g) => g.rows.length > 0)
+                .map((g, _gi, groups) => (
+                  <div key={g.label}>
+                    {groups.length > 1 && <div className="mono lab-label rail-sec">{g.label}</div>}
+                    {g.rows.map((t) => {
                 const playing = trackSess?.id === t.id && !trackSess?.phase;
-                const clipCount = library.clips.filter((c) => c.trackId === t.id).length;
+                const clipCount = (library?.clips ?? []).filter((c) => c.trackId === t.id).length;
                 return (
                   <div key={t.id}>
                     <div
@@ -4765,6 +4920,7 @@ function MainApp() {
                     >
                       <div className="ct-main">
                         <div className="ct-line">
+                          {t.kind === "signal" && <span className="mono sig-glyph">∿</span>}
                           <span className="ct-title">{t.title}</span>
                           {t.artist && <span className="dim-sm">{t.artist}</span>}
                           {playing && (
@@ -4772,8 +4928,8 @@ function MainApp() {
                           )}
                         </div>
                         <span className="dim-sm">
-                          {`${clipCount ? `${clipCount} clip${clipCount === 1 ? "" : "s"}` : "no clips yet"}${
-                            t.durationS ? ` · ${fmtTime(t.durationS)}` : ""
+                          {`${t.kind === "signal" ? `${sigSummary(t)} · ` : ""}${clipCount ? `${clipCount} clip${clipCount === 1 ? "" : "s"}` : "no clips yet"}${
+                            t.kind !== "signal" && t.durationS ? ` · ${fmtTime(t.durationS)}` : ""
                           }`}
                         </span>
                       </div>
@@ -4790,7 +4946,7 @@ function MainApp() {
                         ×
                       </span>
                     </div>
-                    {library.clips
+                    {(library?.clips ?? [])
                       .filter((c) => c.trackId === t.id)
                       .map((c) => (
                         <div
@@ -4823,11 +4979,119 @@ function MainApp() {
                       ))}
                   </div>
                 );
-              })}
+                    })}
+                  </div>
+                ))}
             </div>
             <div className="clips-rail-foot">
               <button onClick={importTrack}>+ Import track</button>
+              <button onClick={() => setGenOpen(true)} title="build a signal from primitives — it lands in the library like any track">
+                ∿ Generate
+              </button>
             </div>
+            {genOpen && (
+              <>
+                <div className="hist-backdrop" onClick={closeGen} />
+                <div className="hist-panel gen-panel">
+                  <div className="hist-head">
+                    <span className="mono hist-title">SIGNAL GENERATOR</span>
+                    <span className="spacer" />
+                    <span className="row-act" onClick={closeGen}>
+                      ×
+                    </span>
+                  </div>
+                  <div className="gen-body">
+                    <div className="room-row">
+                      <span className="room-key">Type</span>
+                      <div className="seg seg-sm">
+                        {(
+                          [
+                            ["pink", "Pink"],
+                            ["white", "White"],
+                            ["sine", "Sine"],
+                            ["sweepLog", "Sweep log"],
+                            ["sweepLinear", "Sweep lin"],
+                            ["band", "Band"],
+                          ] as const
+                        ).map(([k, label]) => (
+                          <span
+                            key={k}
+                            className={`seg-opt ${genSpec.kind === k ? "on" : ""}`}
+                            onClick={() => pickGenKind(k)}
+                          >
+                            {label}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    {genSpec.kind === "sine" && (
+                      <div className="room-row">
+                        <span className="room-key">Frequency</span>
+                        <GenNum value={genSpec.hz} min={10} max={24000} unit="Hz" onCommit={(v) => updateGen({ hz: v })} />
+                      </div>
+                    )}
+                    {(genSpec.kind === "sweepLog" || genSpec.kind === "sweepLinear") && (
+                      <>
+                        <div className="room-row">
+                          <span className="room-key">Range</span>
+                          <div className="trials-ctl">
+                            <GenNum value={genSpec.fromHz} min={10} max={24000} unit="→" onCommit={(v) => updateGen({ fromHz: v })} />
+                            <GenNum value={genSpec.toHz} min={10} max={24000} unit="Hz" onCommit={(v) => updateGen({ toHz: v })} />
+                          </div>
+                        </div>
+                        <div className="room-row">
+                          <span className="room-key" title="one pass of the sweep; it repeats for the whole duration">
+                            Sweep length
+                          </span>
+                          <GenNum value={genSpec.sweepS} min={0.1} max={600} unit="s" onCommit={(v) => updateGen({ sweepS: v })} />
+                        </div>
+                      </>
+                    )}
+                    {genSpec.kind === "band" && (
+                      <div className="room-row">
+                        <span className="room-key">Band</span>
+                        <div className="trials-ctl">
+                          <GenNum value={genSpec.loHz} min={10} max={24000} unit="→" onCommit={(v) => updateGen({ loHz: v })} />
+                          <GenNum value={genSpec.hiHz} min={10} max={24000} unit="Hz" onCommit={(v) => updateGen({ hiHz: v })} />
+                        </div>
+                      </div>
+                    )}
+                    <div className="room-row">
+                      <span className="room-key">Duration</span>
+                      <GenNum value={genSpec.seconds} min={1} max={600} unit="s" onCommit={(v) => updateGen({ seconds: v })} />
+                    </div>
+                    <div className="room-row">
+                      <span className="room-key">Level</span>
+                      <div className="seg seg-sm">
+                        {[-30, -24, -18, -12].map((db) => (
+                          <span
+                            key={db}
+                            className={`seg-opt ${genSpec.levelDb === db ? "on" : ""}`}
+                            onClick={() => updateGen({ levelDb: db })}
+                          >
+                            {`${db} dB`}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    <p className="dim-sm gen-note">
+                      The same recipe always renders the exact same audio — that's its provenance.
+                      Peak is hard-capped at −12 dBFS. Preview loops through the shared path, so
+                      your volume knob stays live; edits retune it as it plays.
+                    </p>
+                    <div className="gen-actions">
+                      <button onClick={() => (genPreview ? genPreviewSet(null) : genPreviewSet(genSpec))}>
+                        {genPreview ? "■ Stop preview" : "▶ Preview"}
+                      </button>
+                      <span className="spacer" />
+                      <button className="primary" onClick={addSignal}>
+                        Add to library
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
           <div className="clips-main">
             <div className="clips-toolbar">

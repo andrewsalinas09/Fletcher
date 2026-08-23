@@ -1975,6 +1975,54 @@ button.ghost {
   font-size: 11px;
 }
 
+/* the signal generator modal (hist-panel chrome, content-sized) */
+.hist-panel.gen-panel {
+  width: 460px;
+  height: auto;
+  max-height: 84vh;
+}
+
+.gen-body {
+  padding: 14px 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+}
+
+.gen-num {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.gen-note {
+  margin: 2px 0 0;
+  line-height: 1.45;
+}
+
+.gen-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+/* library rail: IMPORTED / CREATED section labels */
+.rail-sec {
+  display: block;
+  padding: 10px 12px 4px;
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  color: var(--ink-dim, #8b8578);
+}
+
+.sig-glyph {
+  color: var(--boost, #c85a13);
+  font-size: 13px;
+  line-height: 1;
+}
+
 /* per-room settings popover (⚙): rooms own their view options */
 .room-menu {
   padding: 12px 14px;

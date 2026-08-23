@@ -978,6 +978,7 @@ struct TrackRow {
     genre: Option<String>,
     path: Option<String>,
     source_url: Option<String>,
+    signal_params: Option<String>,
     duration_s: Option<f64>,
     added_ms: i64,
 }
@@ -1007,7 +1008,7 @@ fn library_state_now() -> Result<LibraryState, String> {
     let conn = library_db()?;
     let mut stmt = conn
         .prepare(
-            "SELECT id, kind, title, artist, genre, path, source_url, duration_s, added_ms
+            "SELECT id, kind, title, artist, genre, path, source_url, signal_params, duration_s, added_ms
              FROM tracks ORDER BY added_ms DESC",
         )
         .map_err(|e| e.to_string())?;
@@ -1021,8 +1022,9 @@ fn library_state_now() -> Result<LibraryState, String> {
                 genre: r.get(4)?,
                 path: r.get(5)?,
                 source_url: r.get(6)?,
-                duration_s: r.get(7)?,
-                added_ms: r.get(8)?,
+                signal_params: r.get(7)?,
+                duration_s: r.get(8)?,
+                added_ms: r.get(9)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -1209,6 +1211,248 @@ fn track_import(path: String) -> Result<LibraryState, String> {
     library_state_now()
 }
 
+// ---------------- the signal generator (library items, M6) ----------------
+
+/// A generated signal's recipe — stored as `signal_params` JSON on the track
+/// row. Deterministic (seed = track id), so the row IS the provenance: the
+/// exact audio regenerates from the recipe forever.
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct SigSpec {
+    /// white | pink | sine | sweepLog | sweepLinear | band
+    kind: String,
+    seconds: f64,
+    /// Peak level in dBFS; the generator hard-caps at −12 regardless (TB-20).
+    level_db: f64,
+    hz: Option<f64>,
+    from_hz: Option<f64>,
+    to_hz: Option<f64>,
+    sweep_s: Option<f64>,
+    lo_hz: Option<f64>,
+    hi_hz: Option<f64>,
+}
+
+fn sig_kind_of(spec: &SigSpec) -> Result<fletcher_core::signal::SignalKind, String> {
+    use fletcher_core::signal::SignalKind as K;
+    let f = |v: Option<f64>, name: &str| -> Result<f64, String> {
+        let v = v.ok_or_else(|| format!("{name} is required"))?;
+        if !(10.0..=24000.0).contains(&v) {
+            return Err(format!("{name} must be 10–24000 Hz"));
+        }
+        Ok(v)
+    };
+    Ok(match spec.kind.as_str() {
+        "white" => K::White,
+        "pink" => K::Pink,
+        "sine" => K::Sine {
+            hz: f(spec.hz, "frequency")?,
+        },
+        "sweepLog" | "sweepLinear" => {
+            let from_hz = f(spec.from_hz, "from")?;
+            let to_hz = f(spec.to_hz, "to")?;
+            let seconds = spec.sweep_s.unwrap_or(spec.seconds).clamp(0.1, 600.0);
+            if spec.kind == "sweepLog" {
+                K::SweepLog {
+                    from_hz,
+                    to_hz,
+                    seconds,
+                }
+            } else {
+                K::SweepLinear {
+                    from_hz,
+                    to_hz,
+                    seconds,
+                }
+            }
+        }
+        "band" => {
+            let lo_hz = f(spec.lo_hz, "low edge")?;
+            let hi_hz = f(spec.hi_hz, "high edge")?;
+            if hi_hz <= lo_hz {
+                return Err("the high edge must sit above the low edge".into());
+            }
+            K::BandNoise { lo_hz, hi_hz }
+        }
+        other => return Err(format!("unknown signal type: {other}")),
+    })
+}
+
+fn sig_amp(spec: &SigSpec) -> f64 {
+    10f64.powf(spec.level_db.clamp(-60.0, 0.0) / 20.0)
+}
+
+fn fmt_sig_hz(v: f64) -> String {
+    if v >= 1000.0 {
+        let k = v / 1000.0;
+        if (k - k.round()).abs() < 1e-6 {
+            format!("{k:.0} kHz")
+        } else {
+            format!("{k:.2} kHz")
+        }
+    } else {
+        format!("{v:.0} Hz")
+    }
+}
+
+fn sig_title(spec: &SigSpec) -> String {
+    let base = match spec.kind.as_str() {
+        "white" => "White noise".into(),
+        "pink" => "Pink noise".into(),
+        "sine" => format!("Sine {}", fmt_sig_hz(spec.hz.unwrap_or(0.0))),
+        "sweepLog" => format!(
+            "Sweep {}–{} (log)",
+            fmt_sig_hz(spec.from_hz.unwrap_or(0.0)),
+            fmt_sig_hz(spec.to_hz.unwrap_or(0.0))
+        ),
+        "sweepLinear" => format!(
+            "Sweep {}–{} (linear)",
+            fmt_sig_hz(spec.from_hz.unwrap_or(0.0)),
+            fmt_sig_hz(spec.to_hz.unwrap_or(0.0))
+        ),
+        "band" => format!(
+            "Band noise {}–{}",
+            fmt_sig_hz(spec.lo_hz.unwrap_or(0.0)),
+            fmt_sig_hz(spec.hi_hz.unwrap_or(0.0))
+        ),
+        _ => "Signal".into(),
+    };
+    format!("{base} · {:.0} s", spec.seconds)
+}
+
+/// Render a spec into the same PCM cache a decoded file uses — everything
+/// downstream (playback, waveform, spectrogram, clips) then works on signals
+/// with zero further code. Specs are immutable once created, so an existing
+/// cache file is always current.
+fn synthesize_pcm(
+    cache_dir: &std::path::Path,
+    id: i64,
+    rate: u32,
+    spec: &SigSpec,
+) -> Result<PathBuf, String> {
+    use fletcher_core::signal::Signal;
+    std::fs::create_dir_all(cache_dir).map_err(|e| e.to_string())?;
+    let out = cache_dir.join(format!("{id}-{rate}.f32"));
+    if out.metadata().map(|m| m.len() > 0).unwrap_or(false) {
+        return Ok(out);
+    }
+    let kind = sig_kind_of(spec)?;
+    let mut sig = Signal::new(kind, sig_amp(spec), rate as f64, id as u64);
+    let frames = (spec.seconds.clamp(1.0, 600.0) * rate as f64) as usize;
+    // 100 ms edge fades: a generated file must never click at its ends.
+    let fade = (rate as f64 * 0.1) as usize;
+    let mut bytes: Vec<u8> = Vec::with_capacity(frames * 8);
+    for i in 0..frames {
+        let mut s = sig.next_sample();
+        if i < fade {
+            s *= i as f64 / fade as f64;
+        }
+        if frames - 1 - i < fade {
+            s *= (frames - 1 - i) as f64 / fade as f64;
+        }
+        let b = (s as f32).to_le_bytes();
+        bytes.extend_from_slice(&b);
+        bytes.extend_from_slice(&b);
+    }
+    let tmp = out.with_extension("f32tmp");
+    std::fs::write(&tmp, &bytes).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &out).map_err(|e| e.to_string())?;
+    Ok(out)
+}
+
+/// The one PCM gate: every consumer — playback, waveform, sample windows,
+/// spectrogram, FFT — asks here. Files decode via ffmpeg; signals synthesize
+/// deterministically (and need no ffmpeg at all).
+fn prepare_pcm(
+    id: i64,
+    rate: u32,
+    on_decode: impl FnOnce(),
+) -> Result<std::sync::Arc<Vec<f32>>, String> {
+    let conn = library_db()?;
+    let (kind, path, params): (String, Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT kind, path, signal_params FROM tracks WHERE id = ?1",
+            rusqlite::params![id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .map_err(|_| "track not found".to_string())?;
+    drop(conn);
+    let cache = data_dir().join("cache").join("pcm");
+    let pcm_path = if kind == "signal" {
+        let spec: SigSpec = serde_json::from_str(&params.ok_or("signal row without params")?)
+            .map_err(|e| format!("bad signal params: {e}"))?;
+        synthesize_pcm(&cache, id, rate, &spec)?
+    } else {
+        let ffmpeg = tools::find_tool(&data_dir(), "ffmpeg")
+            .ok_or("ffmpeg is not installed — use the banner in Clip Studio to set it up")?;
+        let src = path.ok_or("track has no file path")?;
+        engine::ensure_pcm(
+            &ffmpeg,
+            &cache,
+            std::path::Path::new(&src),
+            id,
+            rate,
+            on_decode,
+        )?
+    };
+    engine::load_pcm(&pcm_path)
+}
+
+/// Add a generated signal to the library (kind='signal'): the recipe is the
+/// row; PCM synthesizes on first use into the normal cache.
+#[tauri::command]
+fn signal_create(spec: SigSpec) -> Result<LibraryState, String> {
+    sig_kind_of(&spec)?;
+    if !(1.0..=600.0).contains(&spec.seconds) {
+        return Err("duration must be 1–600 s".into());
+    }
+    let title = sig_title(&spec);
+    let params = serde_json::to_string(&spec).map_err(|e| e.to_string())?;
+    let conn = library_db()?;
+    conn.execute(
+        "INSERT INTO tracks (kind, title, signal_params, duration_s, added_ms)
+         VALUES ('signal', ?1, ?2, ?3, ?4)",
+        rusqlite::params![title, params, spec.seconds, now_ms() as i64],
+    )
+    .map_err(|e| e.to_string())?;
+    library_state_now()
+}
+
+/// Audition a spec before adding it: loops through the SHARED path (your
+/// volume knob stays live) on the calibration aux stream — one aux stream
+/// ever; track playback and ABX interlocks already stop it. `None` stops.
+#[tauri::command]
+fn signal_preview(app: tauri::AppHandle, spec: Option<SigSpec>) -> Result<(), String> {
+    use std::sync::{atomic::AtomicBool, Arc};
+    if ABX.lock().unwrap().is_some() {
+        return Err("a blind test is running — finish or cancel it first".into());
+    }
+    let Some(spec) = spec else {
+        stop_cal_noise();
+        return Ok(());
+    };
+    let kind = sig_kind_of(&spec)?;
+    let amp = sig_amp(&spec);
+    stop_cal_noise();
+    let stop = Arc::new(AtomicBool::new(false));
+    *CAL_NOISE.lock().unwrap() = Some(stop.clone());
+    std::thread::spawn(move || {
+        use fletcher_core::{playback, signal};
+        let mut src =
+            playback::SignalSource::new(move |fs| signal::Signal::new(kind, amp, fs, 1), None);
+        let result = playback::play(playback::OutputMode::Shared, &mut src, 1.0, &stop, |_| {});
+        let mut guard = CAL_NOISE.lock().unwrap();
+        if let Some(cur) = guard.as_ref() {
+            if Arc::ptr_eq(cur, &stop) {
+                *guard = None;
+            }
+        }
+        drop(guard);
+        use tauri::Emitter;
+        let _ = app.emit("sig-preview-ended", result.err().map(|e| e.to_string()));
+    });
+    Ok(())
+}
+
 #[tauri::command]
 fn track_delete(id: i64) -> Result<LibraryState, String> {
     {
@@ -1389,18 +1633,6 @@ async fn track_play(app: tauri::AppHandle, id: i64) -> Result<(), String> {
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
         }
-        let ffmpeg = tools::find_tool(&data_dir(), "ffmpeg")
-            .ok_or("ffmpeg is not installed — use the banner in Clip Studio to set it up")?;
-        let conn = library_db()?;
-        let path: String = conn
-            .query_row(
-                "SELECT path FROM tracks WHERE id = ?1 AND path IS NOT NULL",
-                rusqlite::params![id],
-                |r| r.get(0),
-            )
-            .map_err(|_| "track not found".to_string())?;
-        drop(conn);
-
         let bypass = studio_mode() != "eq";
         let (mode, rate) = if bypass {
             match fletcher_core::playback::probe_rate(OutputMode::Exclusive) {
@@ -1415,21 +1647,14 @@ async fn track_play(app: tauri::AppHandle, id: i64) -> Result<(), String> {
         let exclusive = mode == OutputMode::Exclusive;
         let sess = TRACK_SESS.fetch_add(1, Relaxed) + 1;
         let app_decode = app.clone();
-        let pcm_path = engine::ensure_pcm(
-            &ffmpeg,
-            &data_dir().join("cache").join("pcm"),
-            std::path::Path::new(&path),
-            id,
-            rate,
-            // Only a real ffmpeg run announces itself — cache hits play at once.
-            move || {
-                let _ = app_decode.emit(
-                    "track-state",
-                    serde_json::json!({ "event": "decoding", "trackId": id, "sess": sess }),
-                );
-            },
-        )?;
-        let pcm = engine::load_pcm(&pcm_path)?;
+        // Only a real ffmpeg run announces itself — cache hits and synthesized
+        // signals play at once.
+        let pcm = prepare_pcm(id, rate, move || {
+            let _ = app_decode.emit(
+                "track-state",
+                serde_json::json!({ "event": "decoding", "trackId": id, "sess": sess }),
+            );
+        })?;
         if pcm.is_empty() {
             return Err("this file decoded to nothing — is it audio?".into());
         }
@@ -1621,27 +1846,8 @@ async fn track_waveform(id: i64, buckets: usize) -> Result<Waveform, String> {
         return Ok(w.clone());
     }
     tauri::async_runtime::spawn_blocking(move || -> Result<Waveform, String> {
-        let ffmpeg = tools::find_tool(&data_dir(), "ffmpeg")
-            .ok_or("ffmpeg is not installed — use the banner in Clip Studio to set it up")?;
-        let conn = library_db()?;
-        let path: String = conn
-            .query_row(
-                "SELECT path FROM tracks WHERE id = ?1 AND path IS NOT NULL",
-                rusqlite::params![id],
-                |r| r.get(0),
-            )
-            .map_err(|_| "track not found".to_string())?;
-        drop(conn);
         let rate = 48000u32;
-        let pcm_path = engine::ensure_pcm(
-            &ffmpeg,
-            &data_dir().join("cache").join("pcm"),
-            std::path::Path::new(&path),
-            id,
-            rate,
-            || {},
-        )?;
-        let pcm = engine::load_pcm(&pcm_path)?;
+        let pcm = prepare_pcm(id, rate, || {})?;
         let frames = pcm.len() / 2;
         if frames == 0 {
             return Err("this file decoded to nothing — is it audio?".into());
@@ -1707,26 +1913,7 @@ fn pcm_for(id: i64) -> Result<std::sync::Arc<Vec<f32>>, String> {
             return Ok(p);
         }
     }
-    let ffmpeg = tools::find_tool(&data_dir(), "ffmpeg")
-        .ok_or("ffmpeg is not installed — use the banner in Clip Studio to set it up")?;
-    let conn = library_db()?;
-    let path: String = conn
-        .query_row(
-            "SELECT path FROM tracks WHERE id = ?1 AND path IS NOT NULL",
-            rusqlite::params![id],
-            |r| r.get(0),
-        )
-        .map_err(|_| "track not found".to_string())?;
-    drop(conn);
-    let pcm_path = engine::ensure_pcm(
-        &ffmpeg,
-        &data_dir().join("cache").join("pcm"),
-        std::path::Path::new(&path),
-        id,
-        rate,
-        || {},
-    )?;
-    let p = engine::load_pcm(&pcm_path)?;
+    let p = prepare_pcm(id, rate, || {})?;
     *PCM_MEMO.lock().unwrap() = Some((id, rate, p.clone()));
     Ok(p)
 }
@@ -2597,7 +2784,7 @@ fn set_history_shortcuts(app: &tauri::AppHandle, enable: bool) {
 fn set_scope_shortcuts(app: &tauri::AppHandle, label: &str, enable: bool) {
     use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
     let gs = app.global_shortcut();
-    for key in ["space", "c", "i", "o"] {
+    for key in ["space", "c", "i", "o", "escape"] {
         if enable {
             let label = label.to_string();
             let _ = gs.on_shortcut(key, move |app, _shortcut, event| {
@@ -2755,6 +2942,8 @@ pub fn run() {
             track_seek,
             track_scrub,
             track_scrub_params,
+            signal_create,
+            signal_preview,
             track_stop,
             track_waveform,
             track_samples,
