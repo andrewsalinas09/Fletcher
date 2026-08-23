@@ -1485,10 +1485,10 @@ function PopoutScopeSpec() {
       un.then((f) => f());
     };
   }, []);
-  useEffect(() => {
-    setSpec(null);
-    if (!sess) return;
-    let alive = true;
+  // Spectrogram parameters: seeded from localStorage (same origin), kept
+  // live by the main window's "spec-params" broadcasts (localStorage changes
+  // don't notify other webviews).
+  const [specParams, setSpecParams] = useState(() => {
     const lsN = (key: string, dflt: number) => {
       try {
         const v = Number(localStorage.getItem(key));
@@ -1497,10 +1497,24 @@ function PopoutScopeSpec() {
         return dflt;
       }
     };
+    return { win: lsN("fletcher.specwin", 2048), floor: lsN("fletcher.specfloor", -90) };
+  });
+  useEffect(() => {
+    const un = listen<{ win: number; floor: number }>("spec-params", (e) =>
+      setSpecParams({ win: e.payload.win, floor: e.payload.floor }),
+    );
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
+  useEffect(() => {
+    setSpec(null);
+    if (!sess) return;
+    let alive = true;
     invoke<SpecData>("track_spectrogram", {
       id: sess.id,
-      win: lsN("fletcher.specwin", 2048),
-      floorDb: lsN("fletcher.specfloor", -90),
+      win: specParams.win,
+      floorDb: specParams.floor,
     })
       .then((s) => {
         if (alive) setSpec(s);
@@ -1510,7 +1524,7 @@ function PopoutScopeSpec() {
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sess?.id]);
+  }, [sess?.id, specParams.win, specParams.floor]);
   return (
     <div className="hist-panel full scope-window">
       <div className="hist-head">
@@ -2873,6 +2887,12 @@ function MainApp() {
     } catch {
       /* per-viewer nicety only */
     }
+    // localStorage doesn't notify other webviews — broadcast the change so a
+    // popped-out spectrogram re-renders with the new parameters.
+    emit("spec-params", {
+      win: key === "specwin" ? v : specWin,
+      floor: key === "specfloor" ? v : specFloor,
+    });
   };
   // Scrub feel — typed-in, not preset. Chase = the scrub's reaction time in ms
   // (it closes ~63% of the gap to your cursor per chase interval); max = the
@@ -3546,6 +3566,7 @@ function MainApp() {
     // A satellite just opened and wants the shared state it can't derive.
     scopeHello: () => {
       emit("io-region", ioRegionRef.current ?? null);
+      emit("spec-params", { win: specWin, floor: specFloor });
     },
     trackState: (p) => {
       const id = p.trackId as number;
