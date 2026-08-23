@@ -152,6 +152,8 @@ nav {
   left: 0;
   z-index: 20;
   min-width: 280px;
+  max-height: 72vh;
+  overflow-y: auto;
   background: #fffdf6;
   border: 1px solid var(--ink);
   box-shadow: 4px 4px 0 rgb(20 23 26 / 10%);
@@ -211,6 +213,25 @@ nav {
 .preset-new input:focus {
   outline: none;
   border-color: var(--ink);
+}
+
+.clickable-val {
+  cursor: text;
+}
+
+.clickable-val:hover {
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+
+.value-input {
+  width: 56px;
+  font-size: 11px;
+  border: 1px solid var(--ink);
+  background: var(--paper);
+  color: var(--ink);
+  padding: 1px 4px;
+  text-align: center;
 }
 
 .rename-input {

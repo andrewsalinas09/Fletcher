@@ -96,6 +96,58 @@ function GainGauge({ gainDb, dark }: { gainDb: number; dark?: boolean }) {
   );
 }
 
+/** Click-to-edit numeric value: span until clicked, input until committed. */
+function ValueEdit({
+  display,
+  value,
+  onCommit,
+  disabled,
+  className,
+}: {
+  display: string;
+  value: number;
+  onCommit: (v: number) => void;
+  disabled?: boolean;
+  className?: string;
+}) {
+  const [editing, setEditing] = useState<string | null>(null);
+  if (editing == null) {
+    return (
+      <span
+        className={`${className ?? ""} ${disabled ? "" : "clickable-val"}`}
+        onClick={(e) => {
+          if (disabled) return;
+          e.stopPropagation();
+          setEditing(String(value));
+        }}
+        title={disabled ? undefined : "click to type a value"}
+      >
+        {display}
+      </span>
+    );
+  }
+  const commit = () => {
+    const v = parseFloat(editing.replace(",", "."));
+    if (!Number.isNaN(v)) onCommit(v);
+    setEditing(null);
+  };
+  return (
+    <input
+      className="value-input mono"
+      autoFocus
+      value={editing}
+      onClick={(e) => e.stopPropagation()}
+      onFocus={(e) => e.target.select()}
+      onChange={(e) => setEditing(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") commit();
+        if (e.key === "Escape") setEditing(null);
+      }}
+      onBlur={commit}
+    />
+  );
+}
+
 type PresetsState = { presets: string[]; active: string | null };
 type AbInfo = { side: string; matchDb: number };
 type Device = { id: string; name: string; isDefault: boolean };
@@ -1256,7 +1308,7 @@ export default function App() {
                     <button onClick={() => createPreset(true)} title="copy everything currently audible — including filters owned by Peace — into an editable preset">
                       From live
                     </button>
-                    <button onClick={() => createPreset(false)}>Empty</button>
+                    <button onClick={() => createPreset(false)} title="start from flat — no filters, build your own">From flat</button>
                   </div>
                 </div>
               )}
@@ -1409,11 +1461,27 @@ export default function App() {
                     </span>
                   </span>
                   <GainGauge gainDb={f.gainDb} dark={isSel} />
-                  <span className={`cell-gain mono ${boost ? "boost" : "cut"} ${isSel ? "on-dark" : ""}`}>
-                    {fmtGain(f.gainDb)}
-                  </span>
-                  <span className="cell-fc mono">{fmtHz(f.fcHz)}</span>
-                  <span className="cell-q">Q {f.q}</span>
+                  <ValueEdit
+                    className={`cell-gain mono ${boost ? "boost" : "cut"} ${isSel ? "on-dark" : ""}`}
+                    display={fmtGain(f.gainDb)}
+                    value={f.gainDb}
+                    disabled={!editable}
+                    onCommit={(v) => mutateFilter(i, { gainDb: Math.max(-30, Math.min(30, v)) }, true)}
+                  />
+                  <ValueEdit
+                    className="cell-fc mono"
+                    display={fmtHz(f.fcHz)}
+                    value={f.fcHz}
+                    disabled={!editable}
+                    onCommit={(v) => mutateFilter(i, { fcHz: Math.max(10, Math.min(24000, v)) }, true)}
+                  />
+                  <ValueEdit
+                    className="cell-q"
+                    display={`Q ${f.q}`}
+                    value={f.q}
+                    disabled={!editable}
+                    onCommit={(v) => mutateFilter(i, { q: Math.max(0.05, Math.min(50, v)) }, true)}
+                  />
                   {isSel && editable && (
                     <span
                       className="cell-delete"
