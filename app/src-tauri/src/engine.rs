@@ -39,6 +39,15 @@ pub struct TrackShared {
     pub paused: AtomicBool,
     /// false = A (the chain), true = B (flat).
     pub side_b: AtomicBool,
+    /// Loop region (frames); when on and b > a the playhead wraps b → a —
+    /// how a clip solos on loop.
+    pub loop_on: AtomicBool,
+    pub loop_a: AtomicU64,
+    pub loop_b: AtomicU64,
+    /// Scrub mode (held C): the cursor IS the playhead. The audio thread
+    /// chases `pos` (the cursor) at the velocity of your motion — variable
+    /// rate, reverse included; stillness converges to silence.
+    pub scrub: AtomicBool,
     /// Bumped on every BusConfig swap; the audio thread rebuilds on change.
     pub chain_gen: AtomicU64,
     pub bus: Mutex<BusConfig>,
@@ -63,6 +72,9 @@ pub struct TrackSource {
     /// Crossfade position 0 (A) .. 1 (B); slews toward the target side.
     xfade: f64,
     xstep: f64,
+    /// Scrub state: the continuous play cursor chasing the target (frames).
+    scrub_cursor: f64,
+    was_scrub: bool,
 }
 
 impl TrackSource {
@@ -77,6 +89,8 @@ impl TrackSource {
             in_engine_eq: false,
             xfade: 0.0,
             xstep: 1.0 / (0.015 * 48000.0),
+            scrub_cursor: 0.0,
+            was_scrub: false,
         }
     }
 
@@ -113,12 +127,55 @@ impl Source for TrackSource {
     fn fill(&mut self, buf: &mut [f64]) -> bool {
         let fs = self.shared.rate as f64;
         self.refresh_buses(fs);
+        let total = self.shared.total_frames as usize;
+
+        // Scrub (held C): the sound comes FROM the motion. A continuous play
+        // cursor chases the mouse-set target; playback rate = chase velocity
+        // (reverse included, linear-interp resampled), amplitude scales with
+        // |speed| so stillness converges to silence — the Resolve jog feel.
+        if self.shared.scrub.load(Ordering::Relaxed) {
+            let target = self.shared.pos.load(Ordering::Relaxed) as f64;
+            if !self.was_scrub {
+                self.scrub_cursor = target;
+                self.was_scrub = true;
+            }
+            let alpha = 1.0 - (-1.0 / (0.06 * fs)).exp();
+            let max_i = total.saturating_sub(2);
+            for frame in buf.chunks_exact_mut(2) {
+                let mut diff = target - self.scrub_cursor;
+                if diff.abs() > 2.0 * fs {
+                    // A far click teleports rather than screaming across.
+                    self.scrub_cursor = target;
+                    diff = 0.0;
+                }
+                let speed = (diff * alpha).clamp(-8.0, 8.0);
+                self.scrub_cursor = (self.scrub_cursor + speed).clamp(0.0, max_i as f64);
+                let i = self.scrub_cursor as usize;
+                let frac = self.scrub_cursor - i as f64;
+                let amp = speed.abs().min(1.0);
+                if max_i == 0 || amp < 0.01 {
+                    frame[0] = 0.0;
+                    frame[1] = 0.0;
+                    continue;
+                }
+                let l = self.pcm[i * 2] as f64 * (1.0 - frac) + self.pcm[(i + 1) * 2] as f64 * frac;
+                let r = self.pcm[i * 2 + 1] as f64 * (1.0 - frac)
+                    + self.pcm[(i + 1) * 2 + 1] as f64 * frac;
+                frame[0] = l * amp;
+                frame[1] = r * amp;
+            }
+            return true; // scrub never ends the stream; pos stays = cursor
+        }
+        self.was_scrub = false;
+
         if self.shared.paused.load(Ordering::Relaxed) {
             buf.fill(0.0);
             return true;
         }
         let mut pos = self.shared.pos.load(Ordering::Relaxed) as usize;
-        let total = self.shared.total_frames as usize;
+        let loop_on = self.shared.loop_on.load(Ordering::Relaxed);
+        let loop_a = self.shared.loop_a.load(Ordering::Relaxed) as usize;
+        let loop_b = (self.shared.loop_b.load(Ordering::Relaxed) as usize).min(total);
         let target = if self.shared.side_b.load(Ordering::Relaxed) {
             1.0
         } else {
@@ -133,6 +190,9 @@ impl Source for TrackSource {
             let l = self.pcm[pos * 2] as f64;
             let r = self.pcm[pos * 2 + 1] as f64;
             pos += 1;
+            if loop_on && loop_b > loop_a && pos >= loop_b {
+                pos = loop_a;
+            }
             if !self.in_engine_eq {
                 frame[0] = l;
                 frame[1] = r;
@@ -269,6 +329,10 @@ impl TrackSession {
                 pos: AtomicU64::new(start_frame),
                 paused: AtomicBool::new(false),
                 side_b: AtomicBool::new(false),
+                loop_on: AtomicBool::new(false),
+                loop_a: AtomicU64::new(0),
+                loop_b: AtomicU64::new(0),
+                scrub: AtomicBool::new(false),
                 chain_gen: AtomicU64::new(0),
                 bus: Mutex::new(BusConfig::default()),
                 total_frames,

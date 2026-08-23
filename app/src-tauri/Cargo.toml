@@ -30,4 +30,6 @@ tauri-plugin-dialog = "2.7.2"
 tauri-plugin-autostart = "2"
 rusqlite = { version = "0.37", features = ["bundled"] }
 ebur128 = "0.1"
+realfft = "3"
+base64 = "0.22"
 

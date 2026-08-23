@@ -8,6 +8,7 @@ use fletcher_core::{apo, devices, dsp, fsx};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+mod analysis;
 mod engine;
 mod tools;
 
@@ -943,6 +944,25 @@ fn library_db() -> Result<rusqlite::Connection, String> {
         );",
     )
     .map_err(|e| e.to_string())?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS clips (
+            id INTEGER PRIMARY KEY,
+            track_id INTEGER NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'clip',
+            name TEXT NOT NULL,
+            t_in REAL NOT NULL,
+            t_out REAL NOT NULL,
+            f_lo REAL,
+            f_hi REAL,
+            note TEXT,
+            created_ms INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS clip_tags (
+            clip_id INTEGER NOT NULL,
+            tag TEXT NOT NULL
+        );",
+    )
+    .map_err(|e| e.to_string())?;
     // Migration for databases created before lufs_flat existed.
     let _ = conn.execute("ALTER TABLE tracks ADD COLUMN lufs_flat REAL", []);
     Ok(conn)
@@ -964,8 +984,23 @@ struct TrackRow {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct ClipRow {
+    id: i64,
+    track_id: i64,
+    kind: String,
+    name: String,
+    t_in: f64,
+    t_out: f64,
+    note: Option<String>,
+    tags: Vec<String>,
+    created_ms: i64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct LibraryState {
     tracks: Vec<TrackRow>,
+    clips: Vec<ClipRow>,
 }
 
 fn library_state_now() -> Result<LibraryState, String> {
@@ -993,7 +1028,159 @@ fn library_state_now() -> Result<LibraryState, String> {
         .map_err(|e| e.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
-    Ok(LibraryState { tracks })
+    let mut tag_map: std::collections::HashMap<i64, Vec<String>> = std::collections::HashMap::new();
+    {
+        let mut tag_stmt = conn
+            .prepare("SELECT clip_id, tag FROM clip_tags ORDER BY tag")
+            .map_err(|e| e.to_string())?;
+        let rows = tag_stmt
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+            .map_err(|e| e.to_string())?;
+        for row in rows.flatten() {
+            tag_map.entry(row.0).or_default().push(row.1);
+        }
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, track_id, kind, name, t_in, t_out, note, created_ms
+             FROM clips ORDER BY track_id, t_in",
+        )
+        .map_err(|e| e.to_string())?;
+    let clips = stmt
+        .query_map([], |r| {
+            Ok(ClipRow {
+                id: r.get(0)?,
+                track_id: r.get(1)?,
+                kind: r.get(2)?,
+                name: r.get(3)?,
+                t_in: r.get(4)?,
+                t_out: r.get(5)?,
+                note: r.get(6)?,
+                tags: Vec::new(),
+                created_ms: r.get(7)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    let clips = clips
+        .into_iter()
+        .map(|mut c| {
+            c.tags = tag_map.remove(&c.id).unwrap_or_default();
+            c
+        })
+        .collect();
+    Ok(LibraryState { tracks, clips })
+}
+
+/// Mark the I/O region as a clip (ADR-0004: clips are user-selected, never
+/// auto-extracted). Stable ids, never reused — session provenance binds to
+/// clip identity (ADR-0006).
+#[tauri::command]
+fn clip_create(track_id: i64, t_in: f64, t_out: f64) -> Result<LibraryState, String> {
+    if t_out <= t_in || t_in < 0.0 {
+        return Err("the clip range needs an in point before its out point".into());
+    }
+    let conn = library_db()?;
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM clips WHERE track_id = ?1",
+            rusqlite::params![track_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    conn.execute(
+        "INSERT INTO clips (track_id, kind, name, t_in, t_out, created_ms)
+         VALUES (?1, 'clip', ?2, ?3, ?4, ?5)",
+        rusqlite::params![
+            track_id,
+            format!("Clip {}", count + 1),
+            t_in,
+            t_out,
+            now_ms() as i64
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    library_state_now()
+}
+
+/// Rename / annotate a clip ("add too much information" — FEATURES).
+#[tauri::command]
+fn clip_update(
+    id: i64,
+    name: Option<String>,
+    note: Option<String>,
+) -> Result<LibraryState, String> {
+    let conn = library_db()?;
+    if let Some(n) = name {
+        let n = n.trim();
+        if !n.is_empty() {
+            conn.execute(
+                "UPDATE clips SET name = ?1 WHERE id = ?2",
+                rusqlite::params![n, id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    if let Some(nt) = note {
+        let nt = nt.trim();
+        let val: Option<&str> = if nt.is_empty() { None } else { Some(nt) };
+        conn.execute(
+            "UPDATE clips SET note = ?1 WHERE id = ?2",
+            rusqlite::params![val, id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    library_state_now()
+}
+
+/// Toggle a tag on a clip (band tags and free tags share one mechanism).
+#[tauri::command]
+fn clip_tag(id: i64, tag: String, on: bool) -> Result<LibraryState, String> {
+    let tag = tag.trim().to_lowercase();
+    if tag.is_empty() {
+        return library_state_now();
+    }
+    let conn = library_db()?;
+    conn.execute(
+        "DELETE FROM clip_tags WHERE clip_id = ?1 AND tag = ?2",
+        rusqlite::params![id, tag],
+    )
+    .map_err(|e| e.to_string())?;
+    if on {
+        conn.execute(
+            "INSERT INTO clip_tags (clip_id, tag) VALUES (?1, ?2)",
+            rusqlite::params![id, tag],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    library_state_now()
+}
+
+#[tauri::command]
+fn clip_delete(id: i64) -> Result<LibraryState, String> {
+    let conn = library_db()?;
+    conn.execute("DELETE FROM clips WHERE id = ?1", rusqlite::params![id])
+        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM clip_tags WHERE clip_id = ?1",
+        rusqlite::params![id],
+    )
+    .map_err(|e| e.to_string())?;
+    library_state_now()
+}
+
+/// Set (or clear) the engine's loop region — how a clip solos on loop.
+#[tauri::command]
+fn track_loop(a_s: f64, b_s: f64, on: bool) -> Result<(), String> {
+    use std::sync::atomic::Ordering::Relaxed;
+    let guard = TRACK.lock().unwrap();
+    let s = guard.as_ref().ok_or("no track playing")?;
+    let rate = s.shared.rate as f64;
+    s.shared.loop_a.store((a_s.max(0.0) * rate) as u64, Relaxed);
+    s.shared.loop_b.store((b_s.max(0.0) * rate) as u64, Relaxed);
+    s.shared.loop_on.store(on && b_s > a_s, Relaxed);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1032,6 +1219,7 @@ fn track_delete(id: i64) -> Result<LibraryState, String> {
         }
     }
     WAVES.lock().unwrap().remove(&id);
+    SPECS.lock().unwrap().retain(|k, _| k.0 != id);
     {
         let mut memo = PCM_MEMO.lock().unwrap();
         if memo.as_ref().is_some_and(|(mid, _, _)| *mid == id) {
@@ -1041,6 +1229,16 @@ fn track_delete(id: i64) -> Result<LibraryState, String> {
     let conn = library_db()?;
     conn.execute("DELETE FROM tracks WHERE id = ?1", rusqlite::params![id])
         .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM clip_tags WHERE clip_id IN (SELECT id FROM clips WHERE track_id = ?1)",
+        rusqlite::params![id],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM clips WHERE track_id = ?1",
+        rusqlite::params![id],
+    )
+    .map_err(|e| e.to_string())?;
     // Drop any decoded caches for this track.
     let cache = data_dir().join("cache").join("pcm");
     if let Ok(rd) = std::fs::read_dir(&cache) {
@@ -1317,6 +1515,7 @@ async fn track_play(app: tauri::AppHandle, id: i64) -> Result<(), String> {
                 let _ = app_pos.emit(
                     "track-pos",
                     serde_json::json!({
+                        "trackId": id,
                         "posS": shared_pos.pos.load(Relaxed) as f64 / shared_pos.rate as f64,
                         "paused": shared_pos.paused.load(Relaxed),
                     }),
@@ -1331,14 +1530,23 @@ async fn track_play(app: tauri::AppHandle, id: i64) -> Result<(), String> {
     .map_err(|e| e.to_string())?
 }
 
+fn track_toggle_inner() -> bool {
+    use std::sync::atomic::Ordering::Relaxed;
+    let guard = TRACK.lock().unwrap();
+    match guard.as_ref() {
+        Some(s) => {
+            let now = !s.shared.paused.load(Relaxed);
+            s.shared.paused.store(now, Relaxed);
+            true
+        }
+        None => false,
+    }
+}
+
 #[tauri::command]
 fn track_toggle() -> Result<TrackState, String> {
-    use std::sync::atomic::Ordering::Relaxed;
-    {
-        let guard = TRACK.lock().unwrap();
-        let s = guard.as_ref().ok_or("no track playing")?;
-        let now = !s.shared.paused.load(Relaxed);
-        s.shared.paused.store(now, Relaxed);
+    if !track_toggle_inner() {
+        return Err("no track playing".into());
     }
     Ok(track_state_now())
 }
@@ -1355,6 +1563,18 @@ fn track_seek(seconds: f64) -> Result<TrackState, String> {
             .store(frame.min(s.shared.total_frames), Relaxed);
     }
     Ok(track_state_now())
+}
+
+/// Enter/leave scrub mode (held C): the cursor is the playhead and the audio
+/// thread chases it at motion velocity (reverse included). Leaving restores
+/// normal transport: playing continues from the cursor; paused stays paused.
+#[tauri::command]
+fn track_scrub(on: bool) -> Result<(), String> {
+    use std::sync::atomic::Ordering::Relaxed;
+    let guard = TRACK.lock().unwrap();
+    let s = guard.as_ref().ok_or("no track playing")?;
+    s.shared.scrub.store(on, Relaxed);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1457,47 +1677,124 @@ struct SampleWindow {
 type PcmMemoEntry = (i64, u32, std::sync::Arc<Vec<f32>>);
 static PCM_MEMO: std::sync::Mutex<Option<PcmMemoEntry>> = std::sync::Mutex::new(None);
 
+/// The analysis-side PCM for a track (48 kHz canon): memoized, decoded on
+/// demand. Shared by sample windows, the spectrogram, and the FFT pane.
+fn pcm_for(id: i64) -> Result<std::sync::Arc<Vec<f32>>, String> {
+    let rate = 48000u32;
+    {
+        let guard = PCM_MEMO.lock().unwrap();
+        if let Some(p) = guard
+            .as_ref()
+            .filter(|(mid, mrate, _)| *mid == id && *mrate == rate)
+            .map(|(_, _, p)| p.clone())
+        {
+            return Ok(p);
+        }
+    }
+    let ffmpeg = tools::find_tool(&data_dir(), "ffmpeg")
+        .ok_or("ffmpeg is not installed — use the banner in Clip Studio to set it up")?;
+    let conn = library_db()?;
+    let path: String = conn
+        .query_row(
+            "SELECT path FROM tracks WHERE id = ?1 AND path IS NOT NULL",
+            rusqlite::params![id],
+            |r| r.get(0),
+        )
+        .map_err(|_| "track not found".to_string())?;
+    drop(conn);
+    let pcm_path = engine::ensure_pcm(
+        &ffmpeg,
+        &data_dir().join("cache").join("pcm"),
+        std::path::Path::new(&path),
+        id,
+        rate,
+        || {},
+    )?;
+    let p = engine::load_pcm(&pcm_path)?;
+    *PCM_MEMO.lock().unwrap() = Some((id, rate, p.clone()));
+    Ok(p)
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct SpectrogramDto {
+    cols: usize,
+    rows: usize,
+    duration_s: f64,
+    min_db: f64,
+    max_db: f64,
+    /// Row-major u8 grid, base64 — row 0 = lowest frequency.
+    data: String,
+}
+
+type SpecKey = (i64, usize, i64);
+static SPECS: std::sync::Mutex<std::collections::BTreeMap<SpecKey, SpectrogramDto>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// The whole-track spectrogram, memoized per (track, window, floor). The
+/// window and floor are Clip Studio room settings.
+#[tauri::command]
+async fn track_spectrogram(
+    id: i64,
+    win: Option<usize>,
+    floor_db: Option<f64>,
+) -> Result<SpectrogramDto, String> {
+    let win = win.unwrap_or(2048).clamp(256, 16384);
+    let floor = floor_db.unwrap_or(analysis::SPEC_DB_MIN);
+    let key: SpecKey = (id, win, floor as i64);
+    if let Some(s) = SPECS.lock().unwrap().get(&key) {
+        return Ok(s.clone());
+    }
+    tauri::async_runtime::spawn_blocking(move || -> Result<SpectrogramDto, String> {
+        use base64::Engine as _;
+        let rate = 48000u32;
+        let pcm = pcm_for(id)?;
+        let frames = pcm.len() / 2;
+        let spec = analysis::spectrogram(&pcm, rate, 2400, 160, win, floor);
+        let dto = SpectrogramDto {
+            cols: spec.cols,
+            rows: spec.rows,
+            duration_s: frames as f64 / rate as f64,
+            min_db: floor,
+            max_db: analysis::SPEC_DB_MAX,
+            data: base64::engine::general_purpose::STANDARD.encode(&spec.data),
+        };
+        SPECS.lock().unwrap().insert(key, dto.clone());
+        Ok(dto)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Spectrum at the playhead for the FFT pane (log-spaced dB points).
+#[tauri::command]
+async fn track_fft(id: i64, t_s: f64, points: usize) -> Result<Vec<f64>, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<f64>, String> {
+        let pcm = pcm_for(id)?;
+        Ok(analysis::spectrum_at(
+            &pcm,
+            48000,
+            t_s,
+            points.clamp(32, 512),
+        ))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Current transport state — how satellite scope windows orient on open.
+#[tauri::command]
+fn track_status() -> TrackState {
+    track_state_now()
+}
+
 /// Raw samples for a visible window — the timeline switches to these past
 /// the peak-bucket resolution, down to single samples (mono mix of L/R).
 #[tauri::command]
 async fn track_samples(id: i64, start_s: f64, span_s: f64) -> Result<SampleWindow, String> {
     tauri::async_runtime::spawn_blocking(move || -> Result<SampleWindow, String> {
         let rate = 48000u32;
-        let memo = {
-            let guard = PCM_MEMO.lock().unwrap();
-            guard
-                .as_ref()
-                .filter(|(mid, mrate, _)| *mid == id && *mrate == rate)
-                .map(|(_, _, p)| p.clone())
-        };
-        let pcm = match memo {
-            Some(p) => p,
-            None => {
-                let ffmpeg = tools::find_tool(&data_dir(), "ffmpeg").ok_or(
-                    "ffmpeg is not installed — use the banner in Clip Studio to set it up",
-                )?;
-                let conn = library_db()?;
-                let path: String = conn
-                    .query_row(
-                        "SELECT path FROM tracks WHERE id = ?1 AND path IS NOT NULL",
-                        rusqlite::params![id],
-                        |r| r.get(0),
-                    )
-                    .map_err(|_| "track not found".to_string())?;
-                drop(conn);
-                let pcm_path = engine::ensure_pcm(
-                    &ffmpeg,
-                    &data_dir().join("cache").join("pcm"),
-                    std::path::Path::new(&path),
-                    id,
-                    rate,
-                    || {},
-                )?;
-                let p = engine::load_pcm(&pcm_path)?;
-                *PCM_MEMO.lock().unwrap() = Some((id, rate, p.clone()));
-                p
-            }
-        };
+        let pcm = pcm_for(id)?;
         let frames = pcm.len() / 2;
         let span = span_s.clamp(0.01, 8.0);
         let f0 = ((start_s.max(0.0) * rate as f64) as usize).min(frames);
@@ -2277,6 +2574,50 @@ fn set_history_shortcuts(app: &tauri::AppHandle, enable: bool) {
     }
 }
 
+/// Transport keys for the scope pop-outs (Q-20 law: satellites get no DOM
+/// keys, so these are focus-scoped OS shortcuts). Space toggles directly in
+/// Rust; C goes to the focused scope window (it owns the hover position);
+/// I/O go to main (it owns the region).
+fn set_scope_shortcuts(app: &tauri::AppHandle, label: &str, enable: bool) {
+    use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+    let gs = app.global_shortcut();
+    for key in ["space", "c", "i", "o"] {
+        if enable {
+            let label = label.to_string();
+            let _ = gs.on_shortcut(key, move |app, _shortcut, event| {
+                use tauri::Emitter;
+                let pressed = event.state == ShortcutState::Pressed;
+                match key {
+                    "space" => {
+                        if pressed {
+                            track_toggle_inner();
+                        }
+                    }
+                    // C carries press AND release — held-C is the audible scrub.
+                    "c" => {
+                        let _ = app.emit_to(
+                            label.as_str(),
+                            "scope-key",
+                            serde_json::json!({ "key": "c", "state": if pressed { "down" } else { "up" } }),
+                        );
+                    }
+                    _ => {
+                        if pressed {
+                            let _ = app.emit_to(
+                                "main",
+                                "scope-key",
+                                serde_json::json!({ "key": key, "state": "down" }),
+                            );
+                        }
+                    }
+                }
+            });
+        } else {
+            let _ = gs.unregister(key);
+        }
+    }
+}
+
 fn setup_hotkey(app: &tauri::App) {
     use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
     let result = app
@@ -2327,6 +2668,19 @@ pub fn run() {
                 // while it is focused — they never leak into other apps.
                 tauri::WindowEvent::Focused(focused) if window.label() == "history" => {
                     set_history_shortcuts(window.app_handle(), *focused);
+                }
+                tauri::WindowEvent::Focused(focused) if window.label().starts_with("scope-") => {
+                    set_scope_shortcuts(window.app_handle(), window.label(), *focused);
+                }
+                tauri::WindowEvent::Destroyed if window.label().starts_with("scope-") => {
+                    set_scope_shortcuts(window.app_handle(), window.label(), false);
+                    // The main window puts the pane back inline.
+                    use tauri::Emitter;
+                    let _ = window.app_handle().emit_to(
+                        "main",
+                        "scope-closed",
+                        window.label().to_string(),
+                    );
                 }
                 tauri::WindowEvent::Destroyed if window.label() == "history" => {
                     set_history_shortcuts(window.app_handle(), false);
@@ -2383,9 +2737,18 @@ pub fn run() {
             track_play,
             track_toggle,
             track_seek,
+            track_scrub,
             track_stop,
             track_waveform,
             track_samples,
+            track_spectrogram,
+            track_fft,
+            track_status,
+            track_loop,
+            clip_create,
+            clip_update,
+            clip_tag,
+            clip_delete,
             history_save,
             history_load,
             history_export,

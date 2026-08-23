@@ -151,6 +151,8 @@ function ValueEdit({
 // This bundle serves every window; the query param picks the personality.
 const IS_HISTORY_WINDOW = new URLSearchParams(window.location.search).get("view") === "history";
 const IS_DIFF_WINDOW = new URLSearchParams(window.location.search).get("view") === "diff";
+const IS_SCOPE_SPEC_WINDOW = new URLSearchParams(window.location.search).get("view") === "scope-spec";
+const IS_SCOPE_FFT_WINDOW = new URLSearchParams(window.location.search).get("view") === "scope-fft";
 
 type ChainSnap = { enabled: boolean; kind: string; fcHz: number; gainDb: number; q: number }[];
 type HistTreeNode = {
@@ -163,7 +165,7 @@ type HistTreeNode = {
   note?: string;
   pinned?: boolean;
 };
-type HistTreeData = { nodes: HistTreeNode[]; current: number };
+type HistTreeData = { nodes: HistTreeNode[]; current: number; name?: string };
 type NodePatch = { label?: string; note?: string; pinned?: boolean };
 
 /** One filter as a real APO config line — shared by filter Ctrl+C and the
@@ -1153,6 +1155,125 @@ function HistoryTree({
   );
 }
 
+/** The FFT pane (artboard): instantaneous spectrum at the playhead with the
+ *  EQ curve overlaid and boost/cut shading — shows where the EQ acts on what
+ *  is playing right now. Never claims audibility. */
+function FftView({
+  trackId,
+  posS,
+  eq,
+}: {
+  trackId: number;
+  posS: number;
+  eq: { freqs: number[]; sumDb: number[]; preampDb: number } | null;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [spectrum, setSpectrum] = useState<number[] | null>(null);
+  const busy = useRef(false);
+
+  useEffect(() => {
+    if (busy.current) return;
+    busy.current = true;
+    invoke<number[]>("track_fft", { id: trackId, tS: posS, points: 240 })
+      .then(setSpectrum)
+      .catch(() => {})
+      .finally(() => {
+        busy.current = false;
+      });
+  }, [trackId, posS]);
+
+  useEffect(() => {
+    const cv = canvasRef.current;
+    if (!cv) return;
+    const dpr = window.devicePixelRatio || 1;
+    const w = cv.clientWidth;
+    const h = cv.clientHeight;
+    if (cv.width !== Math.round(w * dpr)) cv.width = Math.round(w * dpr);
+    if (cv.height !== Math.round(h * dpr)) cv.height = Math.round(h * dpr);
+    const ctx = cv.getContext("2d");
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    const xOfF = (f: number) =>
+      ((Math.log10(f) - Math.log10(20)) / (Math.log10(20000) - Math.log10(20))) * w;
+    // frequency grid
+    ctx.strokeStyle = "#eee9dd";
+    ctx.font = "9px 'IBM Plex Mono', monospace";
+    for (const f of [100, 1000, 10000]) {
+      const x = xOfF(f);
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, h);
+      ctx.stroke();
+      ctx.fillStyle = "#8b8578";
+      ctx.fillText(f >= 1000 ? `${f / 1000}k` : `${f}`, x + 3, h - 4);
+    }
+    // spectrum: filled grey, −90..−10 dB mapped to the pane
+    if (spectrum) {
+      const yOfDb = (db: number) => h - ((db + 90) / 80) * (h - 14);
+      ctx.beginPath();
+      spectrum.forEach((db, i) => {
+        const x = (i / (spectrum.length - 1)) * w;
+        const y = yOfDb(db);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.strokeStyle = "#55503f";
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
+      ctx.lineTo(w, h);
+      ctx.lineTo(0, h);
+      ctx.closePath();
+      ctx.fillStyle = "rgba(85, 80, 63, 0.25)";
+      ctx.fill();
+      ctx.lineWidth = 1;
+    }
+    // the EQ overlay: dashed 0-line, curve, boost/cut shading (artboard)
+    if (eq && eq.freqs.length) {
+      const zeroY = h * 0.3;
+      const pxPerDb = 3.0;
+      const yOfGain = (g: number) => zeroY - g * pxPerDb;
+      ctx.strokeStyle = "#c9c2b0";
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(0, zeroY);
+      ctx.lineTo(w, zeroY);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      const gains = eq.freqs.map((f, i) => ({ x: xOfF(f), g: eq.sumDb[i] - eq.preampDb }));
+      // shading between the curve and 0: orange above, blue below
+      for (const on of [true, false]) {
+        ctx.beginPath();
+        ctx.moveTo(gains[0].x, zeroY);
+        for (const p of gains) {
+          const y = on ? Math.min(yOfGain(p.g), zeroY) : Math.max(yOfGain(p.g), zeroY);
+          ctx.lineTo(p.x, y);
+        }
+        ctx.lineTo(gains[gains.length - 1].x, zeroY);
+        ctx.closePath();
+        ctx.fillStyle = on ? "rgba(200, 90, 19, 0.14)" : "rgba(63, 109, 158, 0.14)";
+        ctx.fill();
+      }
+      ctx.beginPath();
+      gains.forEach((p, i) => {
+        if (i === 0) ctx.moveTo(p.x, yOfGain(p.g));
+        else ctx.lineTo(p.x, yOfGain(p.g));
+      });
+      ctx.strokeStyle = "rgba(200, 90, 19, 0.75)";
+      ctx.lineWidth = 1.6;
+      ctx.stroke();
+      ctx.lineWidth = 1;
+    }
+    // legend
+    ctx.fillStyle = "#8b8578";
+    ctx.font = "9.5px 'IBM Plex Mono', monospace";
+    const legend = "FFT at playhead · — your EQ · ▮▮ where it boosts/cuts";
+    ctx.fillText(legend, w - ctx.measureText(legend).width - 8, 12);
+  }, [spectrum, eq]);
+
+  return <canvas ref={canvasRef} className="fft-pane" />;
+}
+
 /** The pop-out window: renders the shared tree, fed by the main window over events. */
 function PopoutHistory() {
   const [data, setData] = useState<HistTreeData | null>(null);
@@ -1209,7 +1330,7 @@ function PopoutHistory() {
       style={{ outline: "none" }}
     >
       <div className="hist-head">
-        <span className="mono hist-title">HISTORY</span>
+        <span className="mono hist-title">{`HISTORY${data?.name ? ` — ${data.name}` : ""}`}</span>
         <span className="spacer" />
         <button
           onClick={() => emitTo("main", "hist-cmd", { type: "import", id: 0 })}
@@ -1241,6 +1362,171 @@ function PopoutHistory() {
       ) : (
         <p className="dim-sm" style={{ padding: 20 }}>
           waiting for the main window…
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** Satellite scopes feed themselves: transport orientation via track_status,
+ *  then the broadcast track-state/track-pos events. Commands (seek, fft,
+ *  spectrogram) invoke Rust directly — no main-window routing needed. */
+function useTrackFeed() {
+  const [sess, setSess] = useState<{ id: number; durationS: number } | null>(null);
+  const [pos, setPos] = useState({ posS: 0, paused: false });
+  useEffect(() => {
+    invoke<{
+      active: boolean;
+      trackId: number | null;
+      paused: boolean;
+      posS: number;
+      durationS: number;
+    }>("track_status")
+      .then((s) => {
+        if (s.active && s.trackId != null) {
+          setSess({ id: s.trackId, durationS: s.durationS });
+          setPos({ posS: s.posS, paused: s.paused });
+        }
+      })
+      .catch(() => {});
+    const u1 = listen<Record<string, unknown>>("track-state", (e) => {
+      const p = e.payload;
+      if (p.event === "started") {
+        setSess({ id: p.trackId as number, durationS: p.durationS as number });
+      } else if (p.event === "ended") {
+        setSess(null);
+      }
+    });
+    const u2 = listen<{ posS: number; paused: boolean }>("track-pos", (e) =>
+      setPos({ posS: e.payload.posS, paused: e.payload.paused }),
+    );
+    return () => {
+      u1.then((f) => f());
+      u2.then((f) => f());
+    };
+  }, []);
+  return { sess, pos };
+}
+
+/** The spectrogram in its own window — zoom/pan/seek, fed by broadcasts. */
+function PopoutScopeSpec() {
+  const { sess, pos } = useTrackFeed();
+  const [spec, setSpec] = useState<SpecData | null>(null);
+  const posRef = useRef(pos);
+  posRef.current = pos;
+  // C arrives as a forwarded OS shortcut with press/release (Q-20 law):
+  // held C = scrub mode, same semantics as the main window.
+  const hover = useRef<number | null>(null);
+  const scrub = useRef(false);
+  useEffect(() => {
+    const un = listen<{ key: string; state: string }>("scope-key", (e) => {
+      const p = e.payload;
+      if (p.key !== "c") return;
+      if (p.state === "down") {
+        if (scrub.current || hover.current == null) return;
+        scrub.current = true;
+        invoke("track_scrub", { on: true }).catch(() => {});
+        invoke("track_seek", { seconds: hover.current }).catch(() => {});
+      } else {
+        if (!scrub.current) return;
+        scrub.current = false;
+        invoke("track_scrub", { on: false }).catch(() => {});
+      }
+    });
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
+  useEffect(() => {
+    setSpec(null);
+    if (!sess) return;
+    let alive = true;
+    const lsN = (key: string, dflt: number) => {
+      try {
+        const v = Number(localStorage.getItem(key));
+        return Number.isFinite(v) && v !== 0 ? v : dflt;
+      } catch {
+        return dflt;
+      }
+    };
+    invoke<SpecData>("track_spectrogram", {
+      id: sess.id,
+      win: lsN("fletcher.specwin", 2048),
+      floorDb: lsN("fletcher.specfloor", -90),
+    })
+      .then((s) => {
+        if (alive) setSpec(s);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sess?.id]);
+  return (
+    <div className="hist-panel full scope-window">
+      <div className="hist-head">
+        <span className="mono hist-title">SPECTROGRAM</span>
+        <span className="spacer" />
+        <span className="mono dim-sm">live · click = seek · scroll = zoom · drag = pan</span>
+      </div>
+      {sess ? (
+        <div className="scope-body">
+          <TimelineView
+            trackId={sess.id}
+            durationS={sess.durationS}
+            posS={pos.posS}
+            onSeek={(s) => invoke("track_seek", { seconds: s }).catch(() => {})}
+            onHover={(t) => {
+              hover.current = t;
+              if (t != null && scrub.current) {
+                invoke("track_seek", { seconds: t }).catch(() => {});
+              }
+            }}
+            spec={spec}
+            showSpec
+            showWave={false}
+            syncKey="scope-spec"
+          />
+        </div>
+      ) : (
+        <p className="dim-sm" style={{ padding: 20 }}>
+          no track playing — start one in Clip Studio
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** The FFT pane in its own window — spectrum at the playhead + the live EQ. */
+function PopoutScopeFft() {
+  const { sess, pos } = useTrackFeed();
+  const [eq, setEq] = useState<{ freqs: number[]; sumDb: number[]; preampDb: number } | null>(null);
+  useEffect(() => {
+    const load = () =>
+      invoke<EqState>("eq_state")
+        .then((s) => setEq({ freqs: s.freqs, sumDb: s.sumDb, preampDb: s.preampDb }))
+        .catch(() => {});
+    load();
+    const u = listen("apo-config-changed", load);
+    return () => {
+      u.then((f) => f());
+    };
+  }, []);
+  return (
+    <div className="hist-panel full scope-window">
+      <div className="hist-head">
+        <span className="mono hist-title">FFT</span>
+        <span className="spacer" />
+        <span className="mono dim-sm">spectrum at the playhead · your EQ overlaid</span>
+      </div>
+      {sess ? (
+        <div className="scope-body">
+          <FftView trackId={sess.id} posS={pos.posS} eq={eq} />
+        </div>
+      ) : (
+        <p className="dim-sm" style={{ padding: 20 }}>
+          no track playing — start one in Clip Studio
         </p>
       )}
     </div>
@@ -1455,7 +1741,28 @@ type TrackRow = {
   durationS: number | null;
   addedMs: number;
 };
-type LibraryState = { tracks: TrackRow[] };
+type ClipRow = {
+  id: number;
+  trackId: number;
+  kind: string;
+  name: string;
+  tIn: number;
+  tOut: number;
+  note: string | null;
+  tags: string[];
+  createdMs: number;
+};
+
+/** Band tags color the library (artboard: lows = cut-blue, highs = boost-orange). */
+const clipDotColor = (tags: string[]) =>
+  tags.includes("lows")
+    ? "#3f6d9e"
+    : tags.includes("highs")
+      ? "#c85a13"
+      : tags.includes("mids")
+        ? "#3d7d43"
+        : "#b3ac9c";
+type LibraryState = { tracks: TrackRow[]; clips: ClipRow[] };
 type ToolsState = { ffmpeg: string | null; ytdlp: string | null };
 type TrackSess = {
   id: number;
@@ -1477,6 +1784,13 @@ const fmtTime = (s: number) => {
   return `${m}:${sec.toString().padStart(2, "0")}`;
 };
 
+/** Timecode with configurable decimals (Clip Studio room setting). */
+const fmtTcN = (s: number, decimals: number) => {
+  const m = Math.floor(s / 60);
+  const sec = s - m * 60;
+  return `${m}:${sec.toFixed(decimals).padStart(decimals > 0 ? 3 + decimals : 2, "0")}`;
+};
+
 type WaveData = { durationS: number; mins: number[]; maxs: number[] };
 
 const RULER_H = 24;
@@ -1495,6 +1809,65 @@ const fmtTick = (s: number, step: number) => {
  *  interaction-inert law). Peaks are Rust-computed at ~2.7 ms resolution so
  *  deep zooms stay sharp without refetching. */
 type SampleWindow = { rate: number; startS: number; mono: number[] };
+type SpecData = {
+  cols: number;
+  rows: number;
+  durationS: number;
+  minDb: number;
+  maxDb: number;
+  data: string; // base64 u8 grid, row 0 = lowest frequency
+};
+
+/// The scope palette: ink ground into the boost-orange family (artboard).
+const SPEC_PALETTE: [number, number, number][] = (() => {
+  const stops: [number, [number, number, number]][] = [
+    [0.0, [20, 23, 26]],
+    [0.45, [90, 45, 20]],
+    [0.7, [200, 90, 19]],
+    [0.88, [232, 154, 95]],
+    [1.0, [242, 239, 233]],
+  ];
+  const out: [number, number, number][] = [];
+  for (let i = 0; i < 256; i++) {
+    const t = i / 255;
+    let k = 0;
+    while (k < stops.length - 2 && t > stops[k + 1][0]) k++;
+    const [t0, c0] = stops[k];
+    const [t1, c1] = stops[k + 1];
+    const f = Math.min(Math.max((t - t0) / (t1 - t0), 0), 1);
+    out.push([
+      Math.round(c0[0] + (c1[0] - c0[0]) * f),
+      Math.round(c0[1] + (c1[1] - c0[1]) * f),
+      Math.round(c0[2] + (c1[2] - c0[2]) * f),
+    ]);
+  }
+  return out;
+})();
+
+/** Decode the spectrogram grid into an offscreen canvas (cols × rows px). */
+function specToCanvas(spec: SpecData): HTMLCanvasElement {
+  const bytes = Uint8Array.from(atob(spec.data), (c) => c.charCodeAt(0));
+  const cv = document.createElement("canvas");
+  cv.width = spec.cols;
+  cv.height = spec.rows;
+  const ctx = cv.getContext("2d")!;
+  const img = ctx.createImageData(spec.cols, spec.rows);
+  for (let r = 0; r < spec.rows; r++) {
+    const srcRow = r * spec.cols;
+    // row 0 = lowest frequency → bottom of the image
+    const dstRow = (spec.rows - 1 - r) * spec.cols;
+    for (let c = 0; c < spec.cols; c++) {
+      const [rr, gg, bb] = SPEC_PALETTE[bytes[srcRow + c]];
+      const o = (dstRow + c) * 4;
+      img.data[o] = rr;
+      img.data[o + 1] = gg;
+      img.data[o + 2] = bb;
+      img.data[o + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return cv;
+}
 /// Below this span the timeline wants raw samples, not peak buckets.
 const SAMPLE_SPAN = 2.0;
 const MIN_SPAN = 0.0008; // ~38 samples @ 48 kHz — single-sample territory
@@ -1505,12 +1878,30 @@ function TimelineView({
   posS,
   onSeek,
   onHover,
+  region,
+  onRegionChange,
+  spec,
+  showSpec = false,
+  showWave = true,
+  heightPx,
+  decimals = 1,
+  syncKey,
 }: {
   trackId: number;
   durationS: number;
   posS: number;
   onSeek: (s: number) => void;
   onHover?: (t: number | null) => void;
+  region?: { a: number; b: number } | null;
+  onRegionChange?: (r: { a: number; b: number }) => void;
+  spec?: SpecData | null;
+  showSpec?: boolean;
+  showWave?: boolean;
+  heightPx?: number;
+  /// IN/OUT label precision (room setting).
+  decimals?: number;
+  /// Participate in cross-window view sync under this window label.
+  syncKey?: string;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [wave, setWave] = useState<WaveData | null>(null);
@@ -1521,8 +1912,16 @@ function TimelineView({
   const winRef = useRef(win);
   winRef.current = win;
   const winReq = useRef(false);
-  const drag = useRef<{ x0: number; start0: number; moved: boolean } | null>(null);
+  const drag = useRef<{ x0: number; start0: number; moved: boolean; edge?: "a" | "b" } | null>(
+    null,
+  );
   const follow = useRef(true);
+  const regionRef = useRef(region);
+  regionRef.current = region;
+  const specCanvas = useRef<HTMLCanvasElement | null>(null);
+  useEffect(() => {
+    specCanvas.current = spec ? specToCanvas(spec) : null;
+  }, [spec]);
 
   // Clamp the SPAN first, then anchor — clamping after anchoring made every
   // wheel notch at the zoom limit drift the view sideways.
@@ -1530,6 +1929,29 @@ function TimelineView({
     const s = Math.min(Math.max(span, MIN_SPAN), durationS || span);
     return { start: Math.min(Math.max(start, 0), Math.max(0, (durationS || s) - s)), span: s };
   };
+
+  // Cross-window view sync: local changes broadcast; remote changes apply
+  // without re-broadcasting (src guards the loop).
+  const applyingExternal = useRef(false);
+  const setViewSynced = (v: { start: number; span: number }) => {
+    setView(v);
+    if (syncKey && !applyingExternal.current) {
+      emit("scope-view", { start: v.start, span: v.span, src: syncKey });
+    }
+  };
+  useEffect(() => {
+    if (!syncKey) return;
+    const un = listen<{ start: number; span: number; src: string }>("scope-view", (e) => {
+      if (e.payload.src === syncKey) return;
+      applyingExternal.current = true;
+      setView(clampView(e.payload.start, e.payload.span));
+      applyingExternal.current = false;
+    });
+    return () => {
+      un.then((f) => f());
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [syncKey, durationS]);
 
   useEffect(() => {
     setWave(null);
@@ -1584,7 +2006,7 @@ function TimelineView({
       const factor = e.deltaY < 0 ? 1 / 1.25 : 1.25;
       // Clamp span BEFORE anchoring so a wheel notch at the limit is a no-op.
       const span = Math.min(Math.max(v.span * factor, MIN_SPAN), durationS || v.span);
-      setView(clampView(t - frac * span, span));
+      setViewSynced(clampView(t - frac * span, span));
     };
     cv.addEventListener("wheel", onWheel, { passive: false });
     return () => cv.removeEventListener("wheel", onWheel);
@@ -1599,7 +2021,7 @@ function TimelineView({
     if (!v || drag.current || durationS <= 0) return;
     const end = v.start + v.span;
     if (follow.current && posS > end && posS <= durationS) {
-      setView(clampView(posS - v.span * 0.1, v.span));
+      setViewSynced(clampView(posS - v.span * 0.1, v.span));
       return;
     }
     follow.current = posS >= v.start && posS <= end;
@@ -1664,19 +2086,50 @@ function TimelineView({
       }
     }
 
+    // lane layout: spectrogram on top (artboard order), waveform below
+    const lanesTop = RULER_H;
+    const lanesH = h - lanesTop;
+    const specH = showSpec ? (showWave ? Math.round(lanesH * 0.55) : lanesH) : 0;
+    if (showSpec) {
+      ctx.fillStyle = "#14171a";
+      ctx.fillRect(0, lanesTop, w, specH);
+      const off = specCanvas.current;
+      if (off && spec && spec.durationS > 0) {
+        const sx = (start / spec.durationS) * spec.cols;
+        const sw = (span / spec.durationS) * spec.cols;
+        ctx.drawImage(off, sx, 0, sw, spec.rows, 0, lanesTop, w, specH);
+        ctx.font = "9px 'IBM Plex Mono', monospace";
+        ctx.fillStyle = "#8b8578";
+        for (const f of [100, 1000, 10000]) {
+          const yf =
+            lanesTop +
+            specH *
+              (1 - (Math.log10(f) - Math.log10(20)) / (Math.log10(20000) - Math.log10(20)));
+          ctx.fillText(f >= 1000 ? `${f / 1000}k` : `${f}`, 4, yf + 3);
+        }
+      } else {
+        ctx.fillStyle = "#8b8578";
+        ctx.font = "11px 'IBM Plex Mono', monospace";
+        ctx.fillText("building spectrogram…", 12, lanesTop + 24);
+      }
+    }
+
     // waveform lane: per-pixel min/max aggregated from the peak buckets
-    const laneTop = RULER_H + 4;
-    const laneH = h - laneTop - 4;
+    const laneTop = lanesTop + specH + 4;
+    const laneH = Math.max(h - laneTop - 4, 10);
     const mid = laneTop + laneH / 2;
-    ctx.strokeStyle = "#ddd6c4";
-    ctx.beginPath();
-    ctx.moveTo(0, mid);
-    ctx.lineTo(w, mid);
-    ctx.stroke();
+    if (showWave) {
+      ctx.strokeStyle = "#ddd6c4";
+      ctx.beginPath();
+      ctx.moveTo(0, mid);
+      ctx.lineTo(w, mid);
+      ctx.stroke();
+    }
     // One renderer for every zoom (the Resolve look): per-pixel lo/hi values —
     // peak buckets zoomed out, raw-sample min/max zoomed in, linear
     // interpolation past one sample per pixel — then a single bridged draw
     // pass so adjacent columns always connect. No gaps, no mode pop.
+    if (showWave) {
     const sampleWin =
       win &&
       span <= SAMPLE_SPAN &&
@@ -1751,6 +2204,53 @@ function TimelineView({
       const y2 = mid - lo * (laneH / 2);
       ctx.fillRect(x, y1, 1, Math.max(1.2, y2 - y1));
     }
+    }
+
+    // the I/O region: shaded span, edge grips, IN/OUT/Δ readouts (artboard)
+    if (region && region.b > region.a) {
+      const xa = xOfT(region.a);
+      const xb = xOfT(region.b);
+      if (xb > 0 && xa < w) {
+        ctx.fillStyle = "rgba(200, 90, 19, 0.10)";
+        ctx.fillRect(Math.max(xa, 0), RULER_H, Math.min(xb, w) - Math.max(xa, 0), h - RULER_H);
+        ctx.strokeStyle = "#c85a13";
+        ctx.lineWidth = 1.4;
+        for (const x of [xa, xb]) {
+          if (x < 0 || x > w) continue;
+          ctx.beginPath();
+          ctx.moveTo(x, RULER_H);
+          ctx.lineTo(x, h);
+          ctx.stroke();
+        }
+        ctx.lineWidth = 1;
+        // edge grips (in points right, out points left — Resolve idiom)
+        ctx.fillStyle = "#c85a13";
+        if (xa >= 0 && xa <= w) {
+          ctx.beginPath();
+          ctx.moveTo(xa, RULER_H + 2);
+          ctx.lineTo(xa + 7, RULER_H + 8);
+          ctx.lineTo(xa, RULER_H + 14);
+          ctx.closePath();
+          ctx.fill();
+        }
+        if (xb >= 0 && xb <= w) {
+          ctx.beginPath();
+          ctx.moveTo(xb, RULER_H + 2);
+          ctx.lineTo(xb - 7, RULER_H + 8);
+          ctx.lineTo(xb, RULER_H + 14);
+          ctx.closePath();
+          ctx.fill();
+        }
+        ctx.font = "10px 'IBM Plex Mono', monospace";
+        ctx.fillStyle = "#c85a13";
+        ctx.fillText(`IN ${fmtTcN(region.a, decimals)}`, Math.max(xa, 0) + 4, h - 8);
+        const outLabel = `OUT ${fmtTcN(region.b, decimals)}`;
+        ctx.fillText(outLabel, Math.min(xb, w) - ctx.measureText(outLabel).width - 4, h - 8);
+        ctx.fillStyle = "#8b8578";
+        const dLabel = `Δ ${(region.b - region.a).toFixed(1)}s`;
+        ctx.fillText(dLabel, (Math.max(xa, 0) + Math.min(xb, w)) / 2 - ctx.measureText(dLabel).width / 2, h - 8);
+      }
+    }
 
     // playhead: line through the lane + a grip on the ruler
     if (posS >= start && posS <= start + span) {
@@ -1770,35 +2270,65 @@ function TimelineView({
       ctx.closePath();
       ctx.fill();
     }
-  }, [wave, view, win, posS, durationS]);
+  }, [wave, view, win, posS, durationS, region, spec, showSpec, showWave, decimals]);
 
   return (
     <canvas
       ref={canvasRef}
       className="timeline"
+      style={heightPx ? { height: heightPx } : undefined}
       onPointerDown={(e) => {
         const v = viewRef.current;
         if (!v) return;
-        drag.current = { x0: e.clientX, start0: v.start, moved: false };
+        // Grabbing an I/O edge (±6 px) trims the region instead of panning.
+        let edge: "a" | "b" | undefined;
+        const r = regionRef.current;
+        if (r && onRegionChange) {
+          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+          const xOf = (t: number) => ((t - v.start) / v.span) * rect.width + rect.left;
+          if (Math.abs(e.clientX - xOf(r.a)) <= 6) edge = "a";
+          else if (Math.abs(e.clientX - xOf(r.b)) <= 6) edge = "b";
+        }
+        drag.current = { x0: e.clientX, start0: v.start, moved: false, edge };
         (e.currentTarget as Element).setPointerCapture(e.pointerId);
       }}
       onPointerMove={(e) => {
         const v = viewRef.current;
         if (!v) return;
         const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-        // C = seek to the cursor: report where the mouse hovers, always.
-        onHover?.(
-          Math.min(
-            Math.max(v.start + ((e.clientX - rect.left) / rect.width) * v.span, 0),
-            durationS || 0,
-          ),
+        const tAt = Math.min(
+          Math.max(v.start + ((e.clientX - rect.left) / rect.width) * v.span, 0),
+          durationS || 0,
         );
+        // C = seek to the cursor: report where the mouse hovers, always.
+        onHover?.(tAt);
         const d = drag.current;
-        if (!d) return;
+        if (!d) {
+          // Near an I/O edge → the resize cursor announces the trim grab.
+          let cursor = "crosshair";
+          const r = regionRef.current;
+          if (r && onRegionChange) {
+            const xOf = (t: number) => ((t - v.start) / v.span) * rect.width + rect.left;
+            if (Math.abs(e.clientX - xOf(r.a)) <= 6 || Math.abs(e.clientX - xOf(r.b)) <= 6) {
+              cursor = "ew-resize";
+            }
+          }
+          (e.currentTarget as HTMLElement).style.cursor = cursor;
+          return;
+        }
+        if (d.edge) {
+          const r = regionRef.current;
+          if (r && onRegionChange) {
+            if (d.edge === "a") onRegionChange({ a: Math.min(tAt, r.b - 0.05), b: r.b });
+            else onRegionChange({ a: r.a, b: Math.max(tAt, r.a + 0.05) });
+          }
+          d.moved = true;
+          return;
+        }
         const dx = e.clientX - d.x0;
         if (!d.moved && Math.abs(dx) < 5) return;
         d.moved = true;
-        setView(clampView(d.start0 - (dx / rect.width) * v.span, v.span));
+        setViewSynced(clampView(d.start0 - (dx / rect.width) * v.span, v.span));
       }}
       onPointerLeave={() => onHover?.(null)}
       onPointerUp={(e) => {
@@ -1806,7 +2336,7 @@ function TimelineView({
         drag.current = null;
         const v = viewRef.current;
         if (!d || !v) return;
-        if (!d.moved && durationS > 0) {
+        if (!d.moved && !d.edge && durationS > 0) {
           const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
           const t = v.start + ((e.clientX - rect.left) / rect.width) * v.span;
           follow.current = true;
@@ -1882,6 +2412,8 @@ export default function App() {
   // window lifetime, so the early returns are hook-safe.
   if (IS_HISTORY_WINDOW) return <PopoutHistory />;
   if (IS_DIFF_WINDOW) return <PopoutDiff />;
+  if (IS_SCOPE_SPEC_WINDOW) return <PopoutScopeSpec />;
+  if (IS_SCOPE_FFT_WINDOW) return <PopoutScopeFft />;
   // eslint-disable-next-line react-hooks/rules-of-hooks
   return <MainApp />;
 }
@@ -2021,6 +2553,8 @@ function MainApp() {
 
   // ---- Clip Studio (M2: library + track engine transport) ----
   const [view, setView] = useState<"eq" | "lab" | "settings" | "clips">("eq");
+  const viewModeRef = useRef(view);
+  viewModeRef.current = view;
   const [library, setLibrary] = useState<LibraryState | null>(null);
   const libraryRef = useRef<LibraryState | null>(null);
   libraryRef.current = library;
@@ -2042,6 +2576,215 @@ function MainApp() {
   const playPending = useRef(false);
   /// C = seek to cursor (Resolve): where the mouse hovers on the timeline.
   const timelineHover = useRef<number | null>(null);
+  const trackPosRef = useRef(trackPos);
+  trackPosRef.current = trackPos;
+  // The I/O region (Resolve: I = in at playhead, O = out) — clip raw material.
+  const [ioRegion, setIoRegion] = useState<{ a: number; b: number } | null>(null);
+  const ioRegionRef = useRef(ioRegion);
+  ioRegionRef.current = ioRegion;
+  const [loopOn, setLoopOn] = useState(false);
+  // Which saved clip the region currently IS (by identity, not by time —
+  // duplicated ranges must not co-highlight).
+  const [activeClipId, setActiveClipId] = useState<number | null>(null);
+  // A clip clicked before its track was playing: applied on session start.
+  const pendingClip = useRef<ClipRow | null>(null);
+  const [clipRename, setClipRename] = useState<string | null>(null);
+  // The scopes: combinable view toggles (artboard: Spec ✓ Wave ✓ FFT ✓).
+  const scopeInit = (key: string) => {
+    try {
+      return localStorage.getItem(key) !== "0";
+    } catch {
+      return true;
+    }
+  };
+  const [specOn, setSpecOn] = useState(() => scopeInit("fletcher.scope.spec"));
+  const [waveOn, setWaveOn] = useState(() => scopeInit("fletcher.scope.wave"));
+  const [fftOn, setFftOn] = useState(() => scopeInit("fletcher.scope.fft"));
+  const toggleScope = (which: "spec" | "wave" | "fft") => {
+    const [get, set] =
+      which === "spec"
+        ? [specOn, setSpecOn]
+        : which === "wave"
+          ? [waveOn, setWaveOn]
+          : [fftOn, setFftOn];
+    set(!get);
+    try {
+      localStorage.setItem(`fletcher.scope.${which}`, get ? "0" : "1");
+    } catch {
+      /* per-viewer nicety only */
+    }
+  };
+  const [specData, setSpecData] = useState<SpecData | null>(null);
+  // Panes leave the main page while they live in their own window.
+  const [popped, setPopped] = useState({ spec: false, fft: false });
+  const [clipsMenu, setClipsMenu] = useState(false);
+  // Timecode precision — Clip Studio's first room setting.
+  const [tcDec, setTcDec] = useState<number>(() => {
+    try {
+      const v = Number(localStorage.getItem("fletcher.tcdec"));
+      return [1, 2, 3].includes(v) ? v : 2;
+    } catch {
+      return 2;
+    }
+  });
+  const pickTcDec = (v: number) => {
+    setTcDec(v);
+    try {
+      localStorage.setItem("fletcher.tcdec", String(v));
+    } catch {
+      /* per-viewer nicety only */
+    }
+  };
+  // Spectrogram parameters (room settings; satellites read the same keys).
+  const lsNum = (key: string, dflt: number, allowed: number[]) => {
+    try {
+      const v = Number(localStorage.getItem(key));
+      return allowed.includes(v) ? v : dflt;
+    } catch {
+      return dflt;
+    }
+  };
+  const [specWin, setSpecWin] = useState(() => lsNum("fletcher.specwin", 2048, [1024, 2048, 4096]));
+  const [specFloor, setSpecFloor] = useState(() =>
+    lsNum("fletcher.specfloor", -90, [-70, -90, -110]),
+  );
+  const pickSpecParam = (key: "specwin" | "specfloor", v: number) => {
+    (key === "specwin" ? setSpecWin : setSpecFloor)(v);
+    try {
+      localStorage.setItem(`fletcher.${key}`, String(v));
+    } catch {
+      /* per-viewer nicety only */
+    }
+  };
+
+  // Audible scrub (Resolve): while C is held the cursor IS the playhead —
+  // each move sounds a short burst at the new spot, stillness holds silent,
+  // and releasing C hands the transport back exactly as it was.
+  const scrub = useRef(false);
+  const scrubStart = () => {
+    const sess = trackSessRef.current;
+    if (scrub.current || !sess || sess.phase || timelineHover.current == null) return;
+    scrub.current = true;
+    invoke("track_scrub", { on: true }).catch(() => {});
+    invoke("track_seek", { seconds: timelineHover.current }).catch(() => {});
+  };
+  const scrubMove = (t: number) => {
+    if (scrub.current) invoke("track_seek", { seconds: t }).catch(() => {});
+  };
+  const scrubEnd = () => {
+    if (!scrub.current) return;
+    scrub.current = false;
+    invoke("track_scrub", { on: false }).catch(() => {});
+  };
+  useEffect(() => {
+    setSpecData(null);
+    if (!trackSess || trackSess.phase) return;
+    let alive = true;
+    invoke<SpecData>("track_spectrogram", {
+      id: trackSess.id,
+      win: specWin,
+      floorDb: specFloor,
+    })
+      .then((s) => {
+        if (alive) setSpecData(s);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trackSess?.id, trackSess?.phase, specWin, specFloor]);
+
+  const popOutScope = async (kind: "spec" | "fft") => {
+    try {
+      const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+      const label = `scope-${kind}`;
+      const existing = await WebviewWindow.getByLabel(label);
+      if (existing) {
+        await existing.show().catch(() => {});
+        await existing.setFocus();
+      } else {
+        new WebviewWindow(label, {
+          url: `index.html?view=${label}`,
+          title: kind === "spec" ? "Fletcher — Spectrogram" : "Fletcher — FFT",
+          width: 960,
+          height: kind === "spec" ? 440 : 320,
+        });
+      }
+      setPopped((p) => ({ ...p, [kind]: true }));
+    } catch (e) {
+      showNotice(String(e));
+    }
+  };
+  const activeClip = library?.clips.find((c) => c.id === activeClipId) ?? null;
+  const updateClip = (id: number, patch: { name?: string; note?: string }) =>
+    invoke<LibraryState>("clip_update", { id, ...patch })
+      .then(setLibrary)
+      .catch((e) => showNotice(String(e)));
+  const toggleTag = (c: ClipRow, tag: string) =>
+    invoke<LibraryState>("clip_tag", { id: c.id, tag, on: !c.tags.includes(tag) })
+      .then(setLibrary)
+      .catch((e) => showNotice(String(e)));
+
+  const setIn = (t: number) => {
+    setActiveClipId(null);
+    setIoRegion((cur) => {
+      const b = cur && cur.b > t ? cur.b : (trackSessRef.current?.durationS ?? t + 1);
+      return { a: t, b };
+    });
+  };
+  const setOut = (t: number) => {
+    setActiveClipId(null);
+    setIoRegion((cur) => ({ a: cur && cur.a < t ? cur.a : 0, b: t }));
+  };
+  const clearRegion = () => {
+    setIoRegion(null);
+    setLoopOn(false);
+    setActiveClipId(null);
+  };
+
+  // The engine's loop follows the region + toggle (session-scoped).
+  useEffect(() => {
+    if (!trackSess || trackSess.phase) return;
+    const r = ioRegion;
+    invoke("track_loop", {
+      aS: r?.a ?? 0,
+      bS: r?.b ?? 0,
+      on: loopOn && !!r,
+    }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ioRegion, loopOn, trackSess?.sess, trackSess?.phase]);
+
+  const saveClip = () => {
+    const r = ioRegionRef.current;
+    const sess = trackSessRef.current;
+    if (!r || !sess) return;
+    invoke<LibraryState>("clip_create", { trackId: sess.id, tIn: r.a, tOut: r.b })
+      .then((l) => {
+        setLibrary(l);
+        // The newborn clip becomes active — name/tags/note are one strip away.
+        const newest = l.clips
+          .filter((c) => c.trackId === sess.id)
+          .reduce<ClipRow | null>((best, c) => (best && best.id > c.id ? best : c), null);
+        if (newest) setActiveClipId(newest.id);
+      })
+      .catch((e) => showNotice(String(e)));
+  };
+
+  /** Click a clip: solo it on loop (play its track first if needed). */
+  const openClip = (c: ClipRow) => {
+    const sess = trackSessRef.current;
+    if (sess && sess.id === c.trackId && !sess.phase) {
+      setIoRegion({ a: c.tIn, b: c.tOut });
+      setLoopOn(true);
+      setActiveClipId(c.id);
+      invoke("track_seek", { seconds: c.tIn }).catch(() => {});
+    } else {
+      pendingClip.current = c;
+      const t = libraryRef.current?.tracks.find((x) => x.id === c.trackId);
+      if (t) playTrack(t);
+    }
+  };
 
   const loadLibrary = () =>
     invoke<LibraryState>("library_state").then(setLibrary).catch((e) => showNotice(String(e)));
@@ -2305,6 +3048,8 @@ function MainApp() {
     toolsProgress: (_p: { which: string; pct: number | null }) => {},
     trackState: (_p: Record<string, unknown>) => {},
     trackPos: (_p: { posS: number; paused: boolean }) => {},
+    scopeClosed: (_label: string) => {},
+    scopeKey: (_p: { key: string; state: string }) => {},
   });
   pushRef.current = {
     // Push-based updates from the Rust config watcher — no polling. Ignored
@@ -2325,6 +3070,17 @@ function MainApp() {
       if (err) showNotice(err);
     },
     toolsProgress: (p) => setToolsProg(p),
+    // A scope window closed → its pane comes back inline.
+    scopeClosed: (label) => {
+      if (label === "scope-spec") setPopped((p) => ({ ...p, spec: false }));
+      if (label === "scope-fft") setPopped((p) => ({ ...p, fft: false }));
+    },
+    // I/O keys forwarded from focused scope windows (Q-20 OS shortcuts).
+    scopeKey: (p) => {
+      if (!trackSessRef.current || trackSessRef.current.phase || p.state !== "down") return;
+      if (p.key === "i") setIn(trackPosRef.current.posS);
+      else if (p.key === "o") setOut(trackPosRef.current.posS);
+    },
     trackState: (p) => {
       const id = p.trackId as number;
       const sess = (p.sess as number) ?? 0;
@@ -2343,6 +3099,17 @@ function MainApp() {
           rate: p.rate as number,
           bits: p.bits as number,
         });
+        // A clicked clip carries its region into the fresh session.
+        const pc = pendingClip.current;
+        pendingClip.current = null;
+        if (pc && pc.trackId === id) {
+          setIoRegion({ a: pc.tIn, b: pc.tOut });
+          setLoopOn(true);
+          setActiveClipId(pc.id);
+          invoke("track_seek", { seconds: pc.tIn }).catch(() => {});
+        } else {
+          clearRegion();
+        }
         loadLibrary(); // duration got written
       } else if (p.event === "ended") {
         // A superseded session's death must not clobber its successor.
@@ -2377,7 +3144,15 @@ function MainApp() {
     const unlistenTrackPos = listen<{ posS: number; paused: boolean }>("track-pos", (e) =>
       pushRef.current.trackPos(e.payload),
     );
+    const unlistenScopeClosed = listen<string>("scope-closed", (e) =>
+      pushRef.current.scopeClosed(e.payload),
+    );
+    const unlistenScopeKey = listen<{ key: string; state: string }>("scope-key", (e) =>
+      pushRef.current.scopeKey(e.payload),
+    );
     return () => {
+      unlistenScopeClosed.then((f) => f());
+      unlistenScopeKey.then((f) => f());
       unlisten.then((f) => f());
       unlistenAb.then((f) => f());
       unlistenAbx.then((f) => f());
@@ -2922,9 +3697,10 @@ function MainApp() {
         pinned: n.pinned,
       })),
       current: h.current,
+      name: presets.active ?? "chain",
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [histVersion]);
+  }, [histVersion, presets.active]);
   const treeDataRef = useRef<HistTreeData | null>(null);
   treeDataRef.current = treeData;
 
@@ -3148,20 +3924,40 @@ function MainApp() {
     } else if (e.key === "Escape") {
       selectOnly(null);
       setTypeMenu(null);
+      if (viewModeRef.current === "clips") clearRegion();
+    } else if (k === "x" && e.altKey && ioRegionRef.current) {
+      // Resolve: Alt+X clears the in/out region.
+      e.preventDefault();
+      clearRegion();
     } else if (e.key === " " && trackSessRef.current) {
       // Resolve: space = play/pause, wherever you are while a track session runs.
       e.preventDefault();
       invoke("track_toggle").catch(() => {});
     } else if (k === "c" && timelineHover.current != null) {
-      // Resolve: jump the playhead to the mouse cursor on the timeline.
+      // Resolve: C = playhead to cursor; HELD C + drag = audible scrub.
       e.preventDefault();
-      invoke("track_seek", { seconds: timelineHover.current }).catch(() => {});
+      if (!e.repeat) scrubStart();
+    } else if (k === "i" && trackSessRef.current && !trackSessRef.current.phase) {
+      e.preventDefault();
+      setIn(trackPosRef.current.posS);
+    } else if (k === "o" && trackSessRef.current && !trackSessRef.current.phase) {
+      e.preventDefault();
+      setOut(trackPosRef.current.posS);
     }
+  };
+  const keyUpRef = useRef<(e: KeyboardEvent) => void>(() => {});
+  keyUpRef.current = (e: KeyboardEvent) => {
+    if (e.key.toLowerCase() === "c") scrubEnd();
   };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => keyRef.current(e);
+    const onKeyUp = (e: KeyboardEvent) => keyUpRef.current(e);
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keyup", onKeyUp);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keyup", onKeyUp);
+    };
   }, []);
 
   const mutateFilter = (i: number, patch: Partial<EqFilter>, immediate = false) => {
@@ -3814,32 +4610,78 @@ function MainApp() {
               {library?.tracks.length === 0 && (
                 <p className="dim-sm rail-pad">No tracks yet — import one below.</p>
               )}
-              {library?.tracks.map((t) => (
-                <div
-                  key={t.id}
-                  className={`clips-track ${trackSess?.id === t.id ? "playing" : ""}`}
-                  onClick={() => playTrack(t)}
-                  title="play through the track engine"
-                >
-                  <div className="ct-main">
-                    <span className="ct-title">{t.title}</span>
-                    {t.artist && <span className="dim-sm">{t.artist}</span>}
+              {library?.tracks.map((t) => {
+                const playing = trackSess?.id === t.id && !trackSess?.phase;
+                const clipCount = library.clips.filter((c) => c.trackId === t.id).length;
+                return (
+                  <div key={t.id}>
+                    <div
+                      className={`clips-track ${playing ? "playing" : ""}`}
+                      onClick={() =>
+                        playing ? invoke("track_toggle").catch(() => {}) : playTrack(t)
+                      }
+                      title={playing ? "click = play/pause" : "play through the track engine"}
+                    >
+                      <div className="ct-main">
+                        <div className="ct-line">
+                          <span className="ct-title">{t.title}</span>
+                          {t.artist && <span className="dim-sm">{t.artist}</span>}
+                          {playing && (
+                            <span className="mono play-ind">{trackPos.paused ? "❚❚" : "▶"}</span>
+                          )}
+                        </div>
+                        <span className="dim-sm">
+                          {`${clipCount ? `${clipCount} clip${clipCount === 1 ? "" : "s"}` : "no clips yet"}${
+                            t.durationS ? ` · ${fmtTime(t.durationS)}` : ""
+                          }`}
+                        </span>
+                      </div>
+                      <span
+                        className="row-act"
+                        title="remove from library, clips included (the file itself is untouched)"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          invoke<LibraryState>("track_delete", { id: t.id })
+                            .then(setLibrary)
+                            .catch((e2) => showNotice(String(e2)));
+                        }}
+                      >
+                        ×
+                      </span>
+                    </div>
+                    {library.clips
+                      .filter((c) => c.trackId === t.id)
+                      .map((c) => (
+                        <div
+                          key={c.id}
+                          className={`clips-clip ${c.id === activeClipId ? "active" : ""}`}
+                          onClick={() => openClip(c)}
+                          title="solo this clip on loop"
+                        >
+                          <span className="clip-dot" style={{ background: clipDotColor(c.tags) }} />
+                          <span className="clip-name">{c.name}</span>
+                          <span className="mono dim-sm">{`${fmtTcN(c.tIn, tcDec)}–${fmtTcN(c.tOut, tcDec)}`}</span>
+                          <span className="spacer" />
+                          {c.tags.length > 0 && (
+                            <span className="mono clip-tag">{c.tags[0].toUpperCase()}</span>
+                          )}
+                          <span
+                            className="row-act"
+                            title="delete clip"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              invoke<LibraryState>("clip_delete", { id: c.id })
+                                .then(setLibrary)
+                                .catch((e2) => showNotice(String(e2)));
+                            }}
+                          >
+                            ×
+                          </span>
+                        </div>
+                      ))}
                   </div>
-                  <span className="mono dim-sm">{t.durationS ? fmtTime(t.durationS) : ""}</span>
-                  <span
-                    className="row-act"
-                    title="remove from library (the file itself is untouched)"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      invoke<LibraryState>("track_delete", { id: t.id })
-                        .then(setLibrary)
-                        .catch((e2) => showNotice(String(e2)));
-                    }}
-                  >
-                    ×
-                  </span>
-                </div>
-              ))}
+                );
+              })}
             </div>
             <div className="clips-rail-foot">
               <button onClick={importTrack}>+ Import track</button>
@@ -3868,35 +4710,194 @@ function MainApp() {
                 <span className="dim-sm">no track playing</span>
               )}
               <span className="spacer" />
-              <span className="mono dim-sm">space = play/pause · C = seek to cursor · scroll = zoom · drag = pan · click = seek</span>
-              <div className="seg seg-sm">
+              <span className="mono dim-sm">space · C = cursor · I·O = in/out · scroll zoom · drag pan</span>
+              {ioRegion && (
+                <>
+                  <span
+                    className={`scale-opt ${loopOn ? "on" : ""}`}
+                    title="loop the I/O region"
+                    onClick={() => setLoopOn((o) => !o)}
+                  >
+                    loop
+                  </span>
+                  <span
+                    className="scale-opt"
+                    title="clear the I/O region (Alt+X or Esc)"
+                    onClick={clearRegion}
+                  >
+                    ×
+                  </span>
+                </>
+              )}
+              <span className="preset-wrap">
                 <span
-                  className={`seg-opt ${studioMode === "bypass" ? "on" : ""}`}
-                  onClick={() => pickStudioMode("bypass")}
-                  title="Curation: the track itself — exclusive device, no EQ, level-matched toward the reference. Other apps' audio pauses. Takes effect on the next play."
+                  className="hist-chip mono"
+                  title="Clip Studio view settings — this room's own options"
+                  onClick={() => setClipsMenu((o) => !o)}
                 >
-                  Bypass
+                  ⚙
                 </span>
-                <span
-                  className={`seg-opt ${studioMode === "eq" ? "on" : ""}`}
-                  onClick={() => pickStudioMode("eq")}
-                  title="A regular player: the normal shared path — Equalizer APO applies your EQ and the level-matched A/B, like any other stream. Takes effect on the next play."
-                >
-                  Through EQ
-                </span>
-              </div>
+                {clipsMenu && (
+                  <div className="preset-menu device-menu room-menu">
+                    <span className="mono lab-label">CLIP STUDIO VIEW</span>
+                    <div className="room-row">
+                      <span className="room-key">Timecode decimals</span>
+                      <div className="seg seg-sm">
+                        {[1, 2, 3].map((v) => (
+                          <span
+                            key={v}
+                            className={`seg-opt ${tcDec === v ? "on" : ""}`}
+                            onClick={() => pickTcDec(v)}
+                          >
+                            {`.${"0".repeat(v)}`}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="room-row">
+                      <span className="room-key">Scopes</span>
+                      <div className="is-tags">
+                        <span
+                          className={`scale-opt ${specOn ? "on" : ""}`}
+                          onClick={() => toggleScope("spec")}
+                        >
+                          Spec
+                        </span>
+                        <span
+                          className={`scale-opt ${waveOn ? "on" : ""}`}
+                          onClick={() => toggleScope("wave")}
+                        >
+                          Wave
+                        </span>
+                        <span
+                          className={`scale-opt ${fftOn ? "on" : ""}`}
+                          onClick={() => toggleScope("fft")}
+                        >
+                          FFT
+                        </span>
+                      </div>
+                    </div>
+                    <div className="room-row">
+                      <span className="room-key">Spectrogram window</span>
+                      <div className="seg seg-sm">
+                        {(
+                          [
+                            [1024, "1k · fine time"],
+                            [2048, "2k"],
+                            [4096, "4k · fine freq"],
+                          ] as const
+                        ).map(([v, label]) => (
+                          <span
+                            key={v}
+                            className={`seg-opt ${specWin === v ? "on" : ""}`}
+                            onClick={() => pickSpecParam("specwin", v)}
+                          >
+                            {label}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="room-row">
+                      <span className="room-key">Spectrogram floor</span>
+                      <div className="seg seg-sm">
+                        {(
+                          [
+                            [-70, "hot"],
+                            [-90, "normal"],
+                            [-110, "deep"],
+                          ] as const
+                        ).map(([v, label]) => (
+                          <span
+                            key={v}
+                            className={`seg-opt ${specFloor === v ? "on" : ""}`}
+                            onClick={() => pickSpecParam("specfloor", v)}
+                          >
+                            {label}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="room-row">
+                      <span className="room-key">Play method</span>
+                      <div className="seg seg-sm">
+                        <span
+                          className={`seg-opt ${studioMode === "bypass" ? "on" : ""}`}
+                          onClick={() => pickStudioMode("bypass")}
+                          title="Curation: the track itself — exclusive device, no EQ, level-matched toward the reference. Takes effect on the next play."
+                        >
+                          Bypass
+                        </span>
+                        <span
+                          className={`seg-opt ${studioMode === "eq" ? "on" : ""}`}
+                          onClick={() => pickStudioMode("eq")}
+                          title="A regular player: the normal shared path — your EQ and the level-matched A/B apply like for any stream. Takes effect on the next play."
+                        >
+                          Through EQ
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </span>
             </div>
             <div className="clips-viewer">
               {trackSess && !trackSess.phase ? (
-                <TimelineView
-                  trackId={trackSess.id}
-                  durationS={trackSess.durationS}
-                  posS={trackPos.posS}
-                  onSeek={(s) => invoke("track_seek", { seconds: s }).catch(() => {})}
-                  onHover={(t) => {
-                    timelineHover.current = t;
-                  }}
-                />
+                <>
+                  <div className="pane-wrap">
+                    <TimelineView
+                      trackId={trackSess.id}
+                      durationS={trackSess.durationS}
+                      posS={trackPos.posS}
+                      onSeek={(s) => invoke("track_seek", { seconds: s }).catch(() => {})}
+                      onHover={(t) => {
+                        timelineHover.current = t;
+                        if (t != null) scrubMove(t);
+                      }}
+                      region={ioRegion}
+                      onRegionChange={(r) => {
+                        setActiveClipId(null); // a trimmed region is no longer that clip
+                        setIoRegion(r);
+                      }}
+                      spec={specData}
+                      showSpec={specOn && !popped.spec}
+                      showWave={waveOn}
+                      heightPx={
+                        24 + (specOn && !popped.spec ? 216 : 0) + (waveOn ? 190 : 0) + 8 || 60
+                      }
+                      decimals={tcDec}
+                      syncKey="main"
+                    />
+                    {specOn && !popped.spec && (
+                      <span
+                        className="pane-pop row-act"
+                        title="pop the spectrogram into its own window (it leaves this page while open)"
+                        onClick={() => popOutScope("spec")}
+                      >
+                        ⇱
+                      </span>
+                    )}
+                  </div>
+                  {fftOn && !popped.fft && (
+                    <div className="pane-wrap">
+                      <FftView
+                        trackId={trackSess.id}
+                        posS={trackPos.posS}
+                        eq={
+                          state
+                            ? { freqs: state.freqs, sumDb: state.sumDb, preampDb: state.preampDb }
+                            : null
+                        }
+                      />
+                      <span
+                        className="pane-pop row-act"
+                        title="pop the FFT into its own window (it leaves this page while open)"
+                        onClick={() => popOutScope("fft")}
+                      >
+                        ⇱
+                      </span>
+                    </div>
+                  )}
+                </>
               ) : (
                 <p className="dim-sm clips-empty">
                   Play a track to see its waveform. Timeline, in/out clips and markers come next —
@@ -3904,6 +4905,134 @@ function MainApp() {
                 </p>
               )}
             </div>
+            {trackSess && !trackSess.phase && (activeClip || ioRegion) && (
+              <div className="insp-strip">
+                {activeClip ? (
+                  <>
+                    <div className="is-cell">
+                      <span className="mono is-label">CLIP NAME</span>
+                      {clipRename != null ? (
+                        <input
+                          className="rename-input"
+                          autoFocus
+                          value={clipRename}
+                          onChange={(e) => setClipRename(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              updateClip(activeClip.id, { name: clipRename });
+                              setClipRename(null);
+                            }
+                            if (e.key === "Escape") setClipRename(null);
+                          }}
+                          onBlur={() => {
+                            updateClip(activeClip.id, { name: clipRename });
+                            setClipRename(null);
+                          }}
+                        />
+                      ) : (
+                        <span className="is-value">
+                          {activeClip.name}
+                          <span
+                            className="row-act"
+                            title="rename"
+                            onClick={() => setClipRename(activeClip.name)}
+                          >
+                            ✎
+                          </span>
+                        </span>
+                      )}
+                    </div>
+                    <div className="is-cell">
+                      <span className="mono is-label">RANGE</span>
+                      <span className="mono is-value">{`${fmtTcN(activeClip.tIn, tcDec)} → ${fmtTcN(activeClip.tOut, tcDec)}`}</span>
+                    </div>
+                    <div className="is-cell">
+                      <span className="mono is-label">TAGS</span>
+                      <div className="is-tags">
+                        {["lows", "mids", "highs"].map((tag) => (
+                          <span
+                            key={tag}
+                            className={`tag-chip ${activeClip.tags.includes(tag) ? `on ${tag}` : ""}`}
+                            onClick={() => toggleTag(activeClip, tag)}
+                          >
+                            {tag.toUpperCase()}
+                          </span>
+                        ))}
+                        {activeClip.tags
+                          .filter((t) => !["lows", "mids", "highs"].includes(t))
+                          .map((t) => (
+                            <span
+                              key={t}
+                              className="tag-chip on custom"
+                              title="click to remove"
+                              onClick={() => toggleTag(activeClip, t)}
+                            >
+                              {t}
+                            </span>
+                          ))}
+                        <input
+                          className="tag-input mono"
+                          placeholder="+tag"
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              const v = (e.target as HTMLInputElement).value.trim();
+                              if (v) {
+                                invoke<LibraryState>("clip_tag", {
+                                  id: activeClip.id,
+                                  tag: v,
+                                  on: true,
+                                })
+                                  .then(setLibrary)
+                                  .catch((e2) => showNotice(String(e2)));
+                                (e.target as HTMLInputElement).value = "";
+                              }
+                            }
+                          }}
+                        />
+                      </div>
+                    </div>
+                    <div className="is-cell is-grow">
+                      <span className="mono is-label">NOTE</span>
+                      <input
+                        key={`note-${activeClip.id}`}
+                        className="insp-note"
+                        placeholder="what should the listener notice here?"
+                        defaultValue={activeClip.note ?? ""}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                        }}
+                        onBlur={(e) => {
+                          const v = e.target.value;
+                          if (v.trim() !== (activeClip.note ?? "")) {
+                            updateClip(activeClip.id, { note: v });
+                          }
+                        }}
+                      />
+                    </div>
+                    <button
+                      disabled
+                      title="batteries arrive with the Lab integration (phase ③) — clips saved now will be ready for them"
+                    >
+                      Add to battery
+                    </button>
+                  </>
+                ) : (
+                  ioRegion && (
+                    <>
+                      <div className="is-cell">
+                        <span className="mono is-label">RANGE</span>
+                        <span className="mono is-value">{`${fmtTcN(ioRegion.a, tcDec)} → ${fmtTcN(ioRegion.b, tcDec)}`}</span>
+                      </div>
+                      <span className="dim-sm">unsaved region — I·O and edge drags adjust it</span>
+                      <span className="spacer" />
+                      <button className="primary" onClick={saveClip}>
+                        Save clip
+                      </button>
+                    </>
+                  )
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}

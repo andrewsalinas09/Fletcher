@@ -1666,21 +1666,41 @@ button.ghost {
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
+  background: var(--panel-alt);
   border-bottom: 1px solid var(--line);
+  border-left: 3px solid transparent;
   cursor: pointer;
 }
 
 .clips-track:hover {
-  background: var(--panel-alt);
+  filter: brightness(0.98);
 }
 
 .clips-track.playing {
-  background: var(--ink);
-  color: var(--paper);
+  border-left-color: var(--boost);
 }
 
-.clips-track.playing .dim-sm {
-  color: var(--line-strong);
+.ct-line {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+}
+
+.play-ind {
+  font-size: 9px;
+  color: var(--boost);
+}
+
+.clips-track .row-act,
+.clips-clip .row-act {
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+
+.clips-track:hover .row-act,
+.clips-clip:hover .row-act {
+  opacity: 1;
 }
 
 .ct-main {
@@ -1702,9 +1722,152 @@ button.ghost {
   font-size: 18px;
 }
 
+.clips-clip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 12px 6px 24px;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+  font-size: 11.5px;
+}
+
+.clips-clip:hover {
+  background: var(--panel-alt);
+}
+
+.clips-clip.active {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.clips-clip.active .dim-sm {
+  color: var(--line-strong);
+}
+
+.clip-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  background: var(--cut);
+}
+
+.clip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clip-tag {
+  font-size: 8.5px;
+  color: var(--line-strong);
+  letter-spacing: 0.06em;
+}
+
 .clips-rail-foot {
   padding: 10px 12px;
   border-top: 1px solid var(--line-strong);
+}
+
+/* the clip inspector strip: contextual, thin, under the scopes (artboard) */
+.insp-strip {
+  flex: none;
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  border: 1px solid var(--line-strong);
+  background: var(--panel);
+  min-height: 48px;
+}
+
+.is-cell {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  padding: 5px 12px;
+  border-right: 1px solid var(--line);
+}
+
+.is-cell.is-grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.is-label {
+  font-size: 8.5px;
+  letter-spacing: 0.1em;
+  color: var(--dim);
+}
+
+.is-value {
+  font-size: 12px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.is-tags {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tag-chip {
+  font-size: 9.5px;
+  font-family: "IBM Plex Mono", Consolas, monospace;
+  border: 1px solid var(--line-mid);
+  color: var(--dim);
+  padding: 2px 7px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.tag-chip.on {
+  color: var(--paper);
+  border-color: transparent;
+  background: var(--dim);
+}
+
+.tag-chip.on.lows {
+  background: var(--cut);
+}
+
+.tag-chip.on.mids {
+  background: var(--ok);
+}
+
+.tag-chip.on.highs {
+  background: var(--boost);
+}
+
+.tag-chip.on.custom {
+  background: #55503f;
+}
+
+.tag-input {
+  width: 52px;
+  font-size: 10px;
+  border: 1px solid var(--line-mid);
+  background: var(--paper);
+  padding: 3px 6px;
+  color: var(--ink);
+}
+
+.tag-input:focus {
+  outline: none;
+  border-color: var(--ink);
+}
+
+.insp-strip > button {
+  align-self: center;
+  margin: 0 12px;
+}
+
+.insp-strip .dim-sm {
+  align-self: center;
+  padding: 0 8px;
 }
 
 .clips-main {
@@ -1758,6 +1921,53 @@ button.ghost {
   cursor: crosshair;
   touch-action: none;
   user-select: none;
+}
+
+.fft-pane {
+  width: 100%;
+  height: 170px;
+  flex: none;
+  border: 1px solid var(--line-strong);
+  background: var(--panel);
+}
+
+/* satellite scope windows: the scope fills the window */
+.scope-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  padding: 10px 12px;
+}
+
+.scope-body .timeline,
+.scope-body .fft-pane {
+  height: auto;
+  flex: 1;
+}
+
+/* pane-attached pop-out buttons: appear on hover, top-right of the scope */
+.pane-wrap {
+  position: relative;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+}
+
+.pane-pop {
+  position: absolute;
+  top: 30px;
+  right: 10px;
+  font-size: 13px;
+  background: var(--paper);
+  border: 1px solid var(--line-mid);
+  padding: 1px 6px;
+  opacity: 0;
+  transition: opacity 0.1s;
+  cursor: pointer;
+}
+
+.pane-wrap:hover .pane-pop {
+  opacity: 1;
 }
 
 .seg-sm .seg-opt {

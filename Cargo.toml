@@ -6,3 +6,9 @@ members = ["crates/fletcher-core", "app/src-tauri"]
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
+
+# Dependencies compile optimized even in dev builds — DSP crates (rustfft,
+# ebur128, rusqlite) are unusably slow at opt-level 0, and our own crates
+# still get fast incremental compiles.
+[profile.dev.package."*"]
+opt-level = 2
