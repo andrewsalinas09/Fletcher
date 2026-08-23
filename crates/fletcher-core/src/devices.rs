@@ -5,7 +5,7 @@
 
 use std::sync::Once;
 use windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance};
-use windows::core::{GUID, HRESULT, IUnknown, IUnknown_Vtbl, PCWSTR, interface};
+use windows::core::{GUID, PCWSTR};
 
 fn ensure_com() {
     static COM: Once = Once::new();
@@ -63,50 +63,55 @@ pub fn list_render_devices() -> Vec<RenderDevice> {
 // declared as opaque stubs we never call.
 const CLSID_POLICY_CONFIG: GUID = GUID::from_u128(0x870af99c_171d_4f9e_af0d_e63df40c2bc9);
 
-#[allow(non_snake_case, clippy::too_many_arguments)]
-#[interface("f8679f50-850a-41cf-9c72-430f290290c8")]
-unsafe trait IPolicyConfig: IUnknown {
-    unsafe fn GetMixFormat(&self, dev: PCWSTR, fmt: *mut *mut core::ffi::c_void) -> HRESULT;
-    unsafe fn GetDeviceFormat(
-        &self,
-        dev: PCWSTR,
-        default: i32,
-        fmt: *mut *mut core::ffi::c_void,
-    ) -> HRESULT;
-    unsafe fn ResetDeviceFormat(&self, dev: PCWSTR) -> HRESULT;
-    unsafe fn SetDeviceFormat(
-        &self,
-        dev: PCWSTR,
-        endpoint: *mut core::ffi::c_void,
-        mix: *mut core::ffi::c_void,
-    ) -> HRESULT;
-    unsafe fn GetProcessingPeriod(
-        &self,
-        dev: PCWSTR,
-        default: i32,
-        def_period: *mut i64,
-        min_period: *mut i64,
-    ) -> HRESULT;
-    unsafe fn SetProcessingPeriod(&self, dev: PCWSTR, period: *mut i64) -> HRESULT;
-    unsafe fn GetShareMode(&self, dev: PCWSTR, mode: *mut core::ffi::c_void) -> HRESULT;
-    unsafe fn SetShareMode(&self, dev: PCWSTR, mode: *mut core::ffi::c_void) -> HRESULT;
-    unsafe fn GetPropertyValue(
-        &self,
-        dev: PCWSTR,
-        store: i32,
-        key: *const core::ffi::c_void,
-        value: *mut core::ffi::c_void,
-    ) -> HRESULT;
-    unsafe fn SetPropertyValue(
-        &self,
-        dev: PCWSTR,
-        store: i32,
-        key: *const core::ffi::c_void,
-        value: *const core::ffi::c_void,
-    ) -> HRESULT;
-    unsafe fn SetDefaultEndpoint(&self, dev: PCWSTR, role: u32) -> HRESULT;
-    unsafe fn SetEndpointVisibility(&self, dev: PCWSTR, visible: i32) -> HRESULT;
+#[allow(non_snake_case, clippy::too_many_arguments, unused_imports, dead_code)]
+mod policy_config {
+    use windows::core::{HRESULT, IUnknown, IUnknown_Vtbl, PCWSTR, interface};
+
+    #[interface("f8679f50-850a-41cf-9c72-430f290290c8")]
+    pub unsafe trait IPolicyConfig: IUnknown {
+        unsafe fn GetMixFormat(&self, dev: PCWSTR, fmt: *mut *mut core::ffi::c_void) -> HRESULT;
+        unsafe fn GetDeviceFormat(
+            &self,
+            dev: PCWSTR,
+            default: i32,
+            fmt: *mut *mut core::ffi::c_void,
+        ) -> HRESULT;
+        unsafe fn ResetDeviceFormat(&self, dev: PCWSTR) -> HRESULT;
+        unsafe fn SetDeviceFormat(
+            &self,
+            dev: PCWSTR,
+            endpoint: *mut core::ffi::c_void,
+            mix: *mut core::ffi::c_void,
+        ) -> HRESULT;
+        unsafe fn GetProcessingPeriod(
+            &self,
+            dev: PCWSTR,
+            default: i32,
+            def_period: *mut i64,
+            min_period: *mut i64,
+        ) -> HRESULT;
+        unsafe fn SetProcessingPeriod(&self, dev: PCWSTR, period: *mut i64) -> HRESULT;
+        unsafe fn GetShareMode(&self, dev: PCWSTR, mode: *mut core::ffi::c_void) -> HRESULT;
+        unsafe fn SetShareMode(&self, dev: PCWSTR, mode: *mut core::ffi::c_void) -> HRESULT;
+        unsafe fn GetPropertyValue(
+            &self,
+            dev: PCWSTR,
+            store: i32,
+            key: *const core::ffi::c_void,
+            value: *mut core::ffi::c_void,
+        ) -> HRESULT;
+        unsafe fn SetPropertyValue(
+            &self,
+            dev: PCWSTR,
+            store: i32,
+            key: *const core::ffi::c_void,
+            value: *const core::ffi::c_void,
+        ) -> HRESULT;
+        unsafe fn SetDefaultEndpoint(&self, dev: PCWSTR, role: u32) -> HRESULT;
+        unsafe fn SetEndpointVisibility(&self, dev: PCWSTR, visible: i32) -> HRESULT;
+    }
 }
+use policy_config::IPolicyConfig;
 
 /// Make `id` the Windows default render device for all roles.
 pub fn set_default_render_device(id: &str) -> Result<(), String> {
