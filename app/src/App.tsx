@@ -97,6 +97,59 @@ function GainGauge({ gainDb, dark }: { gainDb: number; dark?: boolean }) {
 
 type PresetsState = { presets: string[]; active: string | null };
 
+// Deep teaching copy for the tooltip layer. A lot of detail, gated behind a
+// deliberate 1.5 s still-hover so it never gets in the way.
+const TYPE_INFO: Record<string, { name: string; desc: string }> = {
+  PK: {
+    name: "Peaking bell",
+    desc: "Boosts or cuts a band centered on Fc. Q sets the width — low Q (0.5–1.5) is broad and musical, high Q (4+) is surgical and audible as ringing if overdone. The workhorse: most corrections are peaks.",
+  },
+  LSC: {
+    name: "Low shelf · corner form",
+    desc: "Raises or lowers everything below Fc by the gain, flattening out at the extremes. Q sets how sharply it bends at the corner (0.7 ≈ gentle; higher overshoots slightly before settling). AutoEQ's standard shelf — bass warmth and bass cuts live here.",
+  },
+  LS: {
+    name: "Low shelf · fixed slope",
+    desc: "Like LSC but with a fixed, gentle transition and no Q control. Fewer knobs, harder to make ugly.",
+  },
+  HSC: {
+    name: "High shelf · corner form",
+    desc: "The treble mirror of LSC: everything above Fc moves by the gain, with Q shaping the corner. Taming sizzle or adding air is usually one of these.",
+  },
+  HS: {
+    name: "High shelf · fixed slope",
+    desc: "High shelf with a fixed transition and no Q control.",
+  },
+  LP: {
+    name: "Low pass",
+    desc: "Removes everything above Fc (−3 dB at Fc, falling at 12 dB/octave). Gain is ignored. Fixed 0.707 Q — no resonance.",
+  },
+  LPQ: {
+    name: "Low pass · with Q",
+    desc: "Low pass with adjustable Q: above 0.707 it resonates — a peak right at the cutoff before the roll-off. Synth-filter territory.",
+  },
+  HP: {
+    name: "High pass",
+    desc: "Removes everything below Fc at 12 dB/octave. Gain is ignored. The classic rumble/sub-sonic cleaner.",
+  },
+  HPQ: {
+    name: "High pass · with Q",
+    desc: "High pass with adjustable Q for resonance at the cutoff.",
+  },
+  NO: {
+    name: "Notch",
+    desc: "A deep, narrow kill at Fc — gain is ignored, Q sets how narrow. For hum, whistles, and ringing resonances you want gone, not reduced.",
+  },
+  BP: {
+    name: "Band pass",
+    desc: "Keeps only the band around Fc, removing everything else. Gain is ignored. Rarely for correction — great for isolating a band to hear what lives there.",
+  },
+  AP: {
+    name: "All pass",
+    desc: "Changes phase without changing level — the magnitude curve stays flat. Advanced tool for time/phase alignment; you won't hear it on its own.",
+  },
+};
+
 export default function App() {
   const [state, setState] = useState<EqState | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -106,6 +159,42 @@ export default function App() {
   const [newName, setNewName] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
   const noticeTimer = useRef<number | null>(null);
+
+  // ---- deliberate-hover tooltip layer: 1.5 s still hover, motion re-arms ----
+  const [tip, setTip] = useState<{ content: React.ReactNode; x: number; y: number } | null>(null);
+  const tipShown = useRef(false);
+  const tipTimer = useRef<number | null>(null);
+  const tipAnchor = useRef<{ x: number; y: number } | null>(null);
+
+  const clearTip = () => {
+    if (tipTimer.current != null) window.clearTimeout(tipTimer.current);
+    tipTimer.current = null;
+    tipAnchor.current = null;
+    tipShown.current = false;
+    setTip(null);
+  };
+
+  const armTip = (content: React.ReactNode, x: number, y: number) => {
+    tipAnchor.current = { x, y };
+    if (tipTimer.current != null) window.clearTimeout(tipTimer.current);
+    tipTimer.current = window.setTimeout(() => {
+      tipShown.current = true;
+      setTip({ content, x, y });
+    }, 1500);
+  };
+
+  const tipProps = (content: React.ReactNode) => ({
+    onMouseEnter: (e: React.MouseEvent) => armTip(content, e.clientX, e.clientY),
+    onMouseMove: (e: React.MouseEvent) => {
+      if (tipShown.current) return; // once shown, small motion keeps it
+      const a = tipAnchor.current;
+      if (!a || Math.hypot(e.clientX - a.x, e.clientY - a.y) > 6) {
+        armTip(content, e.clientX, e.clientY); // moved → restart the clock
+      }
+    },
+    onMouseLeave: clearTip,
+    onMouseDown: clearTip,
+  });
 
   const showNotice = (msg: string) => {
     setNotice(msg);
@@ -383,6 +472,32 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state, dbRange]);
 
+  const filterTip = (f: EqFilter) => {
+    const info = TYPE_INFO[f.kind] ?? { name: f.kind, desc: "" };
+    const editable = f.sourceFile === OWN_FILE;
+    return (
+      <div>
+        <div className="t-title">{`${f.kind} — ${info.name}`}</div>
+        <p>{info.desc}</p>
+        <p className="t-vals mono">
+          {`Fc ${fmtHz(f.fcHz)} Hz · ${fmtGain(f.gainDb)} dB · Q ${f.q}${f.enabled ? "" : " · bypassed"}`}
+        </p>
+        {editable ? (
+          <p className="t-keys">
+            drag handle — move Fc &amp; gain · scroll — Q · green dot — bypass ·
+            select the cell for type dropdown &amp; delete
+          </p>
+        ) : (
+          <p className="t-keys">
+            {`Read-only: this filter lives in ${f.sourceFile}, which belongs to another
+            tool. Fletcher never edits files it doesn't own — duplicate From live
+            (or copy the external entry in the preset menu) to make an editable version.`}
+          </p>
+        )}
+      </div>
+    );
+  };
+
   const graphPoint = (e: React.PointerEvent) => {
     const rect = svgRef.current!.getBoundingClientRect();
     const x = ((e.clientX - rect.left) / rect.width) * GW;
@@ -457,6 +572,18 @@ export default function App() {
         </div>
       )}
 
+      {tip && (
+        <div
+          className="tooltip"
+          style={{
+            left: Math.min(tip.x + 14, window.innerWidth - 356),
+            top: Math.min(tip.y + 18, window.innerHeight - 190),
+          }}
+        >
+          {tip.content}
+        </div>
+      )}
+
       {error && (
         <section className="alert">
           <h2>Equalizer APO problem</h2>
@@ -484,6 +611,16 @@ export default function App() {
                   <div
                     className={`preset-row ${presets.active == null ? "current" : ""}`}
                     onClick={() => switchPreset(null)}
+                    {...tipProps(
+                      <div>
+                        <div className="t-title">Flat</div>
+                        <p>
+                          Empties Fletcher's chain (fletcher.txt) so Fletcher adds nothing to the
+                          signal. External EQs like Peace are unaffected — if their filters are on,
+                          you'll still hear those.
+                        </p>
+                      </div>,
+                    )}
                   >
                     <span>Flat — no Fletcher filters</span>
                   </div>
@@ -497,7 +634,24 @@ export default function App() {
                         <div
                           key={inc}
                           className={`preset-row external ${count ? "" : "inactive"}`}
-                          title={`External — managed by another tool (${inc}). Turn it on or off there, or duplicate From live to make it yours.`}
+                          {...tipProps(
+                            <div>
+                              <div className="t-title">{`${inc} — external EQ`}</div>
+                              <p>
+                                {`config.txt includes ${inc}, but it belongs to another tool
+                                (Peace). Fletcher never edits or toggles files it doesn't own,
+                                so it can't switch this on or off — do that in the other tool.`}
+                              </p>
+                              <p>
+                                ⧉ copies its whole chain (preamp included) into your presets as an
+                                editable copy — and it works even while the other tool's EQ is
+                                toggled off, by reading its saved state.
+                              </p>
+                              <p className="t-vals mono">
+                                {count ? `currently contributing ${count} filters` : "currently inactive"}
+                              </p>
+                            </div>,
+                          )}
                         >
                           <span>{inc.replace(/\.txt$/i, "")}</span>
                           <span className="ext-badge">external</span>
@@ -507,7 +661,6 @@ export default function App() {
                           </span>
                           <span
                             className="row-act"
-                            title="copy this chain into your presets (does not change it or switch to it)"
                             onClick={(e) => {
                               e.stopPropagation();
                               copyFromSource(inc);
@@ -523,12 +676,22 @@ export default function App() {
                       key={p}
                       className={`preset-row ${presets.active === p ? "current" : ""}`}
                       onClick={() => switchPreset(p)}
+                      {...tipProps(
+                        <div>
+                          <div className="t-title">{p}</div>
+                          <p>
+                            Click to activate: this chain is written to fletcher.txt with a freshly
+                            computed auto-preamp, and APO applies it instantly. While active, every
+                            edit you make saves back into the preset automatically.
+                          </p>
+                          <p className="t-keys">⧉ duplicate · × delete (permanent — no undo)</p>
+                        </div>,
+                      )}
                     >
                       <span>{p}</span>
                       <span className="spacer" />
                       <span
                         className="row-act"
-                        title="duplicate"
                         onClick={(e) => {
                           e.stopPropagation();
                           duplicatePreset(p);
@@ -538,7 +701,6 @@ export default function App() {
                       </span>
                       <span
                         className="row-act"
-                        title="delete"
                         onClick={(e) => {
                           e.stopPropagation();
                           deletePreset(p);
@@ -609,13 +771,8 @@ export default function App() {
                   onPointerMove={onDragMove(i)}
                   onPointerUp={endDrag(i)}
                   onWheel={onWheelQ(i)}
-                >
-                  <title>
-                    {`${f.enabled ? "" : "bypassed · "}${
-                      f.sourceFile === OWN_FILE ? "drag to move · scroll for Q" : `managed by ${f.sourceFile}`
-                    }`}
-                  </title>
-                </circle>
+                  {...tipProps(filterTip(f))}
+                />
               ))}
 
               {sel && (
@@ -659,12 +816,11 @@ export default function App() {
                   className={`cell ${isSel ? "selected" : ""} ${f.enabled ? "" : "off"} ${editable ? "" : "locked"}`}
                   onClick={() => setSelected(i)}
                   onWheel={onWheelQ(i)}
-                  title={editable ? undefined : `managed by ${f.sourceFile} — read-only`}
+                  {...tipProps(filterTip(f))}
                 >
                   <span className="cell-type">
                     <span
                       className={`toggle-dot ${f.enabled ? "on" : ""}`}
-                      title={editable ? (f.enabled ? "click: bypass this filter" : "click: re-enable") : undefined}
                       onClick={(e) => {
                         e.stopPropagation();
                         if (editable) mutateFilter(i, { enabled: !f.enabled }, true);
