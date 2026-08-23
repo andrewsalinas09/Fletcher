@@ -1477,6 +1477,346 @@ const fmtTime = (s: number) => {
   return `${m}:${sec.toString().padStart(2, "0")}`;
 };
 
+type WaveData = { durationS: number; mins: number[]; maxs: number[] };
+
+const RULER_H = 24;
+const TICK_STEPS = [0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
+const fmtTick = (s: number, step: number) => {
+  const m = Math.floor(s / 60);
+  const sec = s - m * 60;
+  return step < 1
+    ? `${m}:${sec.toFixed(1).padStart(4, "0")}`
+    : `${m}:${Math.round(sec).toString().padStart(2, "0")}`;
+};
+
+/** The Clip Studio timeline (M4): a mini NLE lane for audio — adaptive
+ *  timecode ruler, scroll = zoom around the cursor, drag = pan, click =
+ *  seek, playhead follows playback (never during a gesture — the
+ *  interaction-inert law). Peaks are Rust-computed at ~2.7 ms resolution so
+ *  deep zooms stay sharp without refetching. */
+type SampleWindow = { rate: number; startS: number; mono: number[] };
+/// Below this span the timeline wants raw samples, not peak buckets.
+const SAMPLE_SPAN = 2.0;
+const MIN_SPAN = 0.0008; // ~38 samples @ 48 kHz — single-sample territory
+
+function TimelineView({
+  trackId,
+  durationS,
+  posS,
+  onSeek,
+  onHover,
+}: {
+  trackId: number;
+  durationS: number;
+  posS: number;
+  onSeek: (s: number) => void;
+  onHover?: (t: number | null) => void;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [wave, setWave] = useState<WaveData | null>(null);
+  const [view, setView] = useState<{ start: number; span: number } | null>(null);
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const [win, setWin] = useState<SampleWindow | null>(null);
+  const winRef = useRef(win);
+  winRef.current = win;
+  const winReq = useRef(false);
+  const drag = useRef<{ x0: number; start0: number; moved: boolean } | null>(null);
+  const follow = useRef(true);
+
+  // Clamp the SPAN first, then anchor — clamping after anchoring made every
+  // wheel notch at the zoom limit drift the view sideways.
+  const clampView = (start: number, span: number) => {
+    const s = Math.min(Math.max(span, MIN_SPAN), durationS || span);
+    return { start: Math.min(Math.max(start, 0), Math.max(0, (durationS || s) - s)), span: s };
+  };
+
+  useEffect(() => {
+    setWave(null);
+    setView(null);
+    setWin(null);
+    follow.current = true;
+    let alive = true;
+    invoke<WaveData>("track_waveform", { id: trackId, buckets: 0 })
+      .then((w) => {
+        if (alive) {
+          setWave(w);
+          setView({ start: 0, span: w.durationS });
+        }
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [trackId]);
+
+  // Deep zoom: fetch a raw-sample window (with margin) when the view drops
+  // below the peak-bucket resolution; refetch only when the view escapes it.
+  useEffect(() => {
+    if (!view || view.span > SAMPLE_SPAN || winReq.current) return;
+    const cur = winRef.current;
+    const covered =
+      cur &&
+      cur.startS <= view.start &&
+      view.start + view.span <= cur.startS + cur.mono.length / cur.rate;
+    if (covered) return;
+    winReq.current = true;
+    const fetchStart = Math.max(0, view.start + view.span / 2 - 3);
+    invoke<SampleWindow>("track_samples", { id: trackId, startS: fetchStart, spanS: 6.0 })
+      .then((w) => setWin(w))
+      .catch(() => {})
+      .finally(() => {
+        winReq.current = false;
+      });
+  }, [view, trackId]);
+
+  // Zoom around the cursor — non-passive so the page never scrolls.
+  useEffect(() => {
+    const cv = canvasRef.current;
+    if (!cv) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const v = viewRef.current;
+      if (!v) return;
+      const rect = cv.getBoundingClientRect();
+      const frac = Math.min(Math.max((e.clientX - rect.left) / rect.width, 0), 1);
+      const t = v.start + frac * v.span;
+      const factor = e.deltaY < 0 ? 1 / 1.25 : 1.25;
+      // Clamp span BEFORE anchoring so a wheel notch at the limit is a no-op.
+      const span = Math.min(Math.max(v.span * factor, MIN_SPAN), durationS || v.span);
+      setView(clampView(t - frac * span, span));
+    };
+    cv.addEventListener("wheel", onWheel, { passive: false });
+    return () => cv.removeEventListener("wheel", onWheel);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [durationS]);
+
+  // Keep the playhead in view while it advances past the right edge — but
+  // never fight a pan: once the user moves the playhead out of view, follow
+  // re-arms only when it's visible again.
+  useEffect(() => {
+    const v = viewRef.current;
+    if (!v || drag.current || durationS <= 0) return;
+    const end = v.start + v.span;
+    if (follow.current && posS > end && posS <= durationS) {
+      setView(clampView(posS - v.span * 0.1, v.span));
+      return;
+    }
+    follow.current = posS >= v.start && posS <= end;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [posS]);
+
+  useEffect(() => {
+    const cv = canvasRef.current;
+    if (!cv) return;
+    const dpr = window.devicePixelRatio || 1;
+    const w = cv.clientWidth;
+    const h = cv.clientHeight;
+    if (cv.width !== Math.round(w * dpr)) cv.width = Math.round(w * dpr);
+    if (cv.height !== Math.round(h * dpr)) cv.height = Math.round(h * dpr);
+    const ctx = cv.getContext("2d");
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    // ruler ground
+    ctx.fillStyle = "#ece8df";
+    ctx.fillRect(0, 0, w, RULER_H);
+    ctx.strokeStyle = "#b3ac9c";
+    ctx.beginPath();
+    ctx.moveTo(0, RULER_H - 0.5);
+    ctx.lineTo(w, RULER_H - 0.5);
+    ctx.stroke();
+
+    if (!wave || !view) {
+      ctx.fillStyle = "#8b8578";
+      ctx.font = "11px 'IBM Plex Mono', monospace";
+      ctx.fillText("building waveform…", 12, RULER_H + 24);
+      return;
+    }
+    const { start, span } = view;
+    const xOfT = (t: number) => ((t - start) / span) * w;
+
+    // adaptive ticks: majors ≥ ~70 px apart, minors at a fifth
+    const step = TICK_STEPS.find((s) => (s / span) * w >= 70) ?? 600;
+    const minor = step / 5;
+    ctx.font = "9px 'IBM Plex Mono', monospace";
+    for (let t = Math.floor(start / minor) * minor; t <= start + span; t += minor) {
+      if (t < 0) continue;
+      const x = xOfT(t);
+      const isMajor = Math.abs(t / step - Math.round(t / step)) < 1e-6;
+      ctx.strokeStyle = "#c9c2b0";
+      ctx.beginPath();
+      ctx.moveTo(x, isMajor ? 8 : 15);
+      ctx.lineTo(x, RULER_H - 1);
+      ctx.stroke();
+      if (isMajor) {
+        ctx.fillStyle = "#8b8578";
+        ctx.fillText(fmtTick(t, step), x + 3, 12);
+      }
+      // grid line through the lane on majors
+      if (isMajor) {
+        ctx.strokeStyle = "#eee9dd";
+        ctx.beginPath();
+        ctx.moveTo(x, RULER_H);
+        ctx.lineTo(x, h);
+        ctx.stroke();
+      }
+    }
+
+    // waveform lane: per-pixel min/max aggregated from the peak buckets
+    const laneTop = RULER_H + 4;
+    const laneH = h - laneTop - 4;
+    const mid = laneTop + laneH / 2;
+    ctx.strokeStyle = "#ddd6c4";
+    ctx.beginPath();
+    ctx.moveTo(0, mid);
+    ctx.lineTo(w, mid);
+    ctx.stroke();
+    // One renderer for every zoom (the Resolve look): per-pixel lo/hi values —
+    // peak buckets zoomed out, raw-sample min/max zoomed in, linear
+    // interpolation past one sample per pixel — then a single bridged draw
+    // pass so adjacent columns always connect. No gaps, no mode pop.
+    const sampleWin =
+      win &&
+      span <= SAMPLE_SPAN &&
+      win.startS <= start &&
+      start + span <= win.startS + win.mono.length / win.rate
+        ? win
+        : null;
+    const colLo = new Float32Array(w);
+    const colHi = new Float32Array(w);
+    let cols = 0;
+    if (sampleWin) {
+      const spp = (span * sampleWin.rate) / w;
+      for (let x = 0; x < w; x++) {
+        const t0 = start + (x / w) * span;
+        if (t0 >= wave.durationS) break;
+        if (spp >= 1) {
+          const a = Math.floor((t0 - sampleWin.startS) * sampleWin.rate);
+          const b = Math.max(a + 1, Math.floor((t0 + span / w - sampleWin.startS) * sampleWin.rate));
+          let mn = 1;
+          let mx = -1;
+          for (let i = a; i < b; i++) {
+            const v = sampleWin.mono[i] ?? 0;
+            if (v < mn) mn = v;
+            if (v > mx) mx = v;
+          }
+          colLo[x] = mn;
+          colHi[x] = mx;
+        } else {
+          // Sub-sample zoom: interpolate the curve between neighboring samples.
+          const p = (start + ((x + 0.5) / w) * span - sampleWin.startS) * sampleWin.rate;
+          const i = Math.floor(p);
+          const frac = p - i;
+          const v0 = sampleWin.mono[i] ?? 0;
+          const v1 = sampleWin.mono[i + 1] ?? v0;
+          const v = v0 + (v1 - v0) * frac;
+          colLo[x] = v;
+          colHi[x] = v;
+        }
+        cols = x + 1;
+      }
+    } else {
+      const n = wave.mins.length;
+      const bucketDur = wave.durationS / n;
+      for (let x = 0; x < w; x++) {
+        const t0 = start + (x / w) * span;
+        if (t0 >= wave.durationS) break;
+        let i0 = Math.floor(t0 / bucketDur);
+        let i1 = Math.min(Math.ceil((t0 + span / w) / bucketDur), n);
+        if (i0 >= n) break;
+        if (i1 <= i0) i1 = i0 + 1;
+        let mn = 1;
+        let mx = -1;
+        for (let i = i0; i < i1; i++) {
+          if (wave.mins[i] < mn) mn = wave.mins[i];
+          if (wave.maxs[i] > mx) mx = wave.maxs[i];
+        }
+        colLo[x] = mn;
+        colHi[x] = mx;
+        cols = x + 1;
+      }
+    }
+    ctx.fillStyle = "#55503f";
+    for (let x = 0; x < cols; x++) {
+      let lo = colLo[x];
+      let hi = colHi[x];
+      if (x > 0) {
+        // Bridge to the neighbor's range so the contour never breaks.
+        if (lo > colHi[x - 1]) lo = colHi[x - 1];
+        if (hi < colLo[x - 1]) hi = colLo[x - 1];
+      }
+      const y1 = mid - hi * (laneH / 2);
+      const y2 = mid - lo * (laneH / 2);
+      ctx.fillRect(x, y1, 1, Math.max(1.2, y2 - y1));
+    }
+
+    // playhead: line through the lane + a grip on the ruler
+    if (posS >= start && posS <= start + span) {
+      const x = xOfT(posS);
+      ctx.strokeStyle = "#14171a";
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, h);
+      ctx.stroke();
+      ctx.lineWidth = 1;
+      ctx.fillStyle = "#14171a";
+      ctx.beginPath();
+      ctx.moveTo(x - 5, 0);
+      ctx.lineTo(x + 5, 0);
+      ctx.lineTo(x, 8);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }, [wave, view, win, posS, durationS]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      className="timeline"
+      onPointerDown={(e) => {
+        const v = viewRef.current;
+        if (!v) return;
+        drag.current = { x0: e.clientX, start0: v.start, moved: false };
+        (e.currentTarget as Element).setPointerCapture(e.pointerId);
+      }}
+      onPointerMove={(e) => {
+        const v = viewRef.current;
+        if (!v) return;
+        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+        // C = seek to the cursor: report where the mouse hovers, always.
+        onHover?.(
+          Math.min(
+            Math.max(v.start + ((e.clientX - rect.left) / rect.width) * v.span, 0),
+            durationS || 0,
+          ),
+        );
+        const d = drag.current;
+        if (!d) return;
+        const dx = e.clientX - d.x0;
+        if (!d.moved && Math.abs(dx) < 5) return;
+        d.moved = true;
+        setView(clampView(d.start0 - (dx / rect.width) * v.span, v.span));
+      }}
+      onPointerLeave={() => onHover?.(null)}
+      onPointerUp={(e) => {
+        const d = drag.current;
+        drag.current = null;
+        const v = viewRef.current;
+        if (!d || !v) return;
+        if (!d.moved && durationS > 0) {
+          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+          const t = v.start + ((e.clientX - rect.left) / rect.width) * v.span;
+          follow.current = true;
+          onSeek(Math.min(Math.max(t, 0), durationS));
+        }
+      }}
+    />
+  );
+}
+
 const fmtP = (p: number) => (p < 0.001 ? "< 0.001" : `= ${p.toFixed(3)}`);
 const fmtWhen = (ms: number) => new Date(ms).toLocaleString([], { dateStyle: "short", timeStyle: "short" });
 const verdictOf = (r: AbxResult) =>
@@ -1562,6 +1902,7 @@ function MainApp() {
   };
   const [presets, setPresets] = useState<PresetsState>({ presets: [], active: null });
   const [menuOpen, setMenuOpen] = useState(false);
+  const [eqMenu, setEqMenu] = useState(false);
   const [newName, setNewName] = useState("");
   const [typeMenu, setTypeMenu] = useState<{ i: number; x: number; y: number } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -1699,6 +2040,8 @@ function MainApp() {
     invoke("set_studio_mode", { mode: m }).catch(() => {});
   };
   const playPending = useRef(false);
+  /// C = seek to cursor (Resolve): where the mouse hovers on the timeline.
+  const timelineHover = useRef<number | null>(null);
 
   const loadLibrary = () =>
     invoke<LibraryState>("library_state").then(setLibrary).catch((e) => showNotice(String(e)));
@@ -2805,6 +3148,14 @@ function MainApp() {
     } else if (e.key === "Escape") {
       selectOnly(null);
       setTypeMenu(null);
+    } else if (e.key === " " && trackSessRef.current) {
+      // Resolve: space = play/pause, wherever you are while a track session runs.
+      e.preventDefault();
+      invoke("track_toggle").catch(() => {});
+    } else if (k === "c" && timelineHover.current != null) {
+      // Resolve: jump the playhead to the mouse cursor on the timeline.
+      e.preventDefault();
+      invoke("track_seek", { seconds: timelineHover.current }).catch(() => {});
     }
   };
   useEffect(() => {
@@ -3517,6 +3868,7 @@ function MainApp() {
                 <span className="dim-sm">no track playing</span>
               )}
               <span className="spacer" />
+              <span className="mono dim-sm">space = play/pause · C = seek to cursor · scroll = zoom · drag = pan · click = seek</span>
               <div className="seg seg-sm">
                 <span
                   className={`seg-opt ${studioMode === "bypass" ? "on" : ""}`}
@@ -3535,10 +3887,22 @@ function MainApp() {
               </div>
             </div>
             <div className="clips-viewer">
-              <p className="dim-sm clips-empty">
-                The viewer lands here next — waveform, timeline, in/out clips (M4), spectrogram, FFT
-                and moments (M5).
-              </p>
+              {trackSess && !trackSess.phase ? (
+                <TimelineView
+                  trackId={trackSess.id}
+                  durationS={trackSess.durationS}
+                  posS={trackPos.posS}
+                  onSeek={(s) => invoke("track_seek", { seconds: s }).catch(() => {})}
+                  onHover={(t) => {
+                    timelineHover.current = t;
+                  }}
+                />
+              ) : (
+                <p className="dim-sm clips-empty">
+                  Play a track to see its waveform. Timeline, in/out clips and markers come next —
+                  then the spectrogram, FFT and moments.
+                </p>
+              )}
             </div>
           </div>
         </div>
@@ -3547,30 +3911,6 @@ function MainApp() {
       {view === "settings" && settings && (
         <div className="settings">
           <div className="set-col">
-            <div className="set-sect">
-              <span className="mono set-head">DISPLAY</span>
-              <div className="set-row">
-                <span className="set-key">Filter ordering</span>
-                <div className="seg">
-                  {(
-                    [
-                      ["freq", "By frequency"],
-                      ["importance", "By importance"],
-                      ["file", "File order"],
-                    ] as const
-                  ).map(([v, label]) => (
-                    <span key={v} className={`seg-opt ${ordering === v ? "on" : ""}`} onClick={() => pickOrdering(v)}>
-                      {label}
-                    </span>
-                  ))}
-                </div>
-              </div>
-              <span className="set-note">
-                How the strip below the graph is sorted. AutoEQ writes filters biggest-correction-first; "by
-                importance" sorts by correction size. Files on disk are never reordered.
-              </span>
-            </div>
-
             <div className="set-sect">
               <span className="mono set-head">HONESTY</span>
               <div className="set-row">
@@ -3973,6 +4313,44 @@ function MainApp() {
               )}
             <span className="mono dim-sm">auto preamp</span>
             <span className="mono preamp-val">{fmtGain(state.preampDb)} dB</span>
+            <span className="preset-wrap">
+              <span
+                className="hist-chip mono"
+                title="EQ view settings — this room's own options (the Settings tab is system-level)"
+                onClick={() => setEqMenu((o) => !o)}
+              >
+                ⚙
+              </span>
+              {eqMenu && (
+                <div className="preset-menu device-menu room-menu">
+                  <span className="mono lab-label">EQ VIEW</span>
+                  <div className="room-row">
+                    <span className="room-key">Filter ordering</span>
+                    <div className="seg seg-sm">
+                      {(
+                        [
+                          ["freq", "By frequency"],
+                          ["importance", "By importance"],
+                          ["file", "File order"],
+                        ] as const
+                      ).map(([v, label]) => (
+                        <span
+                          key={v}
+                          className={`seg-opt ${ordering === v ? "on" : ""}`}
+                          onClick={() => pickOrdering(v)}
+                        >
+                          {label}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                  <span className="dim-sm room-note">
+                    How the strip is sorted. AutoEQ writes biggest-correction-first — "by importance"
+                    shows that. Files on disk are never reordered.
+                  </span>
+                </div>
+              )}
+            </span>
           </div>
 
           <div className="graph-panel">

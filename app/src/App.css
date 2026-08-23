@@ -1740,13 +1740,53 @@ button.ghost {
   flex: 1;
   min-height: 0;
   display: flex;
-  align-items: center;
-  justify-content: center;
+  flex-direction: column;
+  padding: 14px 16px;
+  gap: 10px;
+}
+
+.clips-viewer .clips-empty {
+  margin: auto;
+}
+
+.timeline {
+  width: 100%;
+  height: 236px;
+  flex: none;
+  border: 1px solid var(--line-strong);
+  background: var(--panel);
+  cursor: crosshair;
+  touch-action: none;
+  user-select: none;
 }
 
 .seg-sm .seg-opt {
   padding: 4px 10px;
   font-size: 11px;
+}
+
+/* per-room settings popover (⚙): rooms own their view options */
+.room-menu {
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 340px;
+}
+
+.room-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.room-key {
+  font-size: 12px;
+  flex: none;
+}
+
+.room-note {
+  line-height: 1.4;
 }
 
 /* transport in the A/B bar during a track session */

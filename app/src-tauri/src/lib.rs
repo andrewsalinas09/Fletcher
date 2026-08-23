@@ -1031,6 +1031,13 @@ fn track_delete(id: i64) -> Result<LibraryState, String> {
             track_stop_inner();
         }
     }
+    WAVES.lock().unwrap().remove(&id);
+    {
+        let mut memo = PCM_MEMO.lock().unwrap();
+        if memo.as_ref().is_some_and(|(mid, _, _)| *mid == id) {
+            *memo = None;
+        }
+    }
     let conn = library_db()?;
     conn.execute("DELETE FROM tracks WHERE id = ?1", rusqlite::params![id])
         .map_err(|e| e.to_string())?;
@@ -1354,6 +1361,158 @@ fn track_seek(seconds: f64) -> Result<TrackState, String> {
 fn track_stop() -> TrackState {
     track_stop_inner();
     track_state_now()
+}
+
+// ---------------- the waveform viewer (M4) ----------------
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct Waveform {
+    duration_s: f64,
+    mins: Vec<f32>,
+    maxs: Vec<f32>,
+}
+
+/// Computed peaks memo — ~16 KB per track, evicted on delete.
+static WAVES: std::sync::Mutex<std::collections::BTreeMap<i64, Waveform>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Min/max peaks over the decoded PCM (the UI draws, Rust computes —
+/// ADR-0005). Decodes first if the cache is cold.
+#[tauri::command]
+async fn track_waveform(id: i64, buckets: usize) -> Result<Waveform, String> {
+    if let Some(w) = WAVES.lock().unwrap().get(&id) {
+        return Ok(w.clone());
+    }
+    tauri::async_runtime::spawn_blocking(move || -> Result<Waveform, String> {
+        let ffmpeg = tools::find_tool(&data_dir(), "ffmpeg")
+            .ok_or("ffmpeg is not installed — use the banner in Clip Studio to set it up")?;
+        let conn = library_db()?;
+        let path: String = conn
+            .query_row(
+                "SELECT path FROM tracks WHERE id = ?1 AND path IS NOT NULL",
+                rusqlite::params![id],
+                |r| r.get(0),
+            )
+            .map_err(|_| "track not found".to_string())?;
+        drop(conn);
+        let rate = 48000u32;
+        let pcm_path = engine::ensure_pcm(
+            &ffmpeg,
+            &data_dir().join("cache").join("pcm"),
+            std::path::Path::new(&path),
+            id,
+            rate,
+            || {},
+        )?;
+        let pcm = engine::load_pcm(&pcm_path)?;
+        let frames = pcm.len() / 2;
+        if frames == 0 {
+            return Err("this file decoded to nothing — is it audio?".into());
+        }
+        // buckets == 0 → auto: ~128 samples (2.7 ms) per bucket, so the
+        // timeline stays sharp deep into a zoom without re-fetching.
+        let buckets = if buckets == 0 {
+            (frames / 128).clamp(2000, 240_000)
+        } else {
+            buckets.clamp(100, 240_000)
+        };
+        let mut mins = vec![0f32; buckets];
+        let mut maxs = vec![0f32; buckets];
+        for (b, (mn_out, mx_out)) in mins.iter_mut().zip(maxs.iter_mut()).enumerate() {
+            let start = b * frames / buckets;
+            let end = (((b + 1) * frames) / buckets).max(start + 1).min(frames);
+            let (mut mn, mut mx) = (f32::MAX, f32::MIN);
+            for f in start..end {
+                let l = pcm[f * 2];
+                let r = pcm[f * 2 + 1];
+                mn = mn.min(l.min(r));
+                mx = mx.max(l.max(r));
+            }
+            *mn_out = mn.max(-1.0);
+            *mx_out = mx.min(1.0);
+        }
+        let w = Waveform {
+            duration_s: frames as f64 / rate as f64,
+            mins,
+            maxs,
+        };
+        WAVES.lock().unwrap().insert(id, w.clone());
+        Ok(w)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SampleWindow {
+    rate: u32,
+    start_s: f64,
+    mono: Vec<f32>,
+}
+
+/// One-track PCM memo so deep-zoom sample windows don't reload 100 MB
+/// per pan. Keyed (track, rate); replaced when another track is inspected.
+type PcmMemoEntry = (i64, u32, std::sync::Arc<Vec<f32>>);
+static PCM_MEMO: std::sync::Mutex<Option<PcmMemoEntry>> = std::sync::Mutex::new(None);
+
+/// Raw samples for a visible window — the timeline switches to these past
+/// the peak-bucket resolution, down to single samples (mono mix of L/R).
+#[tauri::command]
+async fn track_samples(id: i64, start_s: f64, span_s: f64) -> Result<SampleWindow, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<SampleWindow, String> {
+        let rate = 48000u32;
+        let memo = {
+            let guard = PCM_MEMO.lock().unwrap();
+            guard
+                .as_ref()
+                .filter(|(mid, mrate, _)| *mid == id && *mrate == rate)
+                .map(|(_, _, p)| p.clone())
+        };
+        let pcm = match memo {
+            Some(p) => p,
+            None => {
+                let ffmpeg = tools::find_tool(&data_dir(), "ffmpeg").ok_or(
+                    "ffmpeg is not installed — use the banner in Clip Studio to set it up",
+                )?;
+                let conn = library_db()?;
+                let path: String = conn
+                    .query_row(
+                        "SELECT path FROM tracks WHERE id = ?1 AND path IS NOT NULL",
+                        rusqlite::params![id],
+                        |r| r.get(0),
+                    )
+                    .map_err(|_| "track not found".to_string())?;
+                drop(conn);
+                let pcm_path = engine::ensure_pcm(
+                    &ffmpeg,
+                    &data_dir().join("cache").join("pcm"),
+                    std::path::Path::new(&path),
+                    id,
+                    rate,
+                    || {},
+                )?;
+                let p = engine::load_pcm(&pcm_path)?;
+                *PCM_MEMO.lock().unwrap() = Some((id, rate, p.clone()));
+                p
+            }
+        };
+        let frames = pcm.len() / 2;
+        let span = span_s.clamp(0.01, 8.0);
+        let f0 = ((start_s.max(0.0) * rate as f64) as usize).min(frames);
+        let f1 = (f0 + (span * rate as f64).ceil() as usize).min(frames);
+        let mono: Vec<f32> = (f0..f1)
+            .map(|f| (pcm[f * 2] + pcm[f * 2 + 1]) * 0.5)
+            .collect();
+        Ok(SampleWindow {
+            rate,
+            start_s: f0 as f64 / rate as f64,
+            mono,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 // ---------------- Settings (v1: the approved artboard) ----------------
@@ -2225,6 +2384,8 @@ pub fn run() {
             track_toggle,
             track_seek,
             track_stop,
+            track_waveform,
+            track_samples,
             history_save,
             history_load,
             history_export,
