@@ -789,12 +789,12 @@ fn engine_test_tone(mode: String) -> Result<String, String> {
         let stop = std::sync::atomic::AtomicBool::new(false);
         let mut src = playback::SignalSource::new(
             |fs| {
-                signal::Signal::new(
+                vec![signal::Signal::new(
                     signal::SignalKind::Sine { hz: 440.0 },
                     signal::DEFAULT_AMP,
                     fs,
                     1,
-                )
+                )]
             },
             Some(2.0),
         );
@@ -853,7 +853,7 @@ fn calibration_noise(app: tauri::AppHandle, on: bool) -> Result<(), String> {
     std::thread::spawn(move || {
         use fletcher_core::{playback, signal};
         let mut src = playback::SignalSource::new(
-            |fs| signal::Signal::new(signal::SignalKind::Pink, 0.2, fs, 42),
+            |fs| vec![signal::Signal::new(signal::SignalKind::Pink, 0.2, fs, 42)],
             None,
         );
         let result = playback::play(playback::OutputMode::Shared, &mut src, 1.0, &stop, |_| {});
@@ -1215,21 +1215,96 @@ fn track_import(path: String) -> Result<LibraryState, String> {
 
 /// A generated signal's recipe — stored as `signal_params` JSON on the track
 /// row. Deterministic (seed = track id), so the row IS the provenance: the
-/// exact audio regenerates from the recipe forever.
+/// exact audio regenerates from the recipe forever. This JSON is the future
+/// API/MCP surface (user ruling 2026-08-23) — additive changes only.
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct SigSpec {
-    /// white | pink | sine | sweepLog | sweepLinear | band
+    /// white | pink | sine | sweepLog | sweepLinear | band | mix
     kind: String,
     seconds: f64,
     /// Peak level in dBFS; the generator hard-caps at −12 regardless (TB-20).
+    /// For a mix the cap applies to the SUM — layers can't stack past it.
     level_db: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
     hz: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     from_hz: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     to_hz: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     sweep_s: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     lo_hz: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     hi_hz: Option<f64>,
+    /// Tremolo: rate in Hz + depth 0..1 (1 = full gating). Both or neither.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    am_hz: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    am_depth: Option<f64>,
+    /// Vibrato (tonal kinds): rate in Hz + ±deviation in Hz.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fm_hz: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fm_dev_hz: Option<f64>,
+    /// kind == "mix": the primitives to sum. One level deep — no mix in a mix.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    layers: Option<Vec<SigSpec>>,
+}
+
+const SIG_MAX_LAYERS: usize = 16;
+
+/// Build the signal stack a spec describes: one primitive, or a mix's layers
+/// (decorrelated seeds per layer so stacked noises don't sum coherently).
+/// Layers inherit the parent's duration for one-pass sweep pacing.
+fn sig_build(
+    spec: &SigSpec,
+    fs: f64,
+    seed: u64,
+) -> Result<Vec<fletcher_core::signal::Signal>, String> {
+    use fletcher_core::signal::Signal;
+    if spec.kind == "mix" {
+        let layers = spec.layers.as_deref().unwrap_or(&[]);
+        if layers.is_empty() {
+            return Err("a mix needs at least one layer".into());
+        }
+        if layers.len() > SIG_MAX_LAYERS {
+            return Err(format!("a mix holds at most {SIG_MAX_LAYERS} layers"));
+        }
+        let mut out = Vec::new();
+        for (i, l) in layers.iter().enumerate() {
+            if l.kind == "mix" {
+                return Err("layers can't nest another mix (one level for now)".into());
+            }
+            let mut lay = l.clone();
+            lay.seconds = spec.seconds;
+            out.extend(sig_build(
+                &lay,
+                fs,
+                seed.wrapping_add(0x9E37_79B9_7F4A_7C15u64.wrapping_mul(i as u64 + 1)),
+            )?);
+        }
+        Ok(out)
+    } else {
+        let kind = sig_kind_of(spec)?;
+        let mut s = Signal::new(kind, sig_amp(spec), fs, seed);
+        if let (Some(r), Some(d)) = (spec.am_hz, spec.am_depth) {
+            s = s.with_am(r, d);
+        }
+        if let (Some(r), Some(d)) = (spec.fm_hz, spec.fm_dev_hz) {
+            s = s.with_fm(r, d);
+        }
+        Ok(vec![s])
+    }
+}
+
+/// Full recipe validation — shared by create, preview, and the text editor.
+fn sig_validate(spec: &SigSpec) -> Result<(), String> {
+    if !(1.0..=600.0).contains(&spec.seconds) {
+        return Err("duration must be 1–600 s".into());
+    }
+    sig_build(spec, 48000.0, 1).map(|_| ())
 }
 
 fn sig_kind_of(spec: &SigSpec) -> Result<fletcher_core::signal::SignalKind, String> {
@@ -1294,8 +1369,8 @@ fn fmt_sig_hz(v: f64) -> String {
     }
 }
 
-fn sig_title(spec: &SigSpec) -> String {
-    let base = match spec.kind.as_str() {
+fn sig_name(spec: &SigSpec) -> String {
+    match spec.kind.as_str() {
         "white" => "White noise".into(),
         "pink" => "Pink noise".into(),
         "sine" => format!("Sine {}", fmt_sig_hz(spec.hz.unwrap_or(0.0))),
@@ -1314,9 +1389,27 @@ fn sig_title(spec: &SigSpec) -> String {
             fmt_sig_hz(spec.lo_hz.unwrap_or(0.0)),
             fmt_sig_hz(spec.hi_hz.unwrap_or(0.0))
         ),
+        "mix" => {
+            let names: Vec<String> = spec
+                .layers
+                .as_deref()
+                .unwrap_or(&[])
+                .iter()
+                .map(sig_name)
+                .collect();
+            let joined = names.join(" + ");
+            if joined.len() > 48 {
+                format!("Mix · {} layers", names.len())
+            } else {
+                joined
+            }
+        }
         _ => "Signal".into(),
-    };
-    format!("{base} · {:.0} s", spec.seconds)
+    }
+}
+
+fn sig_title(spec: &SigSpec) -> String {
+    format!("{} · {:.0} s", sig_name(spec), spec.seconds)
 }
 
 /// Render a spec into the same PCM cache a decoded file uses — everything
@@ -1329,20 +1422,23 @@ fn synthesize_pcm(
     rate: u32,
     spec: &SigSpec,
 ) -> Result<PathBuf, String> {
-    use fletcher_core::signal::Signal;
     std::fs::create_dir_all(cache_dir).map_err(|e| e.to_string())?;
     let out = cache_dir.join(format!("{id}-{rate}.f32"));
     if out.metadata().map(|m| m.len() > 0).unwrap_or(false) {
         return Ok(out);
     }
-    let kind = sig_kind_of(spec)?;
-    let mut sig = Signal::new(kind, sig_amp(spec), rate as f64, id as u64);
+    let mut gens = sig_build(spec, rate as f64, id as u64)?;
     let frames = (spec.seconds.clamp(1.0, 600.0) * rate as f64) as usize;
     // 100 ms edge fades: a generated file must never click at its ends.
     let fade = (rate as f64 * 0.1) as usize;
     let mut bytes: Vec<u8> = Vec::with_capacity(frames * 8);
     for i in 0..frames {
-        let mut s = sig.next_sample();
+        // The −12 dBFS cap binds the SUM: layers can't stack past it (TB-20).
+        let sum: f64 = gens.iter_mut().map(|g| g.next_sample()).sum();
+        let mut s = sum.clamp(
+            -fletcher_core::signal::MAX_AMP,
+            fletcher_core::signal::MAX_AMP,
+        );
         if i < fade {
             s *= i as f64 / fade as f64;
         }
@@ -1401,10 +1497,7 @@ fn prepare_pcm(
 /// row; PCM synthesizes on first use into the normal cache.
 #[tauri::command]
 fn signal_create(spec: SigSpec) -> Result<LibraryState, String> {
-    sig_kind_of(&spec)?;
-    if !(1.0..=600.0).contains(&spec.seconds) {
-        return Err("duration must be 1–600 s".into());
-    }
+    sig_validate(&spec)?;
     let title = sig_title(&spec);
     let params = serde_json::to_string(&spec).map_err(|e| e.to_string())?;
     let conn = library_db()?;
@@ -1415,6 +1508,14 @@ fn signal_create(spec: SigSpec) -> Result<LibraryState, String> {
     )
     .map_err(|e| e.to_string())?;
     library_state_now()
+}
+
+/// Validate a recipe (the text editor's Apply): returns the auto title it
+/// would get in the library.
+#[tauri::command]
+fn signal_validate(spec: SigSpec) -> Result<String, String> {
+    sig_validate(&spec)?;
+    Ok(sig_title(&spec))
 }
 
 /// Monotonic preview serial: a replaced preview's "ended" must never clobber
@@ -1435,16 +1536,19 @@ fn signal_preview(app: tauri::AppHandle, spec: Option<SigSpec>) -> Result<u64, S
         stop_cal_noise();
         return Ok(PREVIEW_GEN.load(std::sync::atomic::Ordering::Relaxed));
     };
-    let kind = sig_kind_of(&spec)?;
-    let amp = sig_amp(&spec);
+    sig_validate(&spec)?;
     stop_cal_noise();
     let my_gen = PREVIEW_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
     let stop = Arc::new(AtomicBool::new(false));
     *CAL_NOISE.lock().unwrap() = Some(stop.clone());
     std::thread::spawn(move || {
-        use fletcher_core::{playback, signal};
-        let mut src =
-            playback::SignalSource::new(move |fs| signal::Signal::new(kind, amp, fs, 1), None);
+        use fletcher_core::playback;
+        // Validated above — a failed rebuild yields an empty stack, which
+        // just ends the stream.
+        let mut src = playback::SignalSource::new(
+            move |fs| sig_build(&spec, fs, 1).unwrap_or_default(),
+            None,
+        );
         let _ = playback::play(playback::OutputMode::Shared, &mut src, 1.0, &stop, |_| {});
         let mut guard = CAL_NOISE.lock().unwrap();
         if let Some(cur) = guard.as_ref() {
@@ -2950,6 +3054,7 @@ pub fn run() {
             track_scrub_params,
             signal_create,
             signal_preview,
+            signal_validate,
             track_stop,
             track_waveform,
             track_samples,

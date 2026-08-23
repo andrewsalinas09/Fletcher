@@ -2013,6 +2013,59 @@ button.ghost {
   margin-top: 4px;
 }
 
+.gen-layers-row {
+  align-items: flex-start;
+}
+
+.gen-layers {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+
+.gen-layer {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 8px;
+  border: 1px solid var(--line-mid);
+  background: var(--paper);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.gen-layer.on {
+  border-color: var(--ink);
+  box-shadow: 2px 2px 0 rgb(20 23 26 / 10%);
+}
+
+.gen-add-layer {
+  align-self: flex-start;
+  font-size: 11px;
+  padding: 3px 10px;
+}
+
+.gen-json {
+  width: 100%;
+  min-height: 260px;
+  resize: vertical;
+  font-size: 11.5px;
+  line-height: 1.5;
+  border: 1px solid var(--line-strong);
+  background: var(--paper);
+  color: var(--ink);
+  padding: 8px 10px;
+}
+
+.gen-err {
+  margin: 0;
+  color: #a33d1a;
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+
 /* library rail: IMPORTED / CREATED section labels */
 .rail-sec {
   display: block;

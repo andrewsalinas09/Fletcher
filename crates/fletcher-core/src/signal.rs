@@ -53,6 +53,13 @@ pub struct Signal {
     pink: [f64; 7],
     // Band-limiting cascade (2× HP + 2× LP) for BandNoise.
     band: Vec<(Biquad, BiquadState)>,
+    /// Amplitude modulation (tremolo / burst gating): (rate Hz, depth 0..1).
+    /// Gain swings 1 → 1−depth and back each cycle, starting at full.
+    am: Option<(f64, f64)>,
+    /// Frequency modulation (vibrato, tonal kinds only): (rate Hz, ±dev Hz).
+    fm: Option<(f64, f64)>,
+    am_phase: f64,
+    fm_phase: f64,
 }
 
 impl Signal {
@@ -82,7 +89,24 @@ impl Signal {
             t: 0.0,
             pink: [0.0; 7],
             band,
+            am: None,
+            fm: None,
+            am_phase: 0.0,
+            fm_phase: 0.0,
         }
+    }
+
+    /// Tremolo: gain cycles 1 → 1−depth at `rate_hz`. Depth 1 = full gating.
+    pub fn with_am(mut self, rate_hz: f64, depth: f64) -> Self {
+        self.am = Some((rate_hz.clamp(0.01, 100.0), depth.clamp(0.0, 1.0)));
+        self
+    }
+
+    /// Vibrato: the instantaneous frequency swings ±`dev_hz` at `rate_hz`.
+    /// Only the tonal kinds (sine, sweeps) respond; noise ignores it.
+    pub fn with_fm(mut self, rate_hz: f64, dev_hz: f64) -> Self {
+        self.fm = Some((rate_hz.clamp(0.01, 100.0), dev_hz.clamp(0.0, 5000.0)));
+        self
     }
 
     pub fn kind(&self) -> SignalKind {
@@ -92,6 +116,14 @@ impl Signal {
     /// Next mono sample (not Iterator::next — samples never end) in [-MAX_AMP, MAX_AMP].
     pub fn next_sample(&mut self) -> f64 {
         let dt = 1.0 / self.fs;
+        // Vibrato offset added to the instantaneous frequency of tonal kinds.
+        let fm_add = match self.fm {
+            Some((rate, dev)) => {
+                self.fm_phase += 2.0 * std::f64::consts::PI * rate * dt;
+                dev * self.fm_phase.sin()
+            }
+            None => 0.0,
+        };
         let s = match self.kind {
             SignalKind::White => self.rng.next_pm1(),
             SignalKind::Pink => {
@@ -109,7 +141,7 @@ impl Signal {
                 out
             }
             SignalKind::Sine { hz } => {
-                self.phase += 2.0 * std::f64::consts::PI * hz * dt;
+                self.phase += 2.0 * std::f64::consts::PI * (hz + fm_add).max(0.0) * dt;
                 self.phase.sin()
             }
             SignalKind::SweepLog {
@@ -120,7 +152,7 @@ impl Signal {
                 let tau = (self.t / seconds).fract();
                 let f = from_hz * (to_hz / from_hz).powf(tau);
                 self.t += dt;
-                self.phase += 2.0 * std::f64::consts::PI * f * dt;
+                self.phase += 2.0 * std::f64::consts::PI * (f + fm_add).max(0.0) * dt;
                 self.phase.sin()
             }
             SignalKind::SweepLinear {
@@ -131,7 +163,7 @@ impl Signal {
                 let tau = (self.t / seconds).fract();
                 let f = from_hz + (to_hz - from_hz) * tau;
                 self.t += dt;
-                self.phase += 2.0 * std::f64::consts::PI * f * dt;
+                self.phase += 2.0 * std::f64::consts::PI * (f + fm_add).max(0.0) * dt;
                 self.phase.sin()
             }
             SignalKind::BandNoise { .. } => {
@@ -142,7 +174,15 @@ impl Signal {
                 s
             }
         };
-        (s * self.amp).clamp(-MAX_AMP, MAX_AMP)
+        // Tremolo envelope: starts at full gain (cos 0 = 1 → gain 1).
+        let am_env = match self.am {
+            Some((rate, depth)) => {
+                self.am_phase += 2.0 * std::f64::consts::PI * rate * dt;
+                1.0 - depth * (0.5 - 0.5 * self.am_phase.cos())
+            }
+            None => 1.0,
+        };
+        (s * self.amp * am_env).clamp(-MAX_AMP, MAX_AMP)
     }
 }
 
@@ -263,6 +303,26 @@ mod tests {
         let above = band_rms(kind, 12000.0);
         assert!(inside > 5.0 * below, "in {inside:.5} vs below {below:.5}");
         assert!(inside > 5.0 * above, "in {inside:.5} vs above {above:.5}");
+    }
+
+    #[test]
+    fn modulators_stay_bounded_deterministic_and_audible() {
+        let make = || {
+            Signal::new(SignalKind::Sine { hz: 1000.0 }, DEFAULT_AMP, FS, 3)
+                .with_am(4.0, 1.0)
+                .with_fm(5.0, 50.0)
+        };
+        let (mut a, mut b) = (make(), make());
+        let seq_a: Vec<f64> = (0..256).map(|_| a.next_sample()).collect();
+        let seq_b: Vec<f64> = (0..256).map(|_| b.next_sample()).collect();
+        assert_eq!(seq_a, seq_b, "modulated signals stay deterministic");
+        // Full-depth tremolo halves the power envelope on average: RMS falls
+        // well below the plain sine's amp/√2.
+        let mut trem =
+            Signal::new(SignalKind::Sine { hz: 1000.0 }, DEFAULT_AMP, FS, 3).with_am(4.0, 1.0);
+        let r = rms(&mut trem, 96_000, 0);
+        let plain = DEFAULT_AMP / 2f64.sqrt();
+        assert!(r < 0.8 * plain, "tremolo RMS {r:.4} vs plain {plain:.4}");
     }
 
     #[test]

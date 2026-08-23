@@ -1792,9 +1792,9 @@ type TrackRow = {
   addedMs: number;
 };
 
-/** A generated signal's recipe (mirrors the Rust SigSpec). */
+/** A generated signal's recipe (mirrors the Rust SigSpec; the future API/MCP surface). */
 type SigSpec = {
-  kind: "white" | "pink" | "sine" | "sweepLog" | "sweepLinear" | "band";
+  kind: "white" | "pink" | "sine" | "sweepLog" | "sweepLinear" | "band" | "mix";
   seconds: number;
   levelDb: number;
   hz?: number;
@@ -1803,6 +1803,14 @@ type SigSpec = {
   sweepS?: number;
   loHz?: number;
   hiHz?: number;
+  /** Tremolo: rate Hz + depth 0..1 (both or neither). */
+  amHz?: number;
+  amDepth?: number;
+  /** Vibrato (tonal kinds): rate Hz + ±deviation Hz. */
+  fmHz?: number;
+  fmDevHz?: number;
+  /** kind === "mix": primitives summed (one level deep, cap binds the sum). */
+  layers?: SigSpec[];
 };
 
 /** A typed number field for the generator: commit on blur/Enter, clamped. */
@@ -1841,15 +1849,42 @@ function GenNum({
   );
 }
 
+/** Short name for one layer of a mix (or any primitive spec). */
+const layerName = (l: SigSpec): string => {
+  const hz = (v?: number) => (v == null ? "?" : v >= 1000 ? `${+(v / 1000).toFixed(2)}k` : `${v}`);
+  switch (l.kind) {
+    case "white":
+      return "white";
+    case "pink":
+      return "pink";
+    case "sine":
+      return `sine ${hz(l.hz)}`;
+    case "band":
+      return `band ${hz(l.loHz)}–${hz(l.hiHz)}`;
+    case "sweepLog":
+      return `sweep ${hz(l.fromHz)}–${hz(l.toHz)} log`;
+    case "sweepLinear":
+      return `sweep ${hz(l.fromHz)}–${hz(l.toHz)} lin`;
+    default:
+      return l.kind;
+  }
+};
+
 /** The rail's metadata line for a signal row — what the title doesn't say. */
 const sigSummary = (t: TrackRow): string => {
   try {
     const s = JSON.parse(t.signalParams ?? "") as SigSpec;
+    if (s.kind === "mix") {
+      const ls = s.layers ?? [];
+      return ls.map((l) => `${layerName(l)} ${l.levelDb} dB`).join(" + ") || "empty mix";
+    }
     const sweep =
       (s.kind === "sweepLog" || s.kind === "sweepLinear") && s.sweepS != null
         ? ` · repeats every ${s.sweepS} s`
         : "";
-    return `${s.levelDb} dB peak${sweep}`;
+    const am = s.amHz != null ? ` · trem ${s.amHz} Hz` : "";
+    const fm = s.fmHz != null ? ` · vib ${s.fmHz} Hz` : "";
+    return `${s.levelDb} dB peak${sweep}${am}${fm}`;
   } catch {
     return "generated signal";
   }
@@ -3031,9 +3066,9 @@ function MainApp() {
       });
   };
   // Param edits retune a running preview live.
-  const updateGen = (patch: Partial<SigSpec>) => {
+  const mutateGen = (fn: (cur: SigSpec) => SigSpec) => {
     setGenSpec((cur) => {
-      const next = { ...cur, ...patch };
+      const next = fn(cur);
       if (genPreviewRef.current) {
         invoke<number>("signal_preview", { spec: next })
           .then((n) => {
@@ -3044,16 +3079,78 @@ function MainApp() {
       return next;
     });
   };
+  const updateGen = (patch: Partial<SigSpec>) => mutateGen((cur) => ({ ...cur, ...patch }));
+  // Mix mode: the primitive controls below the layer list edit the SELECTED layer.
+  const [selLayer, setSelLayer] = useState(0);
+  const isMix = genSpec.kind === "mix";
+  const curSpec: SigSpec = isMix ? (genSpec.layers?.[selLayer] ?? genSpec) : genSpec;
+  const updateCur = (patch: Partial<SigSpec>) =>
+    isMix
+      ? mutateGen((cur) => ({
+          ...cur,
+          layers: (cur.layers ?? []).map((l, i) => (i === selLayer ? { ...l, ...patch } : l)),
+        }))
+      : updateGen(patch);
+  const kindDefaults = (kind: SigSpec["kind"], base: SigSpec): Partial<SigSpec> =>
+    kind === "sine"
+      ? { hz: base.hz ?? 1000 }
+      : kind === "sweepLog" || kind === "sweepLinear"
+        ? { fromHz: base.fromHz ?? 20, toHz: base.toHz ?? 20000 }
+        : kind === "band"
+          ? { loHz: base.loHz ?? 500, hiHz: base.hiHz ?? 2000 }
+          : {};
   const pickGenKind = (kind: SigSpec["kind"]) => {
-    const defaults: Partial<SigSpec> =
-      kind === "sine"
-        ? { hz: genSpec.hz ?? 1000 }
-        : kind === "sweepLog" || kind === "sweepLinear"
-          ? { fromHz: genSpec.fromHz ?? 20, toHz: genSpec.toHz ?? 20000 }
-          : kind === "band"
-            ? { loHz: genSpec.loHz ?? 500, hiHz: genSpec.hiHz ?? 2000 }
-            : {};
-    updateGen({ kind, ...defaults });
+    if (kind === "mix") {
+      if (isMix) return;
+      // The current primitive becomes layer 1.
+      mutateGen((cur) => ({
+        kind: "mix",
+        seconds: cur.seconds,
+        levelDb: cur.levelDb,
+        layers: [{ ...cur }],
+      }));
+      setSelLayer(0);
+    } else if (isMix) {
+      // Leaving mix: the selected layer survives, retyped.
+      mutateGen((cur) => {
+        const base = cur.layers?.[selLayer] ?? cur;
+        return { ...base, kind, ...kindDefaults(kind, base), seconds: cur.seconds, layers: undefined };
+      });
+    } else {
+      updateGen({ kind, ...kindDefaults(kind, genSpec) });
+    }
+  };
+  const addLayer = () => {
+    setSelLayer(genSpec.layers?.length ?? 0);
+    mutateGen((cur) => ({
+      ...cur,
+      layers: [...(cur.layers ?? []), { kind: "pink", seconds: cur.seconds, levelDb: -24 }],
+    }));
+  };
+  const removeLayer = (idx: number) => {
+    setSelLayer((s) => Math.max(0, s >= idx ? s - 1 : s));
+    mutateGen((cur) => ({ ...cur, layers: (cur.layers ?? []).filter((_, i) => i !== idx) }));
+  };
+  // The text tier: the recipe JSON itself — validate + apply. This format is
+  // the future API/MCP surface, so the editor IS the power path.
+  const [genText, setGenText] = useState<string | null>(null);
+  const [genErr, setGenErr] = useState<string | null>(null);
+  const applyGenText = () => {
+    let parsed: SigSpec;
+    try {
+      parsed = JSON.parse(genText ?? "");
+    } catch (e) {
+      setGenErr(`not valid JSON — ${e}`);
+      return;
+    }
+    invoke<string>("signal_validate", { spec: parsed })
+      .then(() => {
+        mutateGen(() => parsed);
+        setSelLayer(0);
+        setGenText(null);
+        setGenErr(null);
+      })
+      .catch((e) => setGenErr(String(e)));
   };
   const closeGen = () => {
     if (genPreviewRef.current) genPreviewSet(null);
@@ -5012,10 +5109,43 @@ function MainApp() {
                   <div className="hist-head">
                     <span className="mono hist-title">SIGNAL GENERATOR</span>
                     <span className="spacer" />
+                    <span
+                      className={`scale-opt mono ${genText != null ? "on" : ""}`}
+                      title="the recipe itself, as JSON — everything the engine can do, validated on apply (this format becomes the API later)"
+                      onClick={() => {
+                        setGenErr(null);
+                        setGenText(genText != null ? null : JSON.stringify(genSpec, null, 2));
+                      }}
+                    >
+                      {"{ }"}
+                    </span>
                     <span className="row-act" onClick={closeGen}>
                       ×
                     </span>
                   </div>
+                  {genText != null ? (
+                    <div className="gen-body">
+                      <textarea
+                        className="gen-json mono"
+                        value={genText}
+                        spellCheck={false}
+                        onChange={(e) => setGenText(e.target.value)}
+                      />
+                      {genErr && <p className="gen-err mono">{genErr}</p>}
+                      <p className="dim-sm gen-note">
+                        The recipe, raw. kinds: white · pink · sine · sweepLog · sweepLinear · band ·
+                        mix (with "layers"). Optional per layer: amHz+amDepth (tremolo), fmHz+fmDevHz
+                        (vibrato). Apply validates before anything plays.
+                      </p>
+                      <div className="gen-actions">
+                        <button onClick={() => setGenText(JSON.stringify(genSpec, null, 2))}>Revert</button>
+                        <span className="spacer" />
+                        <button className="primary" onClick={applyGenText}>
+                          Apply recipe
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
                   <div className="gen-body">
                     <div className="room-row">
                       <span className="room-key">Type</span>
@@ -5028,6 +5158,7 @@ function MainApp() {
                             ["sweepLog", "Sweep log"],
                             ["sweepLinear", "Sweep lin"],
                             ["band", "Band"],
+                            ["mix", "Mix"],
                           ] as const
                         ).map(([k, label]) => (
                           <span
@@ -5040,19 +5171,79 @@ function MainApp() {
                         ))}
                       </div>
                     </div>
-                    {genSpec.kind === "sine" && (
-                      <div className="room-row">
-                        <span className="room-key">Frequency</span>
-                        <GenNum value={genSpec.hz} min={10} max={24000} unit="Hz" onCommit={(v) => updateGen({ hz: v })} />
+                    {isMix && (
+                      <div className="room-row gen-layers-row">
+                        <span className="room-key" title="the layers are summed; the −12 dBFS cap binds the sum, so hot layers can't stack past it">
+                          Layers
+                        </span>
+                        <div className="gen-layers">
+                          {(genSpec.layers ?? []).map((l, i) => (
+                            <div
+                              key={i}
+                              className={`gen-layer ${i === selLayer ? "on" : ""}`}
+                              onClick={() => setSelLayer(i)}
+                            >
+                              <span className="mono sig-glyph">∿</span>
+                              <span>{`${layerName(l)} · ${l.levelDb} dB`}</span>
+                              <span className="spacer" />
+                              {(genSpec.layers?.length ?? 0) > 1 && (
+                                <span
+                                  className="row-act"
+                                  title="remove layer"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    removeLayer(i);
+                                  }}
+                                >
+                                  ×
+                                </span>
+                              )}
+                            </div>
+                          ))}
+                          <button className="gen-add-layer" onClick={addLayer}>
+                            + Add layer
+                          </button>
+                        </div>
                       </div>
                     )}
-                    {(genSpec.kind === "sweepLog" || genSpec.kind === "sweepLinear") && (
+                    {isMix && (
+                      <div className="room-row">
+                        <span className="room-key">{`Layer ${selLayer + 1} type`}</span>
+                        <div className="seg seg-sm">
+                          {(
+                            [
+                              ["pink", "Pink"],
+                              ["white", "White"],
+                              ["sine", "Sine"],
+                              ["sweepLog", "Swp log"],
+                              ["sweepLinear", "Swp lin"],
+                              ["band", "Band"],
+                            ] as const
+                          ).map(([k, label]) => (
+                            <span
+                              key={k}
+                              className={`seg-opt ${curSpec.kind === k ? "on" : ""}`}
+                              onClick={() => updateCur({ kind: k, ...kindDefaults(k, curSpec) })}
+                            >
+                              {label}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {curSpec.kind === "sine" && (
+                      <div className="room-row">
+                        <span className="room-key">Frequency</span>
+                        <GenNum value={curSpec.hz} min={10} max={24000} unit="Hz" onCommit={(v) => updateCur({ hz: v })} />
+                      </div>
+                    )}
+                    {(curSpec.kind === "sweepLog" || curSpec.kind === "sweepLinear") && (
                       <>
                         <div className="room-row">
                           <span className="room-key">Range</span>
                           <div className="trials-ctl">
-                            <GenNum value={genSpec.fromHz} min={10} max={24000} unit="→" onCommit={(v) => updateGen({ fromHz: v })} />
-                            <GenNum value={genSpec.toHz} min={10} max={24000} unit="Hz" onCommit={(v) => updateGen({ toHz: v })} />
+                            <GenNum value={curSpec.fromHz} min={10} max={24000} unit="→" onCommit={(v) => updateCur({ fromHz: v })} />
+                            <GenNum value={curSpec.toHz} min={10} max={24000} unit="Hz" onCommit={(v) => updateCur({ toHz: v })} />
                           </div>
                         </div>
                         <div className="room-row">
@@ -5065,37 +5256,113 @@ function MainApp() {
                           <div className="trials-ctl">
                             <div className="seg seg-sm">
                               <span
-                                className={`seg-opt ${genSpec.sweepS == null ? "on" : ""}`}
-                                onClick={() => updateGen({ sweepS: undefined })}
+                                className={`seg-opt ${curSpec.sweepS == null ? "on" : ""}`}
+                                onClick={() => updateCur({ sweepS: undefined })}
                               >
                                 One pass
                               </span>
                               <span
-                                className={`seg-opt ${genSpec.sweepS != null ? "on" : ""}`}
-                                onClick={() => updateGen({ sweepS: Math.min(genSpec.seconds, 4) })}
+                                className={`seg-opt ${curSpec.sweepS != null ? "on" : ""}`}
+                                onClick={() => updateCur({ sweepS: Math.min(genSpec.seconds, 4) })}
                               >
                                 Repeat
                               </span>
                             </div>
-                            {genSpec.sweepS != null && (
+                            {curSpec.sweepS != null && (
                               <GenNum
-                                value={genSpec.sweepS}
+                                value={curSpec.sweepS}
                                 min={0.1}
                                 max={600}
                                 unit="s each"
-                                onCommit={(v) => updateGen({ sweepS: v })}
+                                onCommit={(v) => updateCur({ sweepS: v })}
                               />
                             )}
                           </div>
                         </div>
                       </>
                     )}
-                    {genSpec.kind === "band" && (
+                    {curSpec.kind === "band" && (
                       <div className="room-row">
                         <span className="room-key">Band</span>
                         <div className="trials-ctl">
-                          <GenNum value={genSpec.loHz} min={10} max={24000} unit="→" onCommit={(v) => updateGen({ loHz: v })} />
-                          <GenNum value={genSpec.hiHz} min={10} max={24000} unit="Hz" onCommit={(v) => updateGen({ hiHz: v })} />
+                          <GenNum value={curSpec.loHz} min={10} max={24000} unit="→" onCommit={(v) => updateCur({ loHz: v })} />
+                          <GenNum value={curSpec.hiHz} min={10} max={24000} unit="Hz" onCommit={(v) => updateCur({ hiHz: v })} />
+                        </div>
+                      </div>
+                    )}
+                    <div className="room-row">
+                      <span className="room-key">{isMix ? `Layer ${selLayer + 1} level` : "Level"}</span>
+                      <div className="seg seg-sm">
+                        {[-30, -24, -18, -12].map((db) => (
+                          <span
+                            key={db}
+                            className={`seg-opt ${curSpec.levelDb === db ? "on" : ""}`}
+                            onClick={() => updateCur({ levelDb: db })}
+                          >
+                            {`${db} dB`}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="room-row">
+                      <span className="room-key" title="amplitude modulation: the level pulses between full and (1 − depth) at the given rate — depth 100% gates to silence each cycle">
+                        Tremolo
+                      </span>
+                      <div className="trials-ctl">
+                        <div className="seg seg-sm">
+                          <span
+                            className={`seg-opt ${curSpec.amHz == null ? "on" : ""}`}
+                            onClick={() => updateCur({ amHz: undefined, amDepth: undefined })}
+                          >
+                            Off
+                          </span>
+                          <span
+                            className={`seg-opt ${curSpec.amHz != null ? "on" : ""}`}
+                            onClick={() => updateCur({ amHz: 4, amDepth: curSpec.amDepth ?? 0.8 })}
+                          >
+                            On
+                          </span>
+                        </div>
+                        {curSpec.amHz != null && (
+                          <>
+                            <GenNum value={curSpec.amHz} min={0.1} max={100} unit="Hz" onCommit={(v) => updateCur({ amHz: v })} />
+                            <GenNum
+                              value={Math.round((curSpec.amDepth ?? 0.8) * 100)}
+                              min={1}
+                              max={100}
+                              unit="% depth"
+                              onCommit={(v) => updateCur({ amDepth: v / 100 })}
+                            />
+                          </>
+                        )}
+                      </div>
+                    </div>
+                    {(curSpec.kind === "sine" || curSpec.kind === "sweepLog" || curSpec.kind === "sweepLinear") && (
+                      <div className="room-row">
+                        <span className="room-key" title="frequency modulation: the pitch swings ± the deviation at the given rate">
+                          Vibrato
+                        </span>
+                        <div className="trials-ctl">
+                          <div className="seg seg-sm">
+                            <span
+                              className={`seg-opt ${curSpec.fmHz == null ? "on" : ""}`}
+                              onClick={() => updateCur({ fmHz: undefined, fmDevHz: undefined })}
+                            >
+                              Off
+                            </span>
+                            <span
+                              className={`seg-opt ${curSpec.fmHz != null ? "on" : ""}`}
+                              onClick={() => updateCur({ fmHz: 5, fmDevHz: curSpec.fmDevHz ?? 25 })}
+                            >
+                              On
+                            </span>
+                          </div>
+                          {curSpec.fmHz != null && (
+                            <>
+                              <GenNum value={curSpec.fmHz} min={0.1} max={100} unit="Hz" onCommit={(v) => updateCur({ fmHz: v })} />
+                              <GenNum value={curSpec.fmDevHz} min={1} max={5000} unit="±Hz" onCommit={(v) => updateCur({ fmDevHz: v })} />
+                            </>
+                          )}
                         </div>
                       </div>
                     )}
@@ -5103,24 +5370,10 @@ function MainApp() {
                       <span className="room-key">Duration</span>
                       <GenNum value={genSpec.seconds} min={1} max={600} unit="s" onCommit={(v) => updateGen({ seconds: v })} />
                     </div>
-                    <div className="room-row">
-                      <span className="room-key">Level</span>
-                      <div className="seg seg-sm">
-                        {[-30, -24, -18, -12].map((db) => (
-                          <span
-                            key={db}
-                            className={`seg-opt ${genSpec.levelDb === db ? "on" : ""}`}
-                            onClick={() => updateGen({ levelDb: db })}
-                          >
-                            {`${db} dB`}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
                     <p className="dim-sm gen-note">
                       The same recipe always renders the exact same audio — that's its provenance.
-                      Peak is hard-capped at −12 dBFS. Preview loops through the shared path, so
-                      your volume knob stays live; edits retune it as it plays.
+                      Peak is hard-capped at −12 dBFS{isMix ? " on the summed mix" : ""}. Preview loops
+                      through the shared path, so your volume knob stays live; edits retune it as it plays.
                     </p>
                     <div className="gen-actions">
                       <button onClick={() => (genPreview ? genPreviewSet(null) : genPreviewSet(genSpec))}>
@@ -5132,6 +5385,7 @@ function MainApp() {
                       </button>
                     </div>
                   </div>
+                  )}
                 </div>
               </>
             )}
@@ -5498,12 +5752,6 @@ function MainApp() {
                         }}
                       />
                     </div>
-                    <button
-                      disabled
-                      title="batteries arrive with the Lab integration (phase ③) — clips saved now will be ready for them"
-                    >
-                      Add to battery
-                    </button>
                   </>
                 ) : (
                   ioRegion && (

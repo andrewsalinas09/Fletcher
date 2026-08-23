@@ -75,21 +75,23 @@ pub trait Source: Send {
     fn fill(&mut self, buf: &mut [f64]) -> bool;
 }
 
-/// A generator playing for an optional duration — the calibration noise and
-/// the M1 test tone. `None` = until stopped.
+/// A generator playing for an optional duration — the calibration noise, the
+/// M1 test tone, and generator previews. `None` = until stopped. The maker
+/// returns a STACK of signals: they are summed and clamped to the generator
+/// cap, so a mix can never exceed −12 dBFS no matter how layers align (TB-20).
 pub struct SignalSource {
-    make: Box<dyn Fn(f64) -> Signal + Send>,
-    signal: Option<Signal>,
+    make: Box<dyn Fn(f64) -> Vec<Signal> + Send>,
+    signals: Vec<Signal>,
     frames_left: Option<u64>,
     seconds: Option<f64>,
     fade_frames: u64,
 }
 
 impl SignalSource {
-    pub fn new(make: impl Fn(f64) -> Signal + Send + 'static, seconds: Option<f64>) -> Self {
+    pub fn new(make: impl Fn(f64) -> Vec<Signal> + Send + 'static, seconds: Option<f64>) -> Self {
         SignalSource {
             make: Box::new(make),
-            signal: None,
+            signals: Vec::new(),
             frames_left: None,
             seconds,
             fade_frames: 0,
@@ -99,15 +101,15 @@ impl SignalSource {
 
 impl Source for SignalSource {
     fn set_rate(&mut self, fs: f64) {
-        self.signal = Some((self.make)(fs));
+        self.signals = (self.make)(fs);
         self.frames_left = self.seconds.map(|s| (s * fs) as u64);
         self.fade_frames = (0.3 * fs) as u64;
     }
 
     fn fill(&mut self, buf: &mut [f64]) -> bool {
-        let Some(sig) = self.signal.as_mut() else {
+        if self.signals.is_empty() {
             return false;
-        };
+        }
         for frame in buf.chunks_exact_mut(2) {
             let (done, env) = match self.frames_left.as_mut() {
                 Some(0) => (true, 0.0),
@@ -130,7 +132,8 @@ impl Source for SignalSource {
                 frame[1] = 0.0;
                 continue;
             }
-            let s = sig.next_sample() * env;
+            let sum: f64 = self.signals.iter_mut().map(|g| g.next_sample()).sum();
+            let s = sum.clamp(-crate::signal::MAX_AMP, crate::signal::MAX_AMP) * env;
             frame[0] = s;
             frame[1] = s;
         }
@@ -391,7 +394,14 @@ mod tests {
     fn exclusive_tone_opens_ramps_and_releases() {
         let stop = AtomicBool::new(false);
         let mut src = SignalSource::new(
-            |fs| Signal::new(SignalKind::Sine { hz: 440.0 }, DEFAULT_AMP, fs, 1),
+            |fs| {
+                vec![Signal::new(
+                    SignalKind::Sine { hz: 440.0 },
+                    DEFAULT_AMP,
+                    fs,
+                    1,
+                )]
+            },
             Some(1.0),
         );
         let mut started = None;
