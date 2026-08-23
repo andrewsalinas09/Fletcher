@@ -473,8 +473,17 @@ button.ghost {
   background: var(--ok);
 }
 
-.type-name.openable {
+.type-open {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.type-open.openable {
   cursor: pointer;
+}
+
+.type-open.openable:hover .type-name {
   text-decoration: underline dotted;
   text-underline-offset: 2px;
 }

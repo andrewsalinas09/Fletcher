@@ -532,7 +532,7 @@ export default function App() {
     const f = fOf(x);
     const db = dbOf(p.y + grabOffset.current.dy);
     const clamped = Math.max(-dbRange, Math.min(dbRange, db));
-    if (Math.abs(clamped) >= dbRange * 0.85 && dbRange < 48) {
+    if (Math.abs(clamped) >= dbRange * 0.65 && dbRange < 48) {
       setDragRange(dbRange * 2); // hit the peak → double, in one jump
     }
     mutateFilter(i, {
@@ -884,18 +884,24 @@ export default function App() {
                       }}
                     />
                     <span
-                      className={`mono type-name ${isSel && editable ? "openable" : ""}`}
+                      className={`type-open ${editable ? "openable" : ""}`}
                       onClick={(e) => {
-                        if (!isSel || !editable) return;
+                        if (!editable) return;
                         e.stopPropagation();
+                        setSelected(i);
                         clearTip();
                         const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
                         setTypeMenu(typeMenu?.i === i ? null : { i, x: r.left, y: r.bottom + 4 });
                       }}
                     >
-                      {f.kind}
+                      <span className="mono type-name">{f.kind}</span>
+                      <TypeGlyph kind={f.kind} boost={boost} dark={isSel} />
+                      {editable && (
+                        <svg width="8" height="8" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" className="caret">
+                          <path d="M4 6l4 4 4-4" />
+                        </svg>
+                      )}
                     </span>
-                    <TypeGlyph kind={f.kind} boost={boost} dark={isSel} />
                   </span>
                   <GainGauge gainDb={f.gainDb} dark={isSel} />
                   <span className={`cell-gain mono ${boost ? "boost" : "cut"} ${isSel ? "on-dark" : ""}`}>
