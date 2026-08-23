@@ -48,6 +48,15 @@ body {
   height: 100vh;
   display: flex;
   flex-direction: column;
+  /* Clicking chrome must never highlight text; inputs re-enable below. */
+  user-select: none;
+}
+
+input,
+textarea,
+.notice,
+.alert {
+  user-select: text;
 }
 
 /* ---------- header ---------- */

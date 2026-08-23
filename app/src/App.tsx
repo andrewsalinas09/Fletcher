@@ -548,7 +548,17 @@ export default function App() {
 function MainApp() {
   const [state, setState] = useState<EqState | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [selected, setSelected] = useState<number | null>(null);
+  const [, setSelected] = useState<number | null>(null);
+  const [multiSel, setMultiSel] = useState<ReadonlySet<number>>(new Set());
+  const multiSelRef = useRef<ReadonlySet<number>>(new Set());
+  multiSelRef.current = multiSel;
+  const anchorSelRef = useRef<number | null>(null);
+
+  const selectOnly = (i: number | null) => {
+    setSelected(i);
+    setMultiSel(i == null ? new Set() : new Set([i]));
+    anchorSelRef.current = i;
+  };
   const [presets, setPresets] = useState<PresetsState>({ presets: [], active: null });
   const [menuOpen, setMenuOpen] = useState(false);
   const [newName, setNewName] = useState("");
@@ -975,7 +985,7 @@ function MainApp() {
     }));
     const filters = [...foreign, ...own];
     setState({ ...cur, filters });
-    setSelected(null);
+    selectOnly(null);
     pushChain(filters, true);
   };
 
@@ -1271,25 +1281,30 @@ function MainApp() {
   // Filter clipboard: Ctrl+C writes the selected filter as a real APO line
   // to the OS clipboard (shareable anywhere); Ctrl+V parses clipboard text
   // through the engine — one filter, many lines, or a whole pasted preset.
-  const filterClipboard = useRef<{ enabled: boolean; kind: string; fcHz: number; gainDb: number; q: number } | null>(null);
-  const selectedRef = useRef<number | null>(null);
-  selectedRef.current = selected;
+  const filterClipboard = useRef<{ enabled: boolean; kind: string; fcHz: number; gainDb: number; q: number }[]>([]);
 
   const copySelectedFilter = () => {
     const cur = stateRef.current;
-    const i = selectedRef.current;
-    const f = i != null ? cur?.filters[i] : null;
-    if (!f) return;
-    filterClipboard.current = {
+    if (!cur) return;
+    const ord = orderedRef.current;
+    const members = ord.filter((o) => multiSelRef.current.has(o.i)).map((o) => cur.filters[o.i]);
+    if (members.length === 0) return;
+    filterClipboard.current = members.map((f) => ({
       enabled: f.enabled,
       kind: f.kind,
       fcHz: f.fcHz,
       gainDb: f.gainDb,
       q: f.q,
-    };
-    const line = `Filter: ${f.enabled ? "ON" : "OFF"} ${f.kind} Fc ${f.fcHz} Hz Gain ${f.gainDb} dB Q ${f.q}`;
-    navigator.clipboard?.writeText(line).catch(() => {});
-    showNotice(`copied ${f.kind} ${fmtHz(f.fcHz)} Hz — Ctrl+V pastes it into any preset`);
+    }));
+    const text = members
+      .map((f) => `Filter: ${f.enabled ? "ON" : "OFF"} ${f.kind} Fc ${f.fcHz} Hz Gain ${f.gainDb} dB Q ${f.q}`)
+      .join("\r\n");
+    navigator.clipboard?.writeText(text).catch(() => {});
+    showNotice(
+      members.length === 1
+        ? `copied ${members[0].kind} ${fmtHz(members[0].fcHz)} Hz — Ctrl+V pastes it into any preset`
+        : `copied ${members.length} filters — Ctrl+V pastes them into any preset`,
+    );
   };
 
   const pasteFilters = async () => {
@@ -1302,7 +1317,7 @@ function MainApp() {
     } catch {
       /* clipboard unreadable — fall through to the internal copy */
     }
-    if (pasted.length === 0 && filterClipboard.current) pasted = [filterClipboard.current];
+    if (pasted.length === 0 && filterClipboard.current.length) pasted = filterClipboard.current;
     if (pasted.length === 0) return;
     const cur = stateRef.current;
     if (!cur) return;
@@ -1314,6 +1329,8 @@ function MainApp() {
     const filters = [...cur.filters, ...fresh];
     setState({ ...cur, filters });
     setSelected(filters.length - 1);
+    setMultiSel(new Set(fresh.map((_, k) => cur.filters.length + k)));
+    anchorSelRef.current = filters.length - 1;
     pushChain(filters, true);
     window.setTimeout(() => commitGesture(pasted.length === 1 ? "paste filter" : `paste ${pasted.length} filters`), 0);
     showNotice(`pasted ${pasted.length} filter${pasted.length > 1 ? "s" : ""}`);
@@ -1349,15 +1366,6 @@ function MainApp() {
     pushChain(filters, immediate);
   };
 
-  const deleteFilter = (i: number) => {
-    const cur = stateRef.current;
-    if (!cur) return;
-    const filters = cur.filters.filter((_, j) => j !== i);
-    setState({ ...cur, filters });
-    setSelected(null);
-    pushChain(filters, true);
-    window.setTimeout(() => commitGesture("delete"), 0);
-  };
 
   const addFilter = () => {
     const cur = stateRef.current;
@@ -1373,7 +1381,7 @@ function MainApp() {
     };
     const filters = [...cur.filters, fresh];
     setState({ ...cur, filters });
-    setSelected(filters.length - 1);
+    selectOnly(filters.length - 1);
     pushChain(filters, true);
     window.setTimeout(() => commitGesture("add filter"), 0);
   };
@@ -1383,7 +1391,35 @@ function MainApp() {
     return state.filters.map((f, i) => ({ f, i })).sort((a, b) => a.f.fcHz - b.f.fcHz);
   }, [state]);
 
-  const sel = selected != null && state ? state.filters[selected] : null;
+  const orderedRef = useRef(ordered);
+  orderedRef.current = ordered;
+
+  /** Click selection: plain = only this; Ctrl = toggle; Shift = range in strip order. */
+  const handleSelect = (e: { ctrlKey: boolean; shiftKey: boolean }, i: number) => {
+    if (e.ctrlKey) {
+      setMultiSel((prev) => {
+        const n = new Set(prev);
+        if (n.has(i)) n.delete(i);
+        else n.add(i);
+        setSelected(n.has(i) ? i : n.size ? [...n][0] : null);
+        return n;
+      });
+      anchorSelRef.current = i;
+    } else if (e.shiftKey && anchorSelRef.current != null) {
+      const ord = orderedRef.current;
+      const di = ord.findIndex((o) => o.i === i);
+      const da = ord.findIndex((o) => o.i === anchorSelRef.current);
+      if (di >= 0 && da >= 0) {
+        const [lo, hi] = di < da ? [di, da] : [da, di];
+        setMultiSel(new Set(ord.slice(lo, hi + 1).map((o) => o.i)));
+        setSelected(i);
+      }
+    } else {
+      selectOnly(i);
+    }
+  };
+
+  const sel = multiSel.size === 1 && state ? state.filters[[...multiSel][0]] : null;
 
 
   // ---- y scale: explicit and interaction-inert (the Pro-Q resolution) ----
@@ -1493,49 +1529,103 @@ function MainApp() {
   };
 
   const grabOffset = useRef({ dx: 0, dy: 0 });
+  const dragGrab = useRef<number | null>(null);
+  const dragOrig = useRef<Map<number, { fc: number; gain: number }>>(new Map());
+
+  const mutateMany = (patches: Map<number, Partial<EqFilter>>, immediate = false) => {
+    const cur = stateRef.current;
+    if (!cur) return;
+    const filters = cur.filters.map((f, j) => (patches.has(j) ? { ...f, ...patches.get(j)! } : f));
+    setState({ ...cur, filters });
+    pushChain(filters, immediate);
+  };
 
   const startDrag = (i: number) => (e: React.PointerEvent) => {
     const f = state?.filters[i];
-    if (f?.sourceFile !== OWN_FILE) {
-      setSelected(i);
+    if (f?.sourceFile !== OWN_FILE || e.ctrlKey || e.shiftKey) {
+      handleSelect(e, i); // selection gesture, not a drag
       return;
     }
-    setSelected(i);
+    let selNow: ReadonlySet<number> = multiSelRef.current;
+    if (!selNow.has(i)) {
+      selectOnly(i);
+      selNow = new Set([i]);
+    }
+    const cur = stateRef.current!;
+    dragOrig.current = new Map(
+      [...selNow]
+        .filter((j) => cur.filters[j]?.sourceFile === OWN_FILE)
+        .map((j) => [j, { fc: cur.filters[j].fcHz, gain: cur.filters[j].gainDb }]),
+    );
     dragging.current = true;
-    // Constant grab offset: wherever on the dot you grabbed, that relationship
-    // holds for the whole drag (a few px at most — no warping, no magic).
+    dragGrab.current = i;
     const p = svgPoint(e);
     grabOffset.current = { dx: xOf(f.fcHz) - p.x, dy: yOf(f.gainDb) - p.y };
     (e.target as Element).setPointerCapture(e.pointerId);
   };
 
   const onDragMove = (i: number) => (e: React.PointerEvent) => {
-    if (!dragging.current || selected !== i) return;
+    if (!dragging.current || dragGrab.current !== i) return;
+    const o = dragOrig.current.get(i);
+    if (!o) return;
     const p = svgPoint(e);
     const x = Math.max(0, Math.min(GW, p.x + grabOffset.current.dx));
     const f = fOf(x);
     const db = dbOfR(p.y + grabOffset.current.dy, dbRange);
     const clamped = Math.max(-dbRange, Math.min(dbRange, db));
-    mutateFilter(i, {
-      fcHz: +f.toFixed(f < 100 ? 1 : 0),
-      gainDb: +clamped.toFixed(1),
+    // The grabbed filter follows the cursor; the rest of the selection moves
+    // with it — same dB delta, same log-frequency ratio.
+    const dGain = clamped - o.gain;
+    const rFc = f / o.fc;
+    const patches = new Map<number, Partial<EqFilter>>();
+    dragOrig.current.forEach((oj, j) => {
+      const nf = Math.max(10, Math.min(24000, oj.fc * rFc));
+      patches.set(j, {
+        fcHz: +nf.toFixed(nf < 100 ? 1 : 0),
+        gainDb: +Math.max(-30, Math.min(30, oj.gain + dGain)).toFixed(1),
+      });
     });
+    mutateMany(patches);
   };
 
   const endDrag = (_i: number) => () => {
     if (!dragging.current) return;
     dragging.current = false;
+    const n = dragOrig.current.size;
     const cur = stateRef.current;
     if (cur) pushChain(cur.filters, true);
-    window.setTimeout(() => commitGesture("move"), 0);
+    window.setTimeout(() => commitGesture(n > 1 ? `move x${n}` : "move"), 0);
   };
 
   const onWheelQ = (i: number) => (e: React.WheelEvent) => {
-    const f = state?.filters[i];
-    if (!f || f.sourceFile !== OWN_FILE) return;
+    const cur = stateRef.current;
+    const f = cur?.filters[i];
+    if (!cur || !f || f.sourceFile !== OWN_FILE) return;
     const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
-    mutateFilter(i, { q: +Math.max(0.05, Math.min(50, f.q * factor)).toFixed(2) }, true);
-    settleWheelGesture(); // the burst becomes one history node 250ms after it stops
+    const targets = multiSelRef.current.has(i) ? [...multiSelRef.current] : [i];
+    const patches = new Map<number, Partial<EqFilter>>();
+    targets.forEach((j) => {
+      const fj = cur.filters[j];
+      if (fj?.sourceFile === OWN_FILE) {
+        patches.set(j, { q: +Math.max(0.05, Math.min(50, fj.q * factor)).toFixed(2) });
+      }
+    });
+    mutateMany(patches, true);
+    settleWheelGesture(); // the burst becomes one history node
+  };
+
+  /** A selected cell's x deletes the whole (editable) selection; else just one. */
+  const deleteSelected = (i: number) => {
+    const cur = stateRef.current;
+    if (!cur) return;
+    const targets = multiSelRef.current.has(i) ? multiSelRef.current : new Set([i]);
+    const filters = cur.filters.filter((f, j) => !(targets.has(j) && f.sourceFile === OWN_FILE));
+    const n = cur.filters.length - filters.length;
+    if (n === 0) return;
+    setState({ ...cur, filters });
+    selectOnly(null);
+    pushChain(filters, true);
+    window.setTimeout(() => commitGesture(n > 1 ? `delete x${n}` : "delete"), 0);
   };
 
   return (
@@ -2118,9 +2208,16 @@ function MainApp() {
               ))}
               <line x1={0} x2={GW} y1={yOf(0)} y2={yOf(0)} className="grid-zero" />
 
-              {sel && sel.enabled && (
-                <path d={pathFrom(state.freqs, sel.responseDb, yOf)} className={`sel-curve ${sel.gainDb >= 0 ? "boost" : "cut"}`} />
-              )}
+              {[...multiSel].map((si) => {
+                const sf = state.filters[si];
+                return sf?.enabled && sf.responseDb.length ? (
+                  <path
+                    key={`sc${si}`}
+                    d={pathFrom(state.freqs, sf.responseDb, yOf)}
+                    className={`sel-curve ${sf.gainDb >= 0 ? "boost" : "cut"}`}
+                  />
+                ) : null;
+              })}
               <path d={pathFrom(state.freqs, state.sumDb.map((db) => db - state.preampDb), yOf)} className="sum-curve" />
 
               {state.filters.map((f, i) => (
@@ -2128,8 +2225,8 @@ function MainApp() {
                   key={i}
                   cx={xOf(f.fcHz)}
                   cy={yOf(f.gainDb)}
-                  r={i === selected ? 7 : 5}
-                  className={`handle ${f.gainDb >= 0 ? "boost" : "cut"} ${i === selected ? "selected" : ""} ${
+                  r={multiSel.has(i) ? 7 : 5}
+                  className={`handle ${f.gainDb >= 0 ? "boost" : "cut"} ${multiSel.has(i) ? "selected" : ""} ${
                     f.sourceFile === OWN_FILE ? "editable" : "locked"
                   } ${f.enabled ? "" : "bypassed"}`}
                   onPointerDown={startDrag(i)}
@@ -2172,14 +2269,14 @@ function MainApp() {
               <span className="cell-q">no clip</span>
             </div>
             {ordered.map(({ f, i }) => {
-              const isSel = i === selected;
+              const isSel = multiSel.has(i);
               const boost = f.gainDb >= 0;
               const editable = f.sourceFile === OWN_FILE;
               return (
                 <div
                   key={i}
                   className={`cell ${isSel ? "selected" : ""} ${f.enabled ? "" : "off"} ${editable ? "" : "locked"}`}
-                  onClick={() => setSelected(i)}
+                  onClick={(e) => handleSelect(e, i)}
                   onWheel={onWheelQ(i)}
                   {...tipProps(filterTip(f))}
                 >
@@ -2199,7 +2296,7 @@ function MainApp() {
                       onClick={(e) => {
                         if (!editable) return;
                         e.stopPropagation();
-                        setSelected(i);
+                        selectOnly(i);
                         clearTip();
                         const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
                         setTypeMenu(typeMenu?.i === i ? null : { i, x: r.left, y: r.bottom + 4 });
@@ -2251,7 +2348,7 @@ function MainApp() {
                       title="delete filter"
                       onClick={(e) => {
                         e.stopPropagation();
-                        deleteFilter(i);
+                        deleteSelected(i);
                       }}
                     >
                       ×
