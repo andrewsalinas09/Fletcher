@@ -352,6 +352,18 @@ fn preset_copy_from_source(source: String, name: String) -> Result<PresetsState,
             _ => {}
         }
     }
+    // Peace empties peace.txt when its EQ is toggled off, but keeps the live
+    // chain in its own format — fall back to that so copy works either way.
+    if chain.is_empty() && source.eq_ignore_ascii_case("peace.txt") {
+        if let Ok(peace_text) =
+            std::fs::read_to_string(install.config_path.join("Last Configuration.peace"))
+        {
+            if let Some(import) = fletcher_core::peace::parse_peace(&peace_text) {
+                preamp = import.preamp_db;
+                chain = import.filters;
+            }
+        }
+    }
     if chain.is_empty() {
         return Err(format!(
             "{source} has no filters right now — turn its EQ on in the other tool first, then copy"
