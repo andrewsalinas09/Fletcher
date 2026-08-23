@@ -1577,6 +1577,22 @@ fn track_scrub(on: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// Scrub feel (Clip Studio room settings): tau = chase time constant in ms,
+/// max = catch-up rate ceiling in multiples of real time. Process-wide and
+/// live — takes effect mid-scrub; no session required.
+#[tauri::command]
+fn track_scrub_params(tau_ms: f64, max_speed: f64) -> Result<(), String> {
+    use std::sync::atomic::Ordering::Relaxed;
+    if !tau_ms.is_finite() || !max_speed.is_finite() {
+        return Err("scrub params must be finite".into());
+    }
+    let tau_s = (tau_ms / 1000.0).clamp(engine::SCRUB_TAU_RANGE.0, engine::SCRUB_TAU_RANGE.1);
+    let max = max_speed.clamp(engine::SCRUB_MAX_RANGE.0, engine::SCRUB_MAX_RANGE.1);
+    engine::SCRUB_TAU_BITS.store(tau_s.to_bits(), Relaxed);
+    engine::SCRUB_MAX_BITS.store(max.to_bits(), Relaxed);
+    Ok(())
+}
+
 #[tauri::command]
 fn track_stop() -> TrackState {
     track_stop_inner();
@@ -2738,6 +2754,7 @@ pub fn run() {
             track_toggle,
             track_seek,
             track_scrub,
+            track_scrub_params,
             track_stop,
             track_waveform,
             track_samples,

@@ -2656,6 +2656,34 @@ function MainApp() {
       /* per-viewer nicety only */
     }
   };
+  // Scrub feel — typed-in, not preset. Chase = the scrub's reaction time in ms
+  // (it closes ~63% of the gap to your cursor per chase interval); max = the
+  // catch-up speed ceiling in multiples of real time.
+  const lsRange = (key: string, dflt: number, lo: number, hi: number) => {
+    try {
+      const v = Number(localStorage.getItem(key));
+      return Number.isFinite(v) && v >= lo && v <= hi ? v : dflt;
+    } catch {
+      return dflt;
+    }
+  };
+  const [scrubTau, setScrubTau] = useState(() => lsRange("fletcher.scrubtau", 60, 5, 1000));
+  const [scrubMax, setScrubMax] = useState(() => lsRange("fletcher.scrubmax", 8, 0.5, 64));
+  const commitScrub = (which: "tau" | "max", raw: number) => {
+    if (!Number.isFinite(raw)) return;
+    if (which === "tau") setScrubTau(Math.min(1000, Math.max(5, raw)));
+    else setScrubMax(Math.min(64, Math.max(0.5, raw)));
+  };
+  useEffect(() => {
+    // Live in the engine (mid-scrub included) and remembered across sessions.
+    invoke("track_scrub_params", { tauMs: scrubTau, maxSpeed: scrubMax }).catch(() => {});
+    try {
+      localStorage.setItem("fletcher.scrubtau", String(scrubTau));
+      localStorage.setItem("fletcher.scrubmax", String(scrubMax));
+    } catch {
+      /* per-viewer nicety only */
+    }
+  }, [scrubTau, scrubMax]);
 
   // Audible scrub (Resolve): while C is held the cursor IS the playhead —
   // each move sounds a short burst at the new spot, stillness holds silent,
@@ -4815,6 +4843,44 @@ function MainApp() {
                             {label}
                           </span>
                         ))}
+                      </div>
+                    </div>
+                    <div className="room-row">
+                      <span
+                        className="room-key"
+                        title="How held-C chases your cursor. Chase is its reaction time — every chase interval it closes ~63% of the remaining gap to the mouse (smaller = tighter to your hand, larger = smoother tape-like glide). Max caps how fast it may play while catching up, in multiples of real time. Defaults: 60 ms · 8×."
+                      >
+                        Scrub feel
+                      </span>
+                      <div className="trials-ctl">
+                        <input
+                          key={`scrubtau-${scrubTau}`}
+                          className="trials-input mono"
+                          type="number"
+                          min={5}
+                          max={1000}
+                          step={5}
+                          defaultValue={scrubTau}
+                          onBlur={(e) => commitScrub("tau", +e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                          }}
+                        />
+                        <span className="dim-sm">ms chase</span>
+                        <input
+                          key={`scrubmax-${scrubMax}`}
+                          className="trials-input mono"
+                          type="number"
+                          min={0.5}
+                          max={64}
+                          step={0.5}
+                          defaultValue={scrubMax}
+                          onBlur={(e) => commitScrub("max", +e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                          }}
+                        />
+                        <span className="dim-sm">× max</span>
                       </div>
                     </div>
                     <div className="room-row">

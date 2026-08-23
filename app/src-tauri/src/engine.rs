@@ -13,6 +13,17 @@ use std::sync::{Arc, Mutex};
 use fletcher_core::dsp::{ChainProcessor, FilterSpec};
 use fletcher_core::playback::{self, OutputMode, Source};
 
+/// Scrub feel, user-tunable from Clip Studio's room settings (f64 bit
+/// patterns; process-wide so a change applies live, mid-session). Tau is the
+/// chase time constant in seconds — the cursor closes ~63% of its remaining
+/// gap to the mouse every tau; max is the catch-up rate ceiling in multiples
+/// of real time. Defaults are the values the user verified by ear.
+pub static SCRUB_TAU_BITS: AtomicU64 = AtomicU64::new(f64::to_bits(0.06));
+pub static SCRUB_MAX_BITS: AtomicU64 = AtomicU64::new(f64::to_bits(8.0));
+
+pub const SCRUB_TAU_RANGE: (f64, f64) = (0.005, 1.0);
+pub const SCRUB_MAX_RANGE: (f64, f64) = (0.5, 64.0);
+
 /// Both buses' configuration — swapped in whole on live edits.
 #[derive(Clone, Default)]
 pub struct BusConfig {
@@ -139,7 +150,11 @@ impl Source for TrackSource {
                 self.scrub_cursor = target;
                 self.was_scrub = true;
             }
-            let alpha = 1.0 - (-1.0 / (0.06 * fs)).exp();
+            let tau = f64::from_bits(SCRUB_TAU_BITS.load(Ordering::Relaxed))
+                .clamp(SCRUB_TAU_RANGE.0, SCRUB_TAU_RANGE.1);
+            let max_speed = f64::from_bits(SCRUB_MAX_BITS.load(Ordering::Relaxed))
+                .clamp(SCRUB_MAX_RANGE.0, SCRUB_MAX_RANGE.1);
+            let alpha = 1.0 - (-1.0 / (tau * fs)).exp();
             let max_i = total.saturating_sub(2);
             for frame in buf.chunks_exact_mut(2) {
                 let mut diff = target - self.scrub_cursor;
@@ -148,7 +163,7 @@ impl Source for TrackSource {
                     self.scrub_cursor = target;
                     diff = 0.0;
                 }
-                let speed = (diff * alpha).clamp(-8.0, 8.0);
+                let speed = (diff * alpha).clamp(-max_speed, max_speed);
                 self.scrub_cursor = (self.scrub_cursor + speed).clamp(0.0, max_i as f64);
                 let i = self.scrub_cursor as usize;
                 let frac = self.scrub_cursor - i as f64;
