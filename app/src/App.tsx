@@ -145,8 +145,14 @@ export default function App() {
   const switchPreset = (name: string | null) =>
     presetAction(invoke<EqState>("preset_switch", { name }));
   const createPreset = (fromLive: boolean) => {
-    if (!newName.trim()) return;
-    presetAction(invoke<EqState>("preset_create", { name: newName, fromLive }));
+    let name = newName.trim();
+    if (!name) {
+      // No typed name → generate one; the button must always do something.
+      const base = fromLive ? "Live copy" : "New preset";
+      name = base;
+      for (let n = 2; presets.presets.includes(name); n++) name = `${base} ${n}`;
+    }
+    presetAction(invoke<EqState>("preset_create", { name, fromLive }));
   };
   const duplicatePreset = (from: string) => {
     invoke<PresetsState>("preset_duplicate", { from, to: `${from} copy` })
@@ -369,7 +375,8 @@ export default function App() {
                   ))}
                   <div className="preset-new">
                     <input
-                      placeholder="new preset name…"
+                      placeholder="name (optional)…"
+                      autoFocus
                       value={newName}
                       onChange={(e) => setNewName(e.target.value)}
                       onKeyDown={(e) => e.key === "Enter" && createPreset(true)}
