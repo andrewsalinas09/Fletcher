@@ -12,6 +12,12 @@ Append-only session journal. Newest entry first.
 
 ---
 
+## 2026-08-22 — Gap pass: profiles, loudness mode, history tree, safety
+
+- **Did:** Seven-gap review with the user, all filed: per-device profiles with device-level auto-switch (headphone-level is a manual quick-switcher — analog jacks are invisible to Windows); loudness-compensation mode, off by default, anchored-reference design (Q-16, TB-21); preset history as a branching jumpable tree with blind A/B between any two nodes (Q-17); per-channel EQ / L-R balance from day one; mic calibration import (UMIK-2 / iMM-6 / OmniMic formats — user's real cal files as fixtures); sweep ear-safety (TB-20); code signing deferred to Phase 5 by user. Scope note: headphones first, room correction deferred.
+- **Learned:** User owns a USB UMIK-2 — real hardware for Phase 4 measurement-engine development. Volume anchoring (RME-style reference point) makes loudness comp workable without a mic; USB-HID volume sync makes many DAC knobs visible.
+- **Next:** Phase 0 exit: Q-04 spike, normative VISION rewrite, fingerprint-format sketch; then Phase 1 scaffold.
+
 ## 2026-08-22 — Idea-mapping session: the vision lands, six ADRs
 
 - **Did:** Full feature brain-dump captured into FEATURES.md. Decisions locked: ADR-0002 (grey-don't-hide UI), ADR-0003 (flat reference + level matching by default), ADR-0004 (user-curated clip libraries / Clip Studio), ADR-0005 (Tauri 2 + TS/React shell), ADR-0006 (scope by sequencing, not cutting; everything-recorded provenance). Fingerprint Lab vision clarified: fingerprints are coupled HpTF∘ear measurements; personal libraries; export/import; bridging via shared headphones for at-home virtual auditioning (valid mainly <5–6 kHz). Q-01/02/06/07/11/13 resolved; Q-15 (fingerprint interchange format) opened; TB-13…TB-19 added. ROADMAP rewritten as six everything-ships phases. APO auto-install: no, for now.

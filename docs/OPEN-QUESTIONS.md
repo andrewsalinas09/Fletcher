@@ -46,5 +46,11 @@ It was the matching stack all along: "the binaural thing was the matching thing.
 ## Q-15 · Fingerprint interchange format and bridging math — **Open**
 What a fingerprint file contains beyond the response: rig/mic type, smoothing, number of reseats, per-band variance, capture-app version — the metadata that decides whether two libraries may be bridged at all (TB-19). Bridging computation: chain length limits (A→B→C compounds error), per-frequency confidence weighting, and how confidence is displayed so sub-5–6 kHz trust and treble skepticism are visible, not implied (TB-18).
 
+## Q-16 · Loudness-compensation volume anchoring — **Open**
+The mode needs to know listening level, and an external amp's analog knob is invisible. Design sketch: track digital volume (Windows endpoint volume; many USB DACs sync their knob to it over USB HID — per-device capability detection needed) **relative to a user-set anchor** ("this is my normal level" at a known digital volume). Works fully when volume is ridden digitally; if the user turns the amp knob, the anchor silently breaks (TB-21) — detect what we can, communicate honestly. Optional upgrade: one-time absolute SPL calibration with a mic or phone SPL app to anchor in real dB. Also open: which contour family (ISO 226:2023) and how aggressively to apply the delta.
+
+## Q-17 · Preset-history tree: data model and UX — **Open**
+Journal format (every edit recorded, ADR-0006), undo-stack depth, the branch-fork keybinding, tree visualization/jumping UX, and wiring "blind A/B any two tree nodes" into the test engine. Prior art for undo *trees*: Vim/Emacs (`undo-tree`); unseen in audio tooling.
+
 ## Q-14 · Tuning × testing fusion mechanics — **Open**
 "Move a slider and it goes through the clips to highlight specific stuff." How literally: does adjusting a bass filter auto-queue the bass-heavy clip? Replay the full battery on demand? A/B against the pre-tweak state per clip, with optional randomized voting? Define the interaction loop so tuning and testing share one engine.

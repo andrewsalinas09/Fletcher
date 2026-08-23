@@ -23,7 +23,8 @@ For "import a song and flip between EQ'd/bypass." **Trap:** anything Fletcher pl
 | Component | Job | Notes |
 |---|---|---|
 | Config engine | Parse/generate APO config grammar, round-trip safely, atomic writes | Coverage scope: Q-09. Must coexist with Peace-owned configs (TB-02). |
-| Device layer | Enumerate audio devices (MMDevice), match APO's device-selection semantics, find APO install via registry | |
+| Device layer | Enumerate audio devices (MMDevice), device arrival/removal + default-change events (profile auto-switch), match APO's device-selection semantics, find APO install via registry | TB-05 |
+| Preset store | Presets + journaled edit history as a branching, jumpable tree; any two nodes blind-testable | Q-17, ADR-0006 provenance |
 | Filter math | Biquad coefficient + frequency-response computation | Shared by curve renderer, track engine, preamp auto-gain |
 | Track engine | Decode → DSP → crossfade → WASAPI out | Path 2 above |
 | ABX core | Trial sequencing, randomization, level matching, statistics, session history | Design: Q-05, Q-06 |

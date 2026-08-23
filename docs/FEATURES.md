@@ -17,7 +17,10 @@ The full feature vision, captured from idea-mapping sessions. Tiering into v1-sp
 - Parametric curve editor: draggable filters, and the **individual filter curves shown against the summed response** they produce.
 - Presets: create, save, load; AutoEQ headphone database import.
 - Auto-preamp / clipping protection (from summed response peak, TB-06).
-- Device selection and per-device profiles.
+- Device selection and **per-device profiles**, with device-level auto-switching: Windows reports USB DAC connect/disconnect and default-device changes, so "DAC appears → its profile activates" is real. What's *not* detectable is which headphone hangs off a DAC/amp's analog jack — so headphone-level switching is a fast manual switcher (tray menu / hotkey), not magic.
+- **Per-channel EQ and L/R balance**: independent left/right curves (APO supports per-channel filters natively). Serves asymmetric hearing — an accessibility win — and the Fingerprint Lab wants per-ear data anyway. Config engine and data model are per-channel-aware from day one.
+- **Preset history as a branching tree**: every edit journaled (ADR-0006 provenance applied to tuning); generous Ctrl-Z stack; an optional keybinding forks a new *branch*, and the full tree is visible and jumpable. Combined with the test machinery: blind A/B any two nodes — "did my last hour of fiddling actually improve anything?" (Q-17)
+- **Loudness-compensation mode (the namesake feature)**: EQ gently reshapes with listening level per the Fletcher–Munson/equal-loudness contours. **Off by default**, opt-in. Volume anchoring design: Q-16.
 
 ## The Listening Lab (the killer feature cluster)
 
@@ -38,7 +41,12 @@ Nothing on the market does this. Its own tab, visibly its own setup:
 - **Capture**: guided "capture headphone fingerprint" flow — sweeps + multiple reseatings, measured at *your* ears. Each fingerprint is the coupled HpTF∘ear response; HpTF and HRTF aren't separated and don't need to be, because within one person's library the ear factor cancels out of comparisons.
 - **Library**: fingerprints accumulate per headphone (HD650, HD800S, …); experiment freely — e.g. EQ one headphone to statistically match another, verify by re-measurement.
 - **Export/import + bridging**: libraries are shareable files. Reviewers (headphones.com, The Headphone Show) capture in-app and publish; users import and Fletcher **bridges** via a shared headphone — (X_on_reviewer − shared_on_reviewer) applied to shared_on_you ≈ headphone X on your ears. At-home virtual auditioning of basically any headphone, honest about validity (reliable mainly below ~5–6 kHz; per-frequency confidence shown, TB-18).
-- **Binaural recordings**: possible companion feature (correct playback on any fingerprinted headphone); scope unresolved (Q-13).
+- **Mic calibration import**: calibration curves (frequency/dB pairs + sensitivity header) applied to all captures, with the cal file identity recorded in fingerprint metadata (TB-19). First-class formats: miniDSP (UMIK-series), Dayton iMM-6, OmniMic — real fixtures exist in the user's `AudioAnalyzer/Calibration Files`.
+- Resolved: binaural recordings were the matching stack all along (Q-13); no separate playback feature.
+
+## Scope note
+
+**Headphones first.** Speaker/room correction (REW import, measured room EQ) is deferred — the config engine still round-trips `Convolution` and other directives losslessly (Q-09), so nothing is foreclosed.
 
 ## Visualization
 

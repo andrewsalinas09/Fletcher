@@ -27,4 +27,7 @@
 - **Fingerprint** — Fletcher's term for one measured headphone response at one person's ears: the coupled HpTF∘ear transfer function, with reseating statistics attached.
 - **Bridging** — transferring a fingerprint across people via a headphone both have measured: (X_on_them − shared_on_them) + shared_on_you ≈ X on your ears. Valid mainly below ~5–6 kHz (TB-18).
 - **Clip Studio** — the curation view (waveform + spectrogram + span marking + tags) where users build their clip libraries (ADR-0004).
+- **Loudness-compensation mode** — opt-in mode reshaping EQ with listening level per equal-loudness contours (the namesake feature); anchored to a user-set reference volume (Q-16).
+- **Calibration file** — a mic's frequency/dB correction curve (miniDSP/Dayton-style text formats); applied to captures and recorded in fingerprint metadata.
+- **History tree** — the branching, jumpable journal of preset edits; any two nodes can be blind-tested against each other (Q-17).
 - **Crossfade switch** — the short equal-power blend between processed/bypass buses that makes track-mode switching seamless.
