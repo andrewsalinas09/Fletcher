@@ -1,18 +1,23 @@
 {
   "artboards": [
-    { "file": "Main.dc.html", "title": "A · Console", "x": 0, "y": 0, "w": 1140, "h": 760 },
-    { "file": "Notebook.dc.html", "title": "B · Notebook", "x": 1240, "y": 0, "w": 1140, "h": 760 },
-    { "file": "Swiss.dc.html", "title": "C · Swiss", "x": 2480, "y": 0, "w": 1140, "h": 760 },
-    { "file": "Settings.dc.html", "title": "Settings (drawn in A)", "x": 0, "y": 900, "w": 1140, "h": 760 }
+    { "file": "Main.dc.html", "title": "EQ tab · v2", "x": 0, "y": 0, "w": 1140, "h": 760, "page": "page-1" },
+    { "file": "Settings.dc.html", "title": "Settings", "x": 1240, "y": 0, "w": 1140, "h": 760, "page": "page-1" },
+    { "file": "Notebook.dc.html", "title": "B · Notebook (unchosen)", "x": 0, "y": 0, "w": 1140, "h": 760, "page": "page-2" },
+    { "file": "Swiss.dc.html", "title": "C · Swiss (rejected)", "x": 1240, "y": 0, "w": 1140, "h": 760, "page": "page-2" }
+  ],
+  "pages": [
+    { "id": "page-1", "name": "Fletcher" },
+    { "id": "page-2", "name": "Unchosen" }
   ],
   "annotations": [
     {
-      "id": "direction-brief",
+      "id": "v2-notes",
       "x": 0,
-      "y": -280,
+      "y": -300,
       "w": 560,
-      "text": "Three directions for Fletcher, all built from your real HD650 preset.\n\nA · Console — broadcast equipment on paper. Dense, technical, mono type, channel-strip rail. Tradeoff: austere.\nB · Notebook — the 1933 Fletcher–Munson lab-paper angle. Plotted figure, data table, serif. Tradeoff: slower to scan, less software-y.\nC · Swiss — poster-bold: huge numerals, flat red/blue blocks, thick rules. Tradeoff: loud for a daily driver.\n\nSettings (bottom) is drawn in A's language and moves to whichever direction wins. Pick one, mix pieces, or tear them all up."
+      "page": "page-1",
+      "text": "Console v2 — reworked from your notes:\n\n· One-row header: wordmark, tabs, device chip. Wasted upper-left gone.\n· The filter rail is dead. Filters ARE the graph now — handles on the curve, each filter's own curve drawn faint, the selected one edited in the strip below. Chips row = quick selection, ordered per your Settings toggle.\n· Denser graph: 3/6 dB rules, ten labeled frequency lines.\n· Blind test moved out of the corner into the BENCH — a bar docked at the bottom of every tab: A/B state, hotkey, level-match status, Load a track, Blind test.\n· Preset line now carries the history tree (12 steps · 2 branches) and auto-preamp.\n\nSettings unchanged — you liked it."
     }
   ],
-  "launch": { "view": "canvas" }
+  "launch": { "view": "canvas", "page": "page-1" }
 }
