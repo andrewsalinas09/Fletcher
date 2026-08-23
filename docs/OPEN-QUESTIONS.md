@@ -16,7 +16,8 @@ One `Include: fletcher.txt` line; Fletcher owns only its own file. Residual open
 ## Q-04 · Track-mode output path — **Resolved → ADR-0009**
 Spike-verified: WASAPI exclusive bypasses APO. Ships as the default mode, with journaled config-blank as a selectable second mode / automatic fallback.
 
-## Q-05 · Test protocols and statistics design — **Open**
+## Q-05 · Test protocols and statistics design — **Open (requirements sharpened 2026-08-22)**
+New settled requirements from the user: **(a) Live stats are hidable-by-default during a session** — the user may reveal them mid-test, but the UI states in professional language that viewing interim results can bias sequential testing, and the session record notes when stats were viewed (provenance, TB-24). **(b) Labeled replay is mandatory**: every session stores the exact played sequence — trial order, X assignments, clips, matched levels — so the user can replay the whole session afterwards *with labels revealed* ("trial 7, X was B — listen again"). A test you can't relive is a test you can't learn from. **(c) The Lab is the retrieval surface**: Clip Studio annotates richly; the Lab's job is finding and searching exactly the material you want and assembling custom batteries from the database.
 Two distinct test types are now in scope: **discrimination** (ABX — has a correct answer; binomial p-value) and **preference** (blind A/B vote — no correct answer; preference proportion vs. 50% null, needs its own stats treatment, TB-15). Design: trial counts fixed vs. sequential; what's reported; per-clip/per-band breakdowns from the clip battery (Q-11); history per user / per headphone / per preset pair; ear-training/gamification. Guard against misleading small-N (TB-10).
 
 ## Q-06 · Level-matching semantics — **Resolved (principle) → ADR-0003**
