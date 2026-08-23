@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { emit, listen } from "@tauri-apps/api/event";
+import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import "./App.css";
 
 type EqFilter = {
@@ -396,15 +396,15 @@ function PopoutHistory() {
   const [data, setData] = useState<HistTreeData | null>(null);
   useEffect(() => {
     const un = listen<HistTreeData>("hist-sync", (e) => setData(e.payload));
-    emit("hist-hello", {});
+    emitTo("main", "hist-hello", {});
     const onKey = (e: KeyboardEvent) => {
       const k = e.key.toLowerCase();
       if (e.ctrlKey && !e.shiftKey && k === "z") {
         e.preventDefault();
-        emit("hist-cmd", { type: "undo", id: 0 });
+        emitTo("main", "hist-cmd", { type: "undo", id: 0 });
       } else if ((e.ctrlKey && k === "y") || (e.ctrlKey && e.shiftKey && k === "z")) {
         e.preventDefault();
-        emit("hist-cmd", { type: "redo", id: 0 });
+        emitTo("main", "hist-cmd", { type: "redo", id: 0 });
       }
     };
     window.addEventListener("keydown", onKey);
@@ -423,8 +423,8 @@ function PopoutHistory() {
       {data ? (
         <HistoryTree
           data={data}
-          onJump={(id) => emit("hist-cmd", { type: "jump", id })}
-          onDelete={(id) => emit("hist-cmd", { type: "del", id })}
+          onJump={(id) => emitTo("main", "hist-cmd", { type: "jump", id })}
+          onDelete={(id) => emitTo("main", "hist-cmd", { type: "del", id })}
         />
       ) : (
         <p className="dim-sm" style={{ padding: 20 }}>
