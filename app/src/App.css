@@ -299,6 +299,10 @@ nav {
   background: rgb(20 23 26 / 25%);
 }
 
+.hist-panel.full { position: static; transform: none; width: 100vw; height: 100vh; border: none; box-shadow: none; }
+
+.hist-body { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+
 .hist-panel {
   position: fixed;
   left: 50%;

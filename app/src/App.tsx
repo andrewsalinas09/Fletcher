@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import "./App.css";
 
 type EqFilter = {
@@ -148,6 +148,281 @@ function ValueEdit({
   );
 }
 
+// This bundle serves both windows; the query param picks the personality.
+const IS_HISTORY_WINDOW = new URLSearchParams(window.location.search).get("view") === "history";
+
+type HistTreeNode = { id: number; parent: number | null; children: number[]; label: string; ts: number };
+type HistTreeData = { nodes: HistTreeNode[]; current: number };
+
+/** The family-tree canvas: cursor-anchored zoom, drag pan, armed deletes.
+ *  Shared by the in-app panel and the pop-out window. */
+function HistoryTree({
+  data,
+  onJump,
+  onDelete,
+}: {
+  data: HistTreeData;
+  onJump: (id: number) => void;
+  onDelete: (id: number) => void;
+}) {
+  const [zoom, setZoom] = useState(1);
+  const [armed, setArmed] = useState<{ id: number; count: number } | null>(null);
+  const armedT = useRef<number | null>(null);
+  const vpRef = useRef<HTMLDivElement | null>(null);
+  const pan = useRef<{ x: number; y: number; sl: number; st: number } | null>(null);
+  const pending = useRef<{ ox: number; oy: number; sl: number; st: number; prevZ: number } | null>(null);
+
+  const map = useMemo(() => new Map(data.nodes.map((n) => [n.id, n])), [data]);
+
+  const rows = useMemo(() => {
+    const path = new Set<number>();
+    let c: number | null | undefined = data.current;
+    while (c != null) {
+      path.add(c);
+      c = map.get(c)?.parent;
+    }
+    const depth = new Map<number, number>();
+    return [...map.keys()]
+      .sort((a, b) => a - b)
+      .map((id) => {
+        const n = map.get(id)!;
+        const d = n.parent == null ? 0 : (depth.get(n.parent) ?? 0) + 1;
+        depth.set(id, d);
+        return { id, label: n.label, ts: n.ts, depth: d, onPath: path.has(id), isCurrent: id === data.current };
+      });
+  }, [data, map]);
+
+  const subCount = (id: number) => {
+    let count = 0;
+    const stack = [id];
+    while (stack.length) {
+      const n = stack.pop()!;
+      count++;
+      stack.push(...(map.get(n)?.children ?? []));
+    }
+    return count;
+  };
+
+  const requestDelete = (id: number) => {
+    const count = subCount(id);
+    if (count <= 1 || armed?.id === id) {
+      onDelete(id);
+      setArmed(null);
+      return;
+    }
+    setArmed({ id, count });
+    if (armedT.current != null) window.clearTimeout(armedT.current);
+    armedT.current = window.setTimeout(() => setArmed(null), 3000);
+  };
+
+  // Wheel zoom, non-passive; the scroll correction lands after resize.
+  useEffect(() => {
+    const vp = vpRef.current;
+    if (!vp) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const rect = vp.getBoundingClientRect();
+      const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+      setZoom((z) => {
+        const z2 = Math.max(0.3, Math.min(3, z * factor));
+        if (z2 !== z) {
+          pending.current = {
+            ox: e.clientX - rect.left,
+            oy: e.clientY - rect.top,
+            sl: vp.scrollLeft,
+            st: vp.scrollTop,
+            prevZ: z,
+          };
+        }
+        return z2;
+      });
+    };
+    vp.addEventListener("wheel", onWheel, { passive: false });
+    return () => vp.removeEventListener("wheel", onWheel);
+  }, []);
+
+  useLayoutEffect(() => {
+    const p = pending.current;
+    const vp = vpRef.current;
+    if (!p || !vp) return;
+    pending.current = null;
+    const ratio = zoom / p.prevZ;
+    vp.scrollLeft = (p.sl + p.ox) * ratio - p.ox;
+    vp.scrollTop = (p.st + p.oy) * ratio - p.oy;
+  }, [zoom]);
+
+  useLayoutEffect(() => {
+    const vp = vpRef.current;
+    if (!vp) return;
+    vp.scrollLeft = (vp.scrollWidth - vp.clientWidth) / 2;
+    vp.scrollTop = 0;
+  }, []);
+
+  if (!map.has(0)) return null;
+
+  const NODE_W = 130;
+  const LEVEL_H = 130;
+  const PAD = 90;
+  let leaf = 0;
+  const pos = new Map<number, { x: number; y: number }>();
+  const assign = (id: number, depth: number): number => {
+    const n = map.get(id)!;
+    let x: number;
+    if (n.children.length === 0) {
+      x = leaf++ * NODE_W;
+    } else {
+      const xs = n.children.map((c) => assign(c, depth + 1));
+      x = (Math.min(...xs) + Math.max(...xs)) / 2;
+    }
+    pos.set(id, { x, y: depth * LEVEL_H });
+    return x;
+  };
+  assign(0, 0);
+  const maxDepth = rows.reduce((m, r) => Math.max(m, r.depth), 0);
+  const W = Math.max(Math.max(leaf, 1) * NODE_W + PAD * 2, 1400);
+  const H = Math.max((maxDepth + 1) * LEVEL_H + PAD * 2, 900);
+  const PADX = (W - Math.max(leaf - 1, 0) * NODE_W) / 2;
+
+  return (
+    <div
+      className="hist-body"
+      onPointerDownCapture={(e) => {
+        // Click-away disarms a pending delete confirm.
+        if (!(e.target as Element).closest(".tree-del, .tree-confirm")) setArmed(null);
+      }}
+    >
+      <div
+        className="hist-viewport"
+        ref={vpRef}
+        onPointerDown={(e) => {
+          if ((e.target as Element).closest(".tree-g")) return;
+          const vp = vpRef.current;
+          if (!vp) return;
+          pan.current = { x: e.clientX, y: e.clientY, sl: vp.scrollLeft, st: vp.scrollTop };
+          (e.currentTarget as Element).setPointerCapture(e.pointerId);
+        }}
+        onPointerMove={(e) => {
+          const p = pan.current;
+          const vp = vpRef.current;
+          if (!p || !vp) return;
+          vp.scrollLeft = p.sl - (e.clientX - p.x);
+          vp.scrollTop = p.st - (e.clientY - p.y);
+        }}
+        onPointerUp={() => {
+          pan.current = null;
+        }}
+      >
+        <div className="hist-graph" style={{ width: W * zoom, height: H * zoom }}>
+          <div className="hist-scale" style={{ transform: `scale(${zoom})`, width: W, height: H }}>
+            <svg width={W} height={H}>
+              {rows.map((r) => {
+                const n = map.get(r.id);
+                if (!n || n.parent == null) return null;
+                const p = pos.get(n.parent)!;
+                const c = pos.get(r.id)!;
+                const px = p.x + PADX;
+                const py = p.y + PAD;
+                const cxx = c.x + PADX;
+                const cyy = c.y + PAD;
+                return (
+                  <path
+                    key={`e${r.id}`}
+                    d={`M ${px} ${py + 26} C ${px} ${py + 70}, ${cxx} ${cyy - 70}, ${cxx} ${cyy - 26}`}
+                    className={`hist-edge ${r.onPath ? "on" : ""}`}
+                  />
+                );
+              })}
+              {rows.map((r) => {
+                const c = pos.get(r.id)!;
+                const x = c.x + PADX;
+                const y = c.y + PAD;
+                const isArmed = armed?.id === r.id;
+                return (
+                  <g key={`n${r.id}`} className={`tree-g ${r.onPath ? "on" : "off"}`} onClick={() => onJump(r.id)}>
+                    <circle cx={x} cy={y} r={44} fill="transparent" />
+                    <circle
+                      cx={x}
+                      cy={y}
+                      r={r.isCurrent ? 28 : 24}
+                      className={`hist-node ${r.isCurrent ? "current" : ""} ${r.onPath ? "on" : ""}`}
+                    />
+                    <text x={x} y={y - 1} className={`tree-label ${r.isCurrent ? "inv" : ""}`}>
+                      {r.label}
+                    </text>
+                    <text x={x} y={y + 11} className={`tree-time ${r.isCurrent ? "inv" : ""}`}>
+                      {new Date(r.ts).toLocaleTimeString([], { timeStyle: "short" })}
+                    </text>
+                    {r.id !== 0 && !isArmed && (
+                      <text
+                        x={x + 26}
+                        y={y - 22}
+                        className="tree-del"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          requestDelete(r.id);
+                        }}
+                      >
+                        ×
+                      </text>
+                    )}
+                    {isArmed && (
+                      <g
+                        className="tree-confirm"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          requestDelete(r.id);
+                        }}
+                      >
+                        <rect x={x - 52} y={y - 56} width={104} height={22} />
+                        <text x={x} y={y - 41}>{`delete ${armed.count} steps?`}</text>
+                      </g>
+                    )}
+                  </g>
+                );
+              })}
+            </svg>
+          </div>
+        </div>
+      </div>
+      <div className="hist-hint mono">
+        click a node to jump (audibly) · scroll = zoom · drag empty space = pan · × prunes (asks first for whole branches)
+      </div>
+    </div>
+  );
+}
+
+/** The pop-out window: renders the shared tree, fed by the main window over events. */
+function PopoutHistory() {
+  const [data, setData] = useState<HistTreeData | null>(null);
+  useEffect(() => {
+    const un = listen<HistTreeData>("hist-sync", (e) => setData(e.payload));
+    emit("hist-hello", {});
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
+  return (
+    <div className="hist-panel full">
+      <div className="hist-head">
+        <span className="mono hist-title">HISTORY</span>
+        <span className="spacer" />
+        <span className="mono dim-sm">live-synced with the main window</span>
+      </div>
+      {data ? (
+        <HistoryTree
+          data={data}
+          onJump={(id) => emit("hist-cmd", { type: "jump", id })}
+          onDelete={(id) => emit("hist-cmd", { type: "del", id })}
+        />
+      ) : (
+        <p className="dim-sm" style={{ padding: 20 }}>
+          waiting for the main window…
+        </p>
+      )}
+    </div>
+  );
+}
+
 type PresetsState = { presets: string[]; active: string | null };
 type AbInfo = { side: string; matchDb: number };
 type Device = { id: string; name: string; isDefault: boolean };
@@ -234,6 +509,14 @@ const TYPE_INFO: Record<string, { name: string; desc: string }> = {
 };
 
 export default function App() {
+  // The history pop-out window renders only the tree (fed over events).
+  // Constant per window lifetime, so the early return is hook-safe.
+  if (IS_HISTORY_WINDOW) return <PopoutHistory />;
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  return <MainApp />;
+}
+
+function MainApp() {
   const [state, setState] = useState<EqState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
@@ -593,109 +876,6 @@ export default function App() {
   const hist = useRef<{ nodes: Map<number, HistNode>; current: number; next: number } | null>(null);
   const [histVersion, setHistVersion] = useState(0);
   const [histOpen, setHistOpen] = useState(false);
-  const [histZoom, setHistZoom] = useState(1);
-  const [armedDel, setArmedDel] = useState<{ id: number; count: number } | null>(null);
-  const armedTimer = useRef<number | null>(null);
-  const histVp = useRef<HTMLDivElement | null>(null);
-  const panState = useRef<{ x: number; y: number; sl: number; st: number } | null>(null);
-
-  const subtreeCount = (id: number): number => {
-    const h = hist.current;
-    if (!h) return 0;
-    let count = 0;
-    const stack = [id];
-    while (stack.length) {
-      const n = stack.pop()!;
-      count++;
-      stack.push(...(h.nodes.get(n)?.children ?? []));
-    }
-    return count;
-  };
-
-  const requestDelete = (id: number) => {
-    const count = subtreeCount(id);
-    if (count <= 1) {
-      deleteNode(id);
-      setArmedDel(null);
-      return;
-    }
-    if (armedDel?.id === id) {
-      deleteNode(id);
-      setArmedDel(null);
-      return;
-    }
-    setArmedDel({ id, count });
-    if (armedTimer.current != null) window.clearTimeout(armedTimer.current);
-    armedTimer.current = window.setTimeout(() => setArmedDel(null), 3000);
-  };
-
-  // Canvas navigation: plain wheel zooms anchored at the cursor. Non-passive
-  // listener (React's root wheel handlers can't preventDefault), with the
-  // scroll correction applied in a layout effect AFTER the canvas has resized
-  // — correcting before the resize gets clamped and drifts off the cursor.
-  const pendingZoom = useRef<{ ox: number; oy: number; sl: number; st: number; prevZ: number } | null>(null);
-
-  useEffect(() => {
-    const vp = histVp.current;
-    if (!histOpen || !vp) return;
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      const rect = vp.getBoundingClientRect();
-      const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-      setHistZoom((z) => {
-        const z2 = Math.max(0.3, Math.min(3, z * factor));
-        if (z2 !== z) {
-          pendingZoom.current = {
-            ox: e.clientX - rect.left,
-            oy: e.clientY - rect.top,
-            sl: vp.scrollLeft,
-            st: vp.scrollTop,
-            prevZ: z,
-          };
-        }
-        return z2;
-      });
-    };
-    vp.addEventListener("wheel", onWheel, { passive: false });
-    return () => vp.removeEventListener("wheel", onWheel);
-  }, [histOpen]);
-
-  useLayoutEffect(() => {
-    const p = pendingZoom.current;
-    const vp = histVp.current;
-    if (!p || !vp) return;
-    pendingZoom.current = null;
-    const ratio = histZoom / p.prevZ;
-    vp.scrollLeft = (p.sl + p.ox) * ratio - p.ox;
-    vp.scrollTop = (p.st + p.oy) * ratio - p.oy;
-  }, [histZoom]);
-
-  // Opening centers the tree in the viewport.
-  useLayoutEffect(() => {
-    if (!histOpen) return;
-    const vp = histVp.current;
-    if (!vp) return;
-    vp.scrollLeft = (vp.scrollWidth - vp.clientWidth) / 2;
-    vp.scrollTop = 0;
-  }, [histOpen]);
-
-  const treePanDown = (e: React.PointerEvent) => {
-    if ((e.target as Element).closest(".tree-g")) return; // nodes stay clickable
-    const vp = histVp.current;
-    if (!vp) return;
-    panState.current = { x: e.clientX, y: e.clientY, sl: vp.scrollLeft, st: vp.scrollTop };
-    (e.currentTarget as Element).setPointerCapture(e.pointerId);
-  };
-  const treePanMove = (e: React.PointerEvent) => {
-    const p = panState.current;
-    const vp = histVp.current;
-    if (!p || !vp) return;
-    vp.scrollLeft = p.sl - (e.clientX - p.x);
-    vp.scrollTop = p.st - (e.clientY - p.y);
-  };
-  const treePanUp = () => {
-    panState.current = null;
-  };
   const wheelCommit = useRef<number | null>(null);
 
   const snapOf = (filters: EqFilter[]): ChainSnap =>
@@ -807,34 +987,65 @@ export default function App() {
     setHistVersion((v) => v + 1);
   };
 
-  const histRows = useMemo(() => {
+  
+
+  // Serializable tree (snapshots stripped) for the shared canvas + pop-out sync.
+  const treeData = useMemo<HistTreeData | null>(() => {
     const h = hist.current;
-    if (!h) return [];
-    const path = new Set<number>();
-    let c: number | null | undefined = h.current;
-    while (c != null) {
-      path.add(c);
-      c = h.nodes.get(c)?.parent;
-    }
-    const depth = new Map<number, number>();
-    return [...h.nodes.keys()]
-      .sort((a, b) => a - b)
-      .map((id) => {
-        const n = h.nodes.get(id)!;
-        const d = n.parent == null ? 0 : (depth.get(n.parent) ?? 0) + 1;
-        depth.set(id, d);
-        return {
-          id,
-          label: n.label,
-          ts: n.ts,
-          depth: d,
-          branchPoint: n.children.length > 1,
-          onPath: path.has(id),
-          isCurrent: id === h.current,
-        };
-      });
+    if (!h) return null;
+    return {
+      nodes: [...h.nodes.values()].map((n) => ({
+        id: n.id,
+        parent: n.parent,
+        children: [...n.children],
+        label: n.label,
+        ts: n.ts,
+      })),
+      current: h.current,
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [histVersion]);
+  const treeDataRef = useRef<HistTreeData | null>(null);
+  treeDataRef.current = treeData;
+
+  // Live-sync the pop-out window; answer its hello; act on its commands.
+  useEffect(() => {
+    if (treeData) emit("hist-sync", treeData);
+  }, [treeData]);
+  useEffect(() => {
+    const u1 = listen("hist-hello", () => {
+      if (treeDataRef.current) emit("hist-sync", treeDataRef.current);
+    });
+    const u2 = listen<{ type: string; id: number }>("hist-cmd", (e) => {
+      if (e.payload.type === "jump") jumpTo(e.payload.id);
+      else if (e.payload.type === "del") deleteNode(e.payload.id);
+    });
+    return () => {
+      u1.then((f) => f());
+      u2.then((f) => f());
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const popOutHistory = async () => {
+    try {
+      const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+      const existing = await WebviewWindow.getByLabel("history");
+      if (existing) {
+        await existing.setFocus();
+      } else {
+        new WebviewWindow("history", {
+          url: "index.html?view=history",
+          title: "Fletcher — History",
+          width: 1050,
+          height: 760,
+        });
+      }
+      setHistOpen(false);
+    } catch (e) {
+      showNotice(String(e));
+    }
+  };
 
   const histStats = useMemo(() => {
     const h = hist.current;
@@ -1561,140 +1772,25 @@ export default function App() {
                 {`⟲ ${histStats.edits}${histStats.branches ? ` · ⑂${histStats.branches}` : ""}`}
               </span>
               {histOpen &&
+                treeData &&
                 createPortal(
-                (() => {
-                  const h = hist.current;
-                  if (!h) return null;
-                  const info = new Map(histRows.map((r) => [r.id, r]));
-                  const NODE_W = 130;
-                  const LEVEL_H = 130;
-                  const PAD = 90;
-                  // Tidy family-tree layout: leaves get slots, parents center
-                  // over their children.
-                  let leaf = 0;
-                  const pos = new Map<number, { x: number; y: number }>();
-                  const assign = (id: number, depth: number): number => {
-                    const n = h.nodes.get(id)!;
-                    let x: number;
-                    if (n.children.length === 0) {
-                      x = leaf++ * NODE_W;
-                    } else {
-                      const xs = n.children.map((c) => assign(c, depth + 1));
-                      x = (Math.min(...xs) + Math.max(...xs)) / 2;
-                    }
-                    pos.set(id, { x, y: depth * LEVEL_H });
-                    return x;
-                  };
-                  assign(0, 0);
-                  const maxDepth = histRows.reduce((m, r) => Math.max(m, r.depth), 0);
-                  const W = Math.max(Math.max(leaf, 1) * NODE_W + PAD * 2, 1400);
-                  const H = Math.max((maxDepth + 1) * LEVEL_H + PAD * 2, 900);
-                  // Center the tree horizontally on the canvas.
-                  const PADX = (W - Math.max(leaf - 1, 0) * NODE_W) / 2;
-                  return (
-                    <>
-                      <div className="hist-backdrop" onClick={() => setHistOpen(false)} />
-                      <div className="hist-panel">
-                        <div className="hist-head">
-                          <span className="mono hist-title">{`HISTORY — ${presets.active ?? "chain"}`}</span>
-                          <span className="mono dim-sm">{`${histStats.edits} steps${histStats.branches ? ` · ${histStats.branches} branch points` : ""}`}</span>
-                          <span className="spacer" />
-                          <span className="hist-close" onClick={() => setHistOpen(false)}>×</span>
-                        </div>
-                        <div
-                          className="hist-viewport"
-                          ref={histVp}
-                          onPointerDown={treePanDown}
-                          onPointerMove={treePanMove}
-                          onPointerUp={treePanUp}
-                        >
-                          <div className="hist-graph" style={{ width: W * histZoom, height: H * histZoom }}>
-                            <div className="hist-scale" style={{ transform: `scale(${histZoom})`, width: W, height: H }}>
-                              <svg width={W} height={H}>
-                                {histRows.map((r) => {
-                                  const n = h.nodes.get(r.id);
-                                  if (!n || n.parent == null) return null;
-                                  const p = pos.get(n.parent)!;
-                                  const c = pos.get(r.id)!;
-                                  const px = p.x + PADX;
-                                  const py = p.y + PAD;
-                                  const cxx = c.x + PADX;
-                                  const cyy = c.y + PAD;
-                                  return (
-                                    <path
-                                      key={`e${r.id}`}
-                                      d={`M ${px} ${py + 26} C ${px} ${py + 70}, ${cxx} ${cyy - 70}, ${cxx} ${cyy - 26}`}
-                                      className={`hist-edge ${r.onPath ? "on" : ""}`}
-                                    />
-                                  );
-                                })}
-                                {histRows.map((r) => {
-                                  const c = pos.get(r.id)!;
-                                  const x = c.x + PADX;
-                                  const y = c.y + PAD;
-                                  const inf = info.get(r.id)!;
-                                  const armed = armedDel?.id === r.id;
-                                  return (
-                                    <g
-                                      key={`n${r.id}`}
-                                      className={`tree-g ${inf.onPath ? "on" : "off"}`}
-                                      onClick={() => jumpTo(r.id)}
-                                    >
-                                      {/* generous invisible hit area keeps hover alive en route to × */}
-                                      <circle cx={x} cy={y} r={44} fill="transparent" />
-                                      <circle
-                                        cx={x}
-                                        cy={y}
-                                        r={inf.isCurrent ? 28 : 24}
-                                        className={`hist-node ${inf.isCurrent ? "current" : ""} ${inf.onPath ? "on" : ""}`}
-                                      />
-                                      <text x={x} y={y - 1} className={`tree-label ${inf.isCurrent ? "inv" : ""}`}>
-                                        {r.label}
-                                      </text>
-                                      <text x={x} y={y + 11} className={`tree-time ${inf.isCurrent ? "inv" : ""}`}>
-                                        {new Date(r.ts).toLocaleTimeString([], { timeStyle: "short" })}
-                                      </text>
-                                      {r.id !== 0 && !armed && (
-                                        <text
-                                          x={x + 26}
-                                          y={y - 22}
-                                          className="tree-del"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            requestDelete(r.id);
-                                          }}
-                                        >
-                                          ×
-                                        </text>
-                                      )}
-                                      {armed && (
-                                        <g
-                                          className="tree-confirm"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            requestDelete(r.id);
-                                          }}
-                                        >
-                                          <rect x={x - 52} y={y - 56} width={104} height={22} />
-                                          <text x={x} y={y - 41}>{`delete ${armedDel.count} steps?`}</text>
-                                        </g>
-                                      )}
-                                    </g>
-                                  );
-                                })}
-                              </svg>
-                            </div>
-                          </div>
-                        </div>
-                        <div className="hist-hint mono">
-                          click a node to jump (audibly) · scroll = zoom · drag empty space = pan · × prunes (asks first for whole branches)
-                        </div>
+                  <>
+                    <div className="hist-backdrop" onClick={() => setHistOpen(false)} />
+                    <div className="hist-panel">
+                      <div className="hist-head">
+                        <span className="mono hist-title">{`HISTORY — ${presets.active ?? "chain"}`}</span>
+                        <span className="mono dim-sm">{`${histStats.edits} steps${histStats.branches ? ` · ${histStats.branches} branch points` : ""}`}</span>
+                        <span className="spacer" />
+                        <button onClick={popOutHistory} title="open the history tree in its own window — stays live-synced">
+                          ⇱ pop out
+                        </button>
+                        <span className="hist-close" onClick={() => setHistOpen(false)}>×</span>
                       </div>
-                    </>
-                  );
-                })(),
-                document.body,
-              )}
+                      <HistoryTree data={treeData} onJump={jumpTo} onDelete={deleteNode} />
+                    </div>
+                  </>,
+                  document.body,
+                )}
             </span>
             <span className="dim-sm">
               drag handles · scroll for Q · locked filters: duplicate from live to edit
