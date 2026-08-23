@@ -1,0 +1,30 @@
+# Glossary
+
+- **APO** — Audio Processing Object; Windows' hook for system-level per-device DSP. "Equalizer APO" is the specific APO Fletcher drives.
+- **config.txt** — Equalizer APO's root configuration file; the entire "API" surface. Hot-reloaded on change.
+- **Peace** — the incumbent Equalizer APO frontend; de facto standard, dated UI.
+- **AutoEQ** — open database of measured headphone EQ presets targeting reference curves.
+- **Parametric EQ** — EQ defined by filters with free center frequency, gain, and Q (vs. fixed-band graphic EQ).
+- **Biquad** — second-order IIR filter; the building block of parametric EQ. Coefficients per the **RBJ cookbook**.
+- **Q** — filter quality factor; controls bandwidth (higher Q = narrower).
+- **Preamp** — global gain applied before filters; negative preamp offsets boost filters to prevent clipping.
+- **Auto-preamp** — computing that offset from the summed filter response peak automatically (TB-06).
+- **LUFS** — Loudness Units relative to Full Scale (EBU R128); perceptual loudness measure used for level matching.
+- **Level matching** — equalizing the loudness of two comparison paths so loudness bias can't contaminate a listening test.
+- **A/B** — sighted comparison between two configurations. **ABX** — blind protocol: X is randomly A or B; the listener identifies it; repeated trials yield a binomial p-value.
+- **Loudness bias** — louder is reliably judged "better" even at fractions of a dB; the failure mode ABX + level matching exists to defeat.
+- **Fletcher–Munson curves** — equal-loudness contours; perceived frequency balance changes with playback level. The app's namesake.
+- **WASAPI** — Windows audio session API. **Exclusive mode** — a WASAPI mode giving an app the device directly, bypassing APOs (TB-04).
+- **Loopback capture** — WASAPI feature for recording what a device is playing; the route to a live spectrum analyzer.
+- **Track mode** — Fletcher's in-app engine for A/B-ing an imported song (vs. **system-wide mode**, which swaps APO configs).
+- **Discrimination test** — blind test with a correct answer ("is X = A or B?"); measures whether a difference is *audible*. ABX is the canonical protocol.
+- **Preference test** — blind forced-choice vote ("which do you like more?"); no correct answer; measures taste, not audibility.
+- **Clip battery** — a set of characteristic segments (bass-heavy, treble-heavy, mids…) extracted from an imported track, used to run tests systematically across content types.
+- **HRTF** — head-related transfer function; how your head/ears filter sound from a direction. **Binaural recording** — recording made with mics at the ears, capturing an HRTF.
+- **HpTF** — headphone transfer function; the response a specific headphone produces at your eardrum.
+- **Deconvolution** — removing a known transfer function from a signal by applying its inverse filter; numerically dangerous without regularization (TB-16).
+- **Reinsertion variance** — measurement-to-measurement spread caused by re-seating mics/headphones; the dominant error source in HpTF work (TB-14).
+- **Fingerprint** — Fletcher's term for one measured headphone response at one person's ears: the coupled HpTF∘ear transfer function, with reseating statistics attached.
+- **Bridging** — transferring a fingerprint across people via a headphone both have measured: (X_on_them − shared_on_them) + shared_on_you ≈ X on your ears. Valid mainly below ~5–6 kHz (TB-18).
+- **Clip Studio** — the curation view (waveform + spectrogram + span marking + tags) where users build their clip libraries (ADR-0004).
+- **Crossfade switch** — the short equal-power blend between processed/bypass buses that makes track-mode switching seamless.

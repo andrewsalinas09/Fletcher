@@ -1,0 +1,50 @@
+# Open Questions
+
+Unresolved design debates. Each gets a Q-ID; when settled, mark `Resolved → ADR-XXXX` and write the ADR. Statuses: **Open**, **Leaning** (candidate answer named, not committed), **Resolved**.
+
+---
+
+## Q-01 · UI shell — **Resolved → ADR-0005**
+Tauri 2 + TypeScript/React. The one identified risk (IPC bandwidth for live visualizations) is mitigated by pushing compact Rust-computed binary frames; UI only draws.
+
+## Q-02 · Audience and the meaning of "most user-friendly ever" — **Resolved (UI model) → ADR-0002**
+One UI for everyone; advanced features greyed with hover explainers, never hidden. Also settled 2026-08-22: Fletcher does **not** install Equalizer APO itself — "no, at least not yet" — it detects and guides instead (revisit post-v1). Residual open: exact first-run wizard design.
+
+## Q-03 · Coexistence with Peace / existing configs — **Open**
+Does Fletcher own `config.txt` outright, or install itself as one `Include:` line and leave the rest untouched? Import Peace presets? Import raw APO config files? Migration story determines whether existing users can even try it safely (TB-02).
+
+## Q-04 · Track-mode output path: how does in-app playback bypass APO? — **Open**
+Candidates: (a) WASAPI exclusive mode (bypasses APO but hijacks the device), (b) temporarily write a bypass/empty config for that device during the session (restore guarantees needed — TB-11), (c) route to a device APO isn't installed on. Each has failure modes; needs a research spike.
+
+## Q-05 · Test protocols and statistics design — **Open**
+Two distinct test types are now in scope: **discrimination** (ABX — has a correct answer; binomial p-value) and **preference** (blind A/B vote — no correct answer; preference proportion vs. 50% null, needs its own stats treatment, TB-15). Design: trial counts fixed vs. sequential; what's reported; per-clip/per-band breakdowns from the clip battery (Q-11); history per user / per headphone / per preset pair; ear-training/gamification. Guard against misleading small-N (TB-10).
+
+## Q-06 · Level-matching semantics — **Resolved (principle) → ADR-0003**
+Flat reference always exists; everything matched against it by default, app-wide. Residual open: (a) the matching-gain **estimation method** when no specific track is available (system-wide mode) — response curve weighted against what reference spectrum (pink noise? speech-shaped? program-adaptive)? (b) rails behavior (TB-08); (c) manual trim UX.
+
+## Q-07 · Scope model — **Resolved → ADR-0006**
+Nothing is cut; everything in FEATURES.md is committed scope, ordered into phases by importance and dependency. The phase plan itself lives in ROADMAP.md (the scope authority).
+
+## Q-08 · AutoEQ database delivery — **Open**
+Bundle a snapshot (offline, stale) vs. fetch from the AutoEQ repo (fresh, network + licensing questions) vs. both. Also: which targets (Harman variants, oratory1990)?
+
+## Q-09 · APO config-grammar coverage — **Open**
+Full grammar (Convolution, Copy, Delay, expressions, device/channel selectors, If/Eval) or the parametric-EQ subset first? Round-tripping *unknown* directives without loss is the likely requirement either way (never destroy what we don't understand).
+
+## Q-10 · Community features — **Open**
+Preset sharing, published ABX results ("N users failed to distinguish these two targets"), profiles synced across machines? In scope at all?
+
+## Q-11 · Clip-battery extraction — **Resolved → ADR-0004**
+User-curated in a dedicated waveform/spectrogram view; personal per-track libraries with tags and genre organization. Auto-extraction deferred to a future suggestion assistant at most.
+
+## Q-12 · The Fingerprint Lab: capture, library, bridging — **Open (vision clarified 2026-08-22)**
+Its own tab, visibly its own setup. **Capture:** a guided "capture headphone fingerprint" flow — sweeps + multiple reseatings per headphone, measured at *your* ears, so each fingerprint is the coupled HpTF∘ear response (HpTF and HRTF are not separable here, and don't need to be: within one person's library the ear factor cancels when comparing two fingerprints). **Library:** fingerprints accumulate per headphone; exportable/importable, so reviewers (headphones.com, The Headphone Show) can publish libraries. **Bridging:** given a shared headphone between two libraries, transfer other fingerprints across — (X_on_reviewer − shared_on_reviewer) applied to shared_on_you ≈ X for you — enabling at-home virtual auditioning of "basically any headphone," trustworthy mainly below ~5–6 kHz. Open: sweep method details, reseating protocol and acceptance stats (TB-14), regularization/boost caps (TB-16), and what "statistically identical" means as a per-band tolerance.
+
+## Q-13 · Binaural-recording playback as its own feature? — **Resolved (2026-08-22, clarification — no ADR needed)**
+It was the matching stack all along: "the binaural thing was the matching thing." HRTF in Fletcher lives entirely inside the fingerprint coupling (Q-12). No separate binaural-playback feature.
+
+## Q-15 · Fingerprint interchange format and bridging math — **Open**
+What a fingerprint file contains beyond the response: rig/mic type, smoothing, number of reseats, per-band variance, capture-app version — the metadata that decides whether two libraries may be bridged at all (TB-19). Bridging computation: chain length limits (A→B→C compounds error), per-frequency confidence weighting, and how confidence is displayed so sub-5–6 kHz trust and treble skepticism are visible, not implied (TB-18).
+
+## Q-14 · Tuning × testing fusion mechanics — **Open**
+"Move a slider and it goes through the clips to highlight specific stuff." How literally: does adjusting a bass filter auto-queue the bass-heavy clip? Replay the full battery on demand? A/B against the pre-tweak state per clip, with optional randomized voting? Define the interaction loop so tuning and testing share one engine.
