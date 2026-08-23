@@ -1207,6 +1207,18 @@ function PopoutHistory() {
       <div className="hist-head">
         <span className="mono hist-title">HISTORY</span>
         <span className="spacer" />
+        <button
+          onClick={() => emitTo("main", "hist-cmd", { type: "import", id: 0 })}
+          title="load a history file — its tree replaces this one and you land on its current node"
+        >
+          import
+        </button>
+        <button
+          onClick={() => emitTo("main", "hist-cmd", { type: "export", id: 0 })}
+          title="save this tree (with every branch and snapshot) as a shareable file"
+        >
+          export
+        </button>
         <span className="mono dim-sm">live-synced with the main window</span>
       </div>
       {data ? (
@@ -2304,29 +2316,30 @@ function MainApp() {
   useEffect(() => {
     if (treeData) emit("hist-sync", treeData);
   }, [treeData]);
-  useEffect(() => {
-    // `alive` guard: hot-reload churn re-runs this effect with async Tauri
-    // unlisten cleanup; a stale closure that self-mutes is harmless, but a
-    // lost listener kills the whole popout→main command bus.
-    let alive = true;
-    const guard = <T,>(fn: (e: T) => void) => (e: T) => {
-      if (alive) fn(e);
-    };
-    const u1 = listen(
-      "hist-hello",
-      guard(() => {
-        if (treeDataRef.current) emit("hist-sync", treeDataRef.current);
-      }),
-    );
-    const u2 = listen<{
-      type: string;
-      id: number;
-      base?: number;
-      patch?: NodePatch;
-      snap?: ChainSnap | null;
-      spec?: { sel: number | null; base: number | null; cmp: number[] };
-    }>("hist-cmd", guard((e) => {
-      const p = e.payload;
+  // The command bus dispatches through a ref refreshed every render. Vite
+  // fast-refresh does NOT re-run []-effects, so a listener that captures app
+  // closures directly keeps executing STALE code after hot reloads — the
+  // pop-out path acting on old behavior while the main path uses new. The
+  // registered callbacks below are permanent trampolines; only this ref's
+  // body ever swaps, so both paths are always the same code.
+  type HistCmd = {
+    type: string;
+    id: number;
+    base?: number;
+    patch?: NodePatch;
+    snap?: ChainSnap | null;
+    spec?: { sel: number | null; base: number | null; cmp: number[] };
+  };
+  const busRef = useRef<{ hello: () => void; cmd: (p: HistCmd) => void; diffHello: () => void }>({
+    hello: () => {},
+    cmd: () => {},
+    diffHello: () => {},
+  });
+  busRef.current = {
+    hello: () => {
+      if (treeDataRef.current) emit("hist-sync", treeDataRef.current);
+    },
+    cmd: (p) => {
       if (p.type === "jump") jumpTo(p.id);
       else if (p.type === "del") deleteNode(p.id);
       else if (p.type === "undo") undo();
@@ -2339,18 +2352,20 @@ function MainApp() {
       else if (p.type === "compare" && p.spec) onCompareSpec(p.spec);
       else if (p.type === "popdiff") popOutDiff();
       else if (p.type === "graft" && p.base != null) graftNode(p.id, p.base);
-    }));
-    const u3 = listen(
-      "diff-hello",
-      guard(() => emitDiffSync()),
-    );
+      else if (p.type === "import") importHistory();
+      else if (p.type === "export") exportHistory();
+    },
+    diffHello: () => emitDiffSync(),
+  };
+  useEffect(() => {
+    const u1 = listen("hist-hello", () => busRef.current.hello());
+    const u2 = listen<HistCmd>("hist-cmd", (e) => busRef.current.cmd(e.payload));
+    const u3 = listen("diff-hello", () => busRef.current.diffHello());
     return () => {
-      alive = false;
       u1.then((f) => f());
       u2.then((f) => f());
       u3.then((f) => f());
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const popOutHistory = async () => {
@@ -2497,29 +2512,32 @@ function MainApp() {
     showNotice(`pasted ${pasted.length} filter${pasted.length > 1 ? "s" : ""}`);
   };
 
+  // Trampoline (same reason as the command bus): the registered handler is
+  // permanent; the ref body carries the always-current behavior.
+  const keyRef = useRef<(e: KeyboardEvent) => void>(() => {});
+  keyRef.current = (e: KeyboardEvent) => {
+    const tag = (e.target as HTMLElement)?.tagName;
+    if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+    const k = e.key.toLowerCase();
+    if (e.ctrlKey && !e.shiftKey && k === "z") {
+      e.preventDefault();
+      undo();
+    } else if ((e.ctrlKey && k === "y") || (e.ctrlKey && e.shiftKey && k === "z")) {
+      e.preventDefault();
+      redo();
+    } else if (e.ctrlKey && k === "c" && !window.getSelection()?.toString()) {
+      copySelectedFilter();
+    } else if (e.ctrlKey && k === "v") {
+      pasteFilters();
+    } else if (e.key === "Escape") {
+      selectOnly(null);
+      setTypeMenu(null);
+    }
+  };
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
-      const k = e.key.toLowerCase();
-      if (e.ctrlKey && !e.shiftKey && k === "z") {
-        e.preventDefault();
-        undo();
-      } else if ((e.ctrlKey && k === "y") || (e.ctrlKey && e.shiftKey && k === "z")) {
-        e.preventDefault();
-        redo();
-      } else if (e.ctrlKey && k === "c" && !window.getSelection()?.toString()) {
-        copySelectedFilter();
-      } else if (e.ctrlKey && k === "v") {
-        pasteFilters();
-      } else if (e.key === "Escape") {
-        selectOnly(null);
-        setTypeMenu(null);
-      }
-    };
+    const onKey = (e: KeyboardEvent) => keyRef.current(e);
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const mutateFilter = (i: number, patch: Partial<EqFilter>, immediate = false) => {
