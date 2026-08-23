@@ -94,10 +94,15 @@ function GainGauge({ gainDb, dark }: { gainDb: number; dark?: boolean }) {
   );
 }
 
+type PresetsState = { presets: string[]; active: string | null };
+
 export default function App() {
   const [state, setState] = useState<EqState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
+  const [presets, setPresets] = useState<PresetsState>({ presets: [], active: null });
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [newName, setNewName] = useState("");
   const svgRef = useRef<SVGSVGElement>(null);
   const stateRef = useRef<EqState | null>(null);
   stateRef.current = state;
@@ -112,8 +117,12 @@ export default function App() {
       })
       .catch((e) => setError(String(e)));
 
+  const refreshPresets = () =>
+    invoke<PresetsState>("presets_state").then(setPresets).catch(() => {});
+
   useEffect(() => {
     refresh();
+    refreshPresets();
     // Push-based updates from the Rust config watcher — no polling. Ignored
     // mid-drag (our own writes fire it; the drag state is fresher).
     const unlisten = listen("apo-config-changed", () => {
@@ -123,6 +132,29 @@ export default function App() {
       unlisten.then((f) => f());
     };
   }, []);
+
+  const presetAction = (p: Promise<EqState>) =>
+    p.then((s) => {
+      setState(s);
+      setError(null);
+      refreshPresets();
+      setMenuOpen(false);
+      setNewName("");
+    }).catch((e) => setError(String(e)));
+
+  const switchPreset = (name: string | null) =>
+    presetAction(invoke<EqState>("preset_switch", { name }));
+  const createPreset = (fromLive: boolean) => {
+    if (!newName.trim()) return;
+    presetAction(invoke<EqState>("preset_create", { name: newName, fromLive }));
+  };
+  const duplicatePreset = (from: string) => {
+    invoke<PresetsState>("preset_duplicate", { from, to: `${from} copy` })
+      .then(setPresets)
+      .catch((e) => setError(String(e)));
+  };
+  const deletePreset = (name: string) =>
+    presetAction(invoke<EqState>("preset_delete", { name }));
 
   /** Send Fletcher's own chain to the backend (throttled during drags). */
   const pushChain = (filters: EqFilter[], immediate = false) => {
@@ -289,14 +321,77 @@ export default function App() {
       {state && (
         <>
           <div className="preset-line">
-            <span className="preset-chip">
-              <b>Live APO config</b>
-              <span className="dim-sm">{state.sourceFiles.join(" + ")}</span>
+            <span className="preset-wrap">
+              <span className="preset-chip" onClick={() => setMenuOpen((o) => !o)}>
+                <b>{presets.active ?? "No preset"}</b>
+                <span className="dim-sm">{state.sourceFiles.join(" + ")}</span>
+                <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6">
+                  <path d="M4 6l4 4 4-4" />
+                </svg>
+              </span>
+              {menuOpen && (
+                <div className="preset-menu">
+                  <div
+                    className={`preset-row ${presets.active == null ? "current" : ""}`}
+                    onClick={() => switchPreset(null)}
+                  >
+                    <span>Flat — no Fletcher filters</span>
+                  </div>
+                  {presets.presets.map((p) => (
+                    <div
+                      key={p}
+                      className={`preset-row ${presets.active === p ? "current" : ""}`}
+                      onClick={() => switchPreset(p)}
+                    >
+                      <span>{p}</span>
+                      <span className="spacer" />
+                      <span
+                        className="row-act"
+                        title="duplicate"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          duplicatePreset(p);
+                        }}
+                      >
+                        ⧉
+                      </span>
+                      <span
+                        className="row-act"
+                        title="delete"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          deletePreset(p);
+                        }}
+                      >
+                        ×
+                      </span>
+                    </div>
+                  ))}
+                  <div className="preset-new">
+                    <input
+                      placeholder="new preset name…"
+                      value={newName}
+                      onChange={(e) => setNewName(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && createPreset(true)}
+                    />
+                    <button onClick={() => createPreset(true)} title="copy everything currently audible — including filters owned by Peace — into an editable preset">
+                      From live
+                    </button>
+                    <button onClick={() => createPreset(false)}>Empty</button>
+                  </div>
+                </div>
+              )}
             </span>
             <span className="dim-sm">
-              drag handles · scroll a cell for Q · filters from other tools are read-only
+              drag handles · scroll for Q · locked filters: duplicate from live to edit
             </span>
             <span className="spacer" />
+            {state.filters.some((f) => f.enabled && f.sourceFile !== OWN_FILE) &&
+              state.filters.some((f) => f.enabled && f.sourceFile === OWN_FILE) && (
+                <span className="warn-chip" title="Filters from another tool (e.g. Peace) are active alongside Fletcher's — you may be hearing both EQs stacked.">
+                  ⚠ another EQ is also active
+                </span>
+              )}
             <span className="mono dim-sm">auto preamp</span>
             <span className="mono preamp-val">{fmtGain(state.preampDb)} dB</span>
           </div>

@@ -72,3 +72,4 @@ Nothing on the market does this. Its own tab, visibly its own setup:
 - **Bidirectional editing**: the graph and the filter strip edit the same model — drag a handle or type a number, both update live.
 - **Never lie about loudness**: the app treats unmatched comparisons as invalid by default.
 - **Everything recorded, so everything is known** (ADR-0006): every test, measurement, and comparison stores full provenance — configs, levels, matching offsets, capture metadata. Results are auditable, never vibes.
+- **Anything non-trivial becomes its own complete room** (user principle, 2026-08-22): features that grow past trivial get built out as full first-class subsystems — Clip Studio, the Lab, the Fingerprint Lab, and eventually preset management (Q-23) — never as cramped side panels.

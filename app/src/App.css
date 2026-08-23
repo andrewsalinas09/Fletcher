@@ -114,6 +114,10 @@ nav {
   padding: 9px 24px 8px;
 }
 
+.preset-wrap {
+  position: relative;
+}
+
 .preset-chip {
   display: flex;
   align-items: baseline;
@@ -122,6 +126,86 @@ nav {
   background: var(--panel);
   padding: 5px 12px;
   font-size: 14px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.preset-chip:hover {
+  border-color: var(--ink);
+}
+
+.preset-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  min-width: 280px;
+  background: #fffdf6;
+  border: 1px solid var(--ink);
+  box-shadow: 4px 4px 0 rgb(20 23 26 / 10%);
+}
+
+.preset-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  font-size: 12.5px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--line);
+}
+
+.preset-row:hover {
+  background: var(--panel-alt);
+}
+
+.preset-row.current {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.row-act {
+  color: var(--dim);
+  padding: 0 3px;
+  font-size: 13px;
+}
+
+.row-act:hover {
+  color: var(--boost);
+}
+
+.preset-row.current .row-act {
+  color: var(--line-strong);
+}
+
+.preset-new {
+  display: flex;
+  gap: 6px;
+  padding: 9px 12px;
+  align-items: center;
+}
+
+.preset-new input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 12px;
+  border: 1px solid var(--line-mid);
+  background: var(--panel);
+  padding: 5px 8px;
+  color: var(--ink);
+}
+
+.preset-new input:focus {
+  outline: none;
+  border-color: var(--ink);
+}
+
+.warn-chip {
+  font-size: 11px;
+  color: var(--boost);
+  border: 1px solid var(--boost);
+  padding: 3px 9px;
 }
 
 .preamp-val {

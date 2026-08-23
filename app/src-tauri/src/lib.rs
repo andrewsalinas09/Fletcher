@@ -3,8 +3,36 @@
 
 use fletcher_core::config::{render_fletcher_file, ChainFilter, ConfigDoc, FilterKind, Parsed};
 use fletcher_core::dsp::{auto_preamp_db, chain_response_db, log_freqs, FilterSpec};
+use fletcher_core::presets::{sanitize_name, PresetStore};
 use fletcher_core::{apo, devices, dsp, fsx};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+fn data_dir() -> PathBuf {
+    std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("Fletcher")
+}
+
+fn store() -> Result<PresetStore, String> {
+    PresetStore::open(&data_dir().join("presets")).map_err(|e| e.to_string())
+}
+
+fn active_preset() -> Option<String> {
+    let text = std::fs::read_to_string(data_dir().join("state.json")).ok()?;
+    serde_json::from_str::<serde_json::Value>(&text)
+        .ok()?
+        .get("activePreset")?
+        .as_str()
+        .map(String::from)
+}
+
+fn set_active_preset(name: Option<&str>) {
+    let _ = std::fs::create_dir_all(data_dir());
+    let json = serde_json::json!({ "activePreset": name });
+    let _ = fsx::write_atomic(&data_dir().join("state.json"), &json.to_string());
+}
 
 const FS: f64 = 48000.0;
 const CURVE_POINTS: usize = 200;
@@ -181,6 +209,132 @@ fn set_fletcher_chain(filters: Vec<FilterIn>) -> Result<EqState, String> {
     fsx::write_atomic(&install.config_path.join("fletcher.txt"), &text)
         .map_err(|e| e.to_string())?;
 
+    // Edits persist into the active preset, so switching away and back keeps them.
+    if let Some(name) = active_preset() {
+        let _ = store()?.save(&name, preamp, &chain);
+    }
+
+    eq_state()
+}
+
+/// Rewrite fletcher.txt from a chain (with fresh auto-preamp).
+fn activate_chain(chain: &[ChainFilter]) -> Result<(), String> {
+    let install = apo::detect().map_err(|e| e.to_string())?;
+    let specs: Vec<FilterSpec> = chain
+        .iter()
+        .filter(|f| f.enabled)
+        .map(|f| FilterSpec {
+            kind: f.kind,
+            fc_hz: f.fc_hz,
+            gain_db: f.gain_db,
+            q: f.q,
+        })
+        .collect();
+    let preamp = auto_preamp_db(&specs, FS);
+    fsx::write_atomic(
+        &install.config_path.join("fletcher.txt"),
+        &render_fletcher_file(preamp, chain),
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Every filter currently reachable from config.txt, as an ownable chain —
+/// the "duplicate from whatever" source: Peace's filters copy in as editable.
+fn live_chain() -> Result<Vec<ChainFilter>, String> {
+    let s = eq_state()?;
+    Ok(s.filters
+        .iter()
+        .map(|f| ChainFilter {
+            enabled: f.enabled,
+            kind: FilterKind::from_code(f.kind).unwrap_or(FilterKind::Peaking),
+            fc_hz: f.fc_hz,
+            gain_db: f.gain_db,
+            q: f.q,
+        })
+        .collect())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PresetsState {
+    presets: Vec<String>,
+    active: Option<String>,
+}
+
+#[tauri::command]
+fn presets_state() -> Result<PresetsState, String> {
+    Ok(PresetsState {
+        presets: store()?.list(),
+        active: active_preset(),
+    })
+}
+
+/// Switch the active preset (None = flat: empty fletcher.txt).
+#[tauri::command]
+fn preset_switch(name: Option<String>) -> Result<EqState, String> {
+    match &name {
+        Some(n) => {
+            let preset = store()?
+                .load(n)
+                .ok_or_else(|| format!("preset {n:?} not found"))?;
+            activate_chain(&preset.filters)?;
+        }
+        None => activate_chain(&[])?,
+    }
+    set_active_preset(name.as_deref());
+    eq_state()
+}
+
+/// Create a preset — `from_live` seeds it with everything currently audible
+/// (including filters owned by other tools); otherwise it starts empty.
+/// The new preset becomes active.
+#[tauri::command]
+fn preset_create(name: String, from_live: bool) -> Result<EqState, String> {
+    let name = sanitize_name(&name).ok_or("invalid preset name")?;
+    let st = store()?;
+    if st.exists(&name) {
+        return Err(format!("a preset named {name:?} already exists"));
+    }
+    let chain = if from_live { live_chain()? } else { Vec::new() };
+    let specs: Vec<FilterSpec> = chain
+        .iter()
+        .filter(|f| f.enabled)
+        .map(|f| FilterSpec {
+            kind: f.kind,
+            fc_hz: f.fc_hz,
+            gain_db: f.gain_db,
+            q: f.q,
+        })
+        .collect();
+    st.save(&name, auto_preamp_db(&specs, FS), &chain)
+        .map_err(|e| e.to_string())?;
+    activate_chain(&chain)?;
+    set_active_preset(Some(&name));
+    eq_state()
+}
+
+#[tauri::command]
+fn preset_duplicate(from: String, to: String) -> Result<PresetsState, String> {
+    let to = sanitize_name(&to).ok_or("invalid preset name")?;
+    let st = store()?;
+    if st.exists(&to) {
+        return Err(format!("a preset named {to:?} already exists"));
+    }
+    let p = st
+        .load(&from)
+        .ok_or_else(|| format!("preset {from:?} not found"))?;
+    st.save(&to, p.preamp_db, &p.filters)
+        .map_err(|e| e.to_string())?;
+    presets_state()
+}
+
+#[tauri::command]
+fn preset_delete(name: String) -> Result<EqState, String> {
+    store()?.delete(&name).map_err(|e| e.to_string())?;
+    if active_preset().as_deref() == Some(name.as_str()) {
+        set_active_preset(None);
+        activate_chain(&[])?;
+    }
     eq_state()
 }
 
@@ -380,7 +534,12 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             apo_status,
             eq_state,
-            set_fletcher_chain
+            set_fletcher_chain,
+            presets_state,
+            preset_switch,
+            preset_create,
+            preset_duplicate,
+            preset_delete
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

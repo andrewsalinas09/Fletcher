@@ -69,5 +69,8 @@ Raised 2026-08-22 during design: any tab can pop out into its own OS window (cur
 ## Q-22 · Mini clip picker on the EQ tab — **Open (deferred until real use)**
 User idea 2026-08-22: the EQ tab's spare space above the A/B bar could host a compact track/clip picker so you can flip test material without leaving the curve. Explicitly gated on dogfooding ("we'd have to really use it first") — decide after living with the app, not on the mockup.
 
+## Q-23 · Rich preset/profile search and management — **Open (deliberately deferred)**
+User direction 2026-08-22: presets start simple (list, switch, duplicate-from-anything, delete) but will eventually deserve a full first-class subsystem — rich search, organization, metadata — on the product principle that **anything non-trivial gets built out into its own complete "software within the software"** (as Clip Studio and the Lab are). Filed to keep v1 lean without forgetting the ambition. Relates: Q-17 (history tree), per-device profiles.
+
 ## Q-14 · Tuning × testing fusion mechanics — **Open**
 "Move a slider and it goes through the clips to highlight specific stuff." How literally: does adjusting a bass filter auto-queue the bass-heavy clip? Replay the full battery on demand? A/B against the pre-tweak state per clip, with optional randomized voting? Define the interaction loop so tuning and testing share one engine.
