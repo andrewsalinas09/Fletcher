@@ -27,6 +27,12 @@ fn band_edges(lo: f64, hi: f64, rows: usize) -> Vec<f64> {
         .collect()
 }
 
+/// Linear band edges 0 → `hi` Hz — the analyzer view: equal Hz per row, so
+/// harmonic stacks read as evenly spaced lines.
+fn band_edges_linear(hi: f64, rows: usize) -> Vec<f64> {
+    (0..=rows).map(|i| hi * i as f64 / rows as f64).collect()
+}
+
 fn hann(n: usize) -> Vec<f64> {
     (0..n)
         .map(|i| 0.5 - 0.5 * (2.0 * std::f64::consts::PI * i as f64 / n as f64).cos())
@@ -43,6 +49,7 @@ pub fn spectrogram(
     rows: usize,
     win: usize,
     floor_db: f64,
+    linear: bool,
 ) -> Spectrogram {
     let win = win.clamp(256, 16384).next_power_of_two();
     let floor_db = floor_db.clamp(-140.0, SPEC_DB_MAX - 10.0);
@@ -51,7 +58,12 @@ pub fn spectrogram(
     let mut planner = RealFftPlanner::<f64>::new();
     let fft = planner.plan_fft_forward(win);
     let window = hann(win);
-    let edges = band_edges(20.0, 20000.0f64.min(rate as f64 / 2.0), rows);
+    let fmax = 20000.0f64.min(rate as f64 / 2.0);
+    let edges = if linear {
+        band_edges_linear(fmax, rows)
+    } else {
+        band_edges(20.0, fmax, rows)
+    };
     let bin_hz = rate as f64 / win as f64;
 
     let mut data = vec![0u8; cols * rows];

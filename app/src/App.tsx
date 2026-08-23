@@ -1497,11 +1497,17 @@ function PopoutScopeSpec() {
         return dflt;
       }
     };
-    return { win: lsN("fletcher.specwin", 2048), floor: lsN("fletcher.specfloor", -90) };
+    let linear = false;
+    try {
+      linear = localStorage.getItem("fletcher.speclinear") === "1";
+    } catch {
+      /* default */
+    }
+    return { win: lsN("fletcher.specwin", 2048), floor: lsN("fletcher.specfloor", -90), linear };
   });
   useEffect(() => {
-    const un = listen<{ win: number; floor: number }>("spec-params", (e) =>
-      setSpecParams({ win: e.payload.win, floor: e.payload.floor }),
+    const un = listen<{ win: number; floor: number; linear: boolean }>("spec-params", (e) =>
+      setSpecParams({ win: e.payload.win, floor: e.payload.floor, linear: !!e.payload.linear }),
     );
     return () => {
       un.then((f) => f());
@@ -1515,6 +1521,7 @@ function PopoutScopeSpec() {
       id: sess.id,
       win: specParams.win,
       floorDb: specParams.floor,
+      linear: specParams.linear,
     })
       .then((s) => {
         if (alive) setSpec(s);
@@ -1524,7 +1531,7 @@ function PopoutScopeSpec() {
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sess?.id, specParams.win, specParams.floor]);
+  }, [sess?.id, specParams.win, specParams.floor, specParams.linear]);
   return (
     <div className="hist-panel full scope-window">
       <div className="hist-head">
@@ -1977,6 +1984,8 @@ type SpecData = {
   durationS: number;
   minDb: number;
   maxDb: number;
+  /** true = linear 0–20 kHz axis; false = log 20 Hz–20 kHz. */
+  linear: boolean;
   data: string; // base64 u8 grid, row 0 = lowest frequency
 };
 
@@ -2285,11 +2294,11 @@ function TimelineView({
         ctx.drawImage(off, sx, 0, sw, spec.rows, 0, lanesTop, w, specH);
         ctx.font = "9px 'IBM Plex Mono', monospace";
         ctx.fillStyle = "#8b8578";
-        for (const f of [100, 1000, 10000]) {
-          const yf =
-            lanesTop +
-            specH *
-              (1 - (Math.log10(f) - Math.log10(20)) / (Math.log10(20000) - Math.log10(20)));
+        for (const f of spec.linear ? [5000, 10000, 15000] : [100, 1000, 10000]) {
+          const frac = spec.linear
+            ? f / 20000
+            : (Math.log10(f) - Math.log10(20)) / (Math.log10(20000) - Math.log10(20));
+          const yf = lanesTop + specH * (1 - frac);
           ctx.fillText(f >= 1000 ? `${f / 1000}k` : `${f}`, 4, yf + 3);
         }
       } else {
@@ -2463,8 +2472,10 @@ function TimelineView({
       const tC = Math.min(Math.max(start + (cur.x / w) * span, 0), durationS || 0);
       let label: string;
       if (showSpec && cur.y >= lanesTop && cur.y < lanesTop + specH) {
-        const frac = 1 - (cur.y - lanesTop) / specH; // bottom 20 Hz → top 20 kHz, log
-        const f = 10 ** (Math.log10(20) + frac * (Math.log10(20000) - Math.log10(20)));
+        const frac = 1 - (cur.y - lanesTop) / specH; // bottom → top of the freq axis
+        const f = spec?.linear
+          ? frac * 20000
+          : 10 ** (Math.log10(20) + frac * (Math.log10(20000) - Math.log10(20)));
         let z = "";
         const bytes = specBytes.current;
         if (spec && bytes && spec.durationS > 0) {
@@ -2880,8 +2891,15 @@ function MainApp() {
   const [specFloor, setSpecFloor] = useState(() =>
     lsNum("fletcher.specfloor", -90, [-70, -90, -110]),
   );
-  const pickSpecParam = (key: "specwin" | "specfloor", v: number) => {
-    (key === "specwin" ? setSpecWin : setSpecFloor)(v);
+  const [specLinear, setSpecLinear] = useState(() => {
+    try {
+      return localStorage.getItem("fletcher.speclinear") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const pickSpecParam = (key: "specwin" | "specfloor" | "speclinear", v: number) => {
+    (key === "specwin" ? setSpecWin : key === "specfloor" ? setSpecFloor : (x: number) => setSpecLinear(x === 1))(v);
     try {
       localStorage.setItem(`fletcher.${key}`, String(v));
     } catch {
@@ -2892,6 +2910,7 @@ function MainApp() {
     emit("spec-params", {
       win: key === "specwin" ? v : specWin,
       floor: key === "specfloor" ? v : specFloor,
+      linear: key === "speclinear" ? v === 1 : specLinear,
     });
   };
   // Scrub feel — typed-in, not preset. Chase = the scrub's reaction time in ms
@@ -2950,6 +2969,7 @@ function MainApp() {
       id: trackSess.id,
       win: specWin,
       floorDb: specFloor,
+      linear: specLinear,
     })
       .then((s) => {
         if (alive) setSpecData(s);
@@ -2959,7 +2979,7 @@ function MainApp() {
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [trackSess?.id, trackSess?.phase, specWin, specFloor]);
+  }, [trackSess?.id, trackSess?.phase, specWin, specFloor, specLinear]);
 
   const popOutScope = async (kind: "spec" | "fft") => {
     try {
@@ -3566,7 +3586,7 @@ function MainApp() {
     // A satellite just opened and wants the shared state it can't derive.
     scopeHello: () => {
       emit("io-region", ioRegionRef.current ?? null);
-      emit("spec-params", { win: specWin, floor: specFloor });
+      emit("spec-params", { win: specWin, floor: specFloor, linear: specLinear });
     },
     trackState: (p) => {
       const id = p.trackId as number;
@@ -5708,6 +5728,28 @@ function MainApp() {
                             {label}
                           </span>
                         ))}
+                      </div>
+                    </div>
+                    <div className="room-row">
+                      <span
+                        className="room-key"
+                        title="Log matches hearing (octaves get equal space). Linear gives every Hz equal space — harmonic stacks read as evenly spaced lines, and the treble half isn't squeezed."
+                      >
+                        Spectrogram axis
+                      </span>
+                      <div className="seg seg-sm">
+                        <span
+                          className={`seg-opt ${!specLinear ? "on" : ""}`}
+                          onClick={() => pickSpecParam("speclinear", 0)}
+                        >
+                          Log
+                        </span>
+                        <span
+                          className={`seg-opt ${specLinear ? "on" : ""}`}
+                          onClick={() => pickSpecParam("speclinear", 1)}
+                        >
+                          Linear
+                        </span>
                       </div>
                     </div>
                     <div className="room-row">

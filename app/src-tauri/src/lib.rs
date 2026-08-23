@@ -2299,25 +2299,30 @@ struct SpectrogramDto {
     duration_s: f64,
     min_db: f64,
     max_db: f64,
+    /// Frequency axis: true = linear 0–20 kHz, false = log 20 Hz–20 kHz.
+    /// Self-describing so every renderer labels and reads out correctly.
+    linear: bool,
     /// Row-major u8 grid, base64 — row 0 = lowest frequency.
     data: String,
 }
 
-type SpecKey = (i64, usize, i64);
+type SpecKey = (i64, usize, i64, bool);
 static SPECS: std::sync::Mutex<std::collections::BTreeMap<SpecKey, SpectrogramDto>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 
-/// The whole-track spectrogram, memoized per (track, window, floor). The
-/// window and floor are Clip Studio room settings.
+/// The whole-track spectrogram, memoized per (track, window, floor, axis).
+/// The window, floor, and axis are Clip Studio room settings.
 #[tauri::command]
 async fn track_spectrogram(
     id: i64,
     win: Option<usize>,
     floor_db: Option<f64>,
+    linear: Option<bool>,
 ) -> Result<SpectrogramDto, String> {
     let win = win.unwrap_or(2048).clamp(256, 16384);
     let floor = floor_db.unwrap_or(analysis::SPEC_DB_MIN);
-    let key: SpecKey = (id, win, floor as i64);
+    let linear = linear.unwrap_or(false);
+    let key: SpecKey = (id, win, floor as i64, linear);
     if let Some(s) = SPECS.lock().unwrap().get(&key) {
         return Ok(s.clone());
     }
@@ -2326,13 +2331,14 @@ async fn track_spectrogram(
         let rate = 48000u32;
         let pcm = pcm_for(id)?;
         let frames = pcm.len() / 2;
-        let spec = analysis::spectrogram(&pcm, rate, 2400, 160, win, floor);
+        let spec = analysis::spectrogram(&pcm, rate, 2400, 160, win, floor, linear);
         let dto = SpectrogramDto {
             cols: spec.cols,
             rows: spec.rows,
             duration_s: frames as f64 / rate as f64,
             min_db: floor,
             max_db: analysis::SPEC_DB_MAX,
+            linear,
             data: base64::engine::general_purpose::STANDARD.encode(&spec.data),
         };
         SPECS.lock().unwrap().insert(key, dto.clone());
