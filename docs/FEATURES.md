@@ -15,6 +15,7 @@ The full feature vision, captured from idea-mapping sessions. Tiering into v1-sp
 ## Core EQ
 
 - Parametric curve editor: draggable filters, and the **individual filter curves shown against the summed response** they produce.
+- **Measurement overlays on the graph**: import a headphone's frequency-response measurement (freq/dB text formats — same family as REW/AutoEQ/cal files) and overlay it plus the **predicted post-EQ result** (measurement + current curve); later, overlay your personal fingerprint from the Fingerprint Lab instead of a generic measurement.
 - Presets: create, save, load; AutoEQ headphone database import.
 - Auto-preamp / clipping protection (from summed response peak, TB-06).
 - Device selection and **per-device profiles**, with device-level auto-switching: Windows reports USB DAC connect/disconnect and default-device changes, so "DAC appears → its profile activates" is real. What's *not* detectable is which headphone hangs off a DAC/amp's analog jack — so headphone-level switching is a fast manual switcher (tray menu / hotkey), not magic.

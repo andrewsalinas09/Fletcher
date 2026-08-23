@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import "./App.css";
 
 type EqFilter = {
@@ -23,19 +24,17 @@ type EqState = {
 // ---- graph geometry (matches design/Main.dc.html v5) ----
 const GW = 1090;
 const GH = 330;
-const DB_RANGE = 12; // ±12 dB visible
 const FMIN = 20;
 const FMAX = 20000;
 
 const xOf = (f: number) =>
   ((Math.log10(f) - Math.log10(FMIN)) / (Math.log10(FMAX) - Math.log10(FMIN))) * GW;
-const yOf = (db: number) => GH / 2 - (db / DB_RANGE) * (GH / 2 - 30);
 
 const fmtHz = (hz: number) =>
   hz >= 1000 ? `${+(hz / 1000).toFixed(2)}k` : `${+hz.toFixed(0)}`;
 const fmtGain = (g: number) => `${g > 0 ? "+" : ""}${+g.toFixed(1)}`;
 
-function pathFrom(freqs: number[], dbs: number[]): string {
+function pathFrom(freqs: number[], dbs: number[], yOf: (db: number) => number): string {
   return dbs
     .map((db, i) => `${i === 0 ? "M" : "L"}${xOf(freqs[i]).toFixed(1)} ${yOf(db).toFixed(1)}`)
     .join(" ");
@@ -113,6 +112,12 @@ export default function App() {
 
   useEffect(() => {
     refresh();
+    // Push-based updates: the Rust watcher emits whenever any config file
+    // changes on disk (Peace, hand edits, Fletcher itself). No polling.
+    const unlisten = listen("apo-config-changed", () => refresh());
+    return () => {
+      unlisten.then((f) => f());
+    };
   }, []);
 
   const ordered = useMemo(() => {
@@ -123,6 +128,34 @@ export default function App() {
   }, [state]);
 
   const sel = selected != null && state ? state.filters[selected] : null;
+
+  // Dynamic vertical range: enough headroom for the loudest feature,
+  // snapped to 3 dB steps, never tighter than ±12.
+  const dbRange = useMemo(() => {
+    if (!state) return 12;
+    const peaks = [
+      ...state.sumDb.map((db) => Math.abs(db - state.preampDb)),
+      ...state.filters.filter((f) => f.enabled).map((f) => Math.abs(f.gainDb)),
+    ];
+    const maxAbs = peaks.length ? Math.max(...peaks) : 0;
+    return Math.max(12, Math.ceil((maxAbs + 3) / 3) * 3);
+  }, [state]);
+
+  const yOf = (db: number) => GH / 2 - (db / dbRange) * (GH / 2 - 30);
+  const gridSteps = useMemo(() => {
+    const minor: number[] = [];
+    const major: number[] = [];
+    for (let db = 3; db < dbRange; db += 3) {
+      (db % 6 === 0 ? major : minor).push(db, -db);
+    }
+    return { minor, major };
+  }, [dbRange]);
+  const labelSteps = useMemo(() => {
+    const step = dbRange > 18 ? 6 : 3;
+    const out: number[] = [0];
+    for (let db = step; db < dbRange; db += step) out.push(db, -db);
+    return out;
+  }, [dbRange]);
 
   return (
     <div className="frame">
@@ -171,19 +204,21 @@ export default function App() {
 
           <div className="graph-panel">
             <svg viewBox={`0 0 ${GW} ${GH}`} className="graph">
-              {[3, 6, 9].flatMap((db) => [
-                <line key={`p${db}`} x1={0} x2={GW} y1={yOf(db)} y2={yOf(db)} className={db % 6 ? "grid-minor" : "grid-major"} />,
-                <line key={`m${db}`} x1={0} x2={GW} y1={yOf(-db)} y2={yOf(-db)} className={db % 6 ? "grid-minor" : "grid-major"} />,
-              ])}
+              {gridSteps.minor.map((db) => (
+                <line key={`n${db}`} x1={0} x2={GW} y1={yOf(db)} y2={yOf(db)} className="grid-minor" />
+              ))}
+              {gridSteps.major.map((db) => (
+                <line key={`j${db}`} x1={0} x2={GW} y1={yOf(db)} y2={yOf(db)} className="grid-major" />
+              ))}
               {[30, 50, 100, 200, 500, 1000, 2000, 5000, 10000].map((f) => (
                 <line key={f} x1={xOf(f)} x2={xOf(f)} y1={0} y2={GH - 24} className="grid-vert" />
               ))}
               <line x1={0} x2={GW} y1={yOf(0)} y2={yOf(0)} className="grid-zero" />
 
               {sel && sel.enabled && (
-                <path d={pathFrom(state.freqs, sel.responseDb)} className={`sel-curve ${sel.gainDb >= 0 ? "boost" : "cut"}`} />
+                <path d={pathFrom(state.freqs, sel.responseDb, yOf)} className={`sel-curve ${sel.gainDb >= 0 ? "boost" : "cut"}`} />
               )}
-              <path d={pathFrom(state.freqs, state.sumDb.map((db) => db - state.preampDb))} className="sum-curve" />
+              <path d={pathFrom(state.freqs, state.sumDb.map((db) => db - state.preampDb), yOf)} className="sum-curve" />
 
               {state.filters.map((f, i) =>
                 f.enabled ? (
@@ -209,7 +244,7 @@ export default function App() {
                 {[30, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000].map((f) => (
                   <text key={f} x={xOf(f) - 8} y={GH - 8}>{fmtHz(f)}</text>
                 ))}
-                {[9, 6, 0, -6, -9].map((db) => (
+                {labelSteps.map((db) => (
                   <text key={db} x={6} y={yOf(db) + 4}>{db === 0 ? "0 dB" : fmtGain(db)}</text>
                 ))}
               </g>

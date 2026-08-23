@@ -274,10 +274,54 @@ fn apo_status() -> Result<ApoStatus, String> {
     })
 }
 
+/// Watch the APO config dir and push a `apo-config-changed` event to the UI
+/// on every relevant write — the same file-watching APO itself relies on, so
+/// external edits (Peace, hand edits) reflect instantly without polling.
+fn spawn_config_watcher(handle: tauri::AppHandle) {
+    use notify::{RecursiveMode, Watcher};
+    use tauri::Emitter;
+
+    let Ok(install) = apo::detect() else { return };
+    std::thread::spawn(move || {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let Ok(mut watcher) = notify::recommended_watcher(tx) else {
+            eprintln!("fletcher: config watcher unavailable");
+            return;
+        };
+        if watcher
+            .watch(&install.config_path, RecursiveMode::NonRecursive)
+            .is_err()
+        {
+            eprintln!("fletcher: cannot watch {}", install.config_path.display());
+            return;
+        }
+        let relevant = |ev: &notify::Event| {
+            ev.paths.iter().any(|p| {
+                p.extension().is_some_and(|e| e == "txt")
+                    && p.extension().is_none_or(|e| e != "fletcher-tmp")
+            })
+        };
+        while let Ok(ev) = rx.recv() {
+            let Ok(ev) = ev else { continue };
+            if !relevant(&ev) {
+                continue;
+            }
+            // Debounce bursts (editors and Peace write several events per save).
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            while rx.try_recv().is_ok() {}
+            let _ = handle.emit("apo-config-changed", ());
+        }
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            spawn_config_watcher(app.handle().clone());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![apo_status, eq_state])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
