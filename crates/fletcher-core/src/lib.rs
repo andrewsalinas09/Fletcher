@@ -5,4 +5,5 @@
 //!   round-trip byte-for-byte ("never destroy what we don't understand", Q-09).
 //! - ADR-0001: all DSP and parsing logic lives here, never in the UI.
 
+pub mod apo;
 pub mod config;

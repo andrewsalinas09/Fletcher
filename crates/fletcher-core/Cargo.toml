@@ -7,3 +7,4 @@ description = "Fletcher's engine: Equalizer APO config parsing, filter math, dev
 
 [dependencies]
 wasapi = "0.24.0"
+winreg = "0.55"

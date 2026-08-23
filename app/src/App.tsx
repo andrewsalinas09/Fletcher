@@ -1,51 +1,129 @@
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 
-function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+type Line =
+  | { kind: "preamp"; text: string; db: number }
+  | {
+      kind: "filter";
+      text: string;
+      index: number | null;
+      enabled: boolean;
+      filterType: string;
+      fcHz: number | null;
+      gainDb: number | null;
+      q: number | null;
+    }
+  | { kind: "include"; text: string; path: string }
+  | { kind: "device"; text: string; pattern: string }
+  | { kind: "channel"; text: string; spec: string }
+  | { kind: "comment"; text: string }
+  | { kind: "blank" }
+  | { kind: "unknown"; text: string };
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
-  }
+type ApoStatus = {
+  installPath: string;
+  configPath: string;
+  files: { name: string; lines: Line[] }[];
+};
 
+function FilterRow({ line }: { line: Extract<Line, { kind: "filter" }> }) {
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
-
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
-
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
-    </main>
+    <div className={`row filter ${line.enabled ? "" : "off"}`}>
+      <span className="badge type">{line.filterType}</span>
+      <span className="num">
+        {line.fcHz != null ? `${line.fcHz} Hz` : "—"}
+      </span>
+      <span className={`num gain ${line.gainDb != null && line.gainDb < 0 ? "cut" : "boost"}`}>
+        {line.gainDb != null ? `${line.gainDb > 0 ? "+" : ""}${line.gainDb} dB` : ""}
+      </span>
+      <span className="num q">{line.q != null ? `Q ${line.q}` : ""}</span>
+    </div>
   );
 }
 
-export default App;
+function LineView({ line }: { line: Line }) {
+  switch (line.kind) {
+    case "filter":
+      return <FilterRow line={line} />;
+    case "preamp":
+      return (
+        <div className="row">
+          <span className="badge preamp">Preamp</span>
+          <span className="num">{line.db} dB</span>
+        </div>
+      );
+    case "include":
+      return (
+        <div className="row">
+          <span className="badge include">Include</span>
+          <span className="mono">{line.path}</span>
+        </div>
+      );
+    case "device":
+    case "channel":
+      return (
+        <div className="row">
+          <span className="badge scope">{line.kind === "device" ? "Device" : "Channel"}</span>
+          <span className="mono">{line.kind === "device" ? line.pattern : line.spec}</span>
+        </div>
+      );
+    case "comment":
+      return <div className="row dim mono">{line.text}</div>;
+    case "blank":
+      return null;
+    case "unknown":
+      return <div className="row dim mono">{line.text || "‹empty›"}</div>;
+  }
+}
+
+export default function App() {
+  const [status, setStatus] = useState<ApoStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = () =>
+    invoke<ApoStatus>("apo_status").then(setStatus).catch((e) => setError(String(e)));
+
+  useEffect(() => {
+    refresh();
+  }, []);
+
+  return (
+    <main>
+      <header>
+        <h1>Fletcher</h1>
+        <span className="tagline">honest EQ</span>
+        <button onClick={refresh}>Refresh</button>
+      </header>
+
+      {error && (
+        <div className="card error">
+          <strong>Equalizer APO problem:</strong> {error}
+          <p>
+            Fletcher drives Equalizer APO — install it from sourceforge.net/projects/equalizerapo
+            and enable it for your output device, then hit Refresh.
+          </p>
+        </div>
+      )}
+
+      {status && (
+        <>
+          <div className="card status">
+            Equalizer APO found at <span className="mono">{status.installPath}</span>
+          </div>
+          {status.files.map((f) => (
+            <div className="card" key={f.name}>
+              <h2 className="mono">{f.name}</h2>
+              {f.lines.map((l, i) => (
+                <LineView key={i} line={l} />
+              ))}
+              {f.lines.every((l) => l.kind === "blank") && (
+                <div className="row dim">(empty)</div>
+              )}
+            </div>
+          ))}
+        </>
+      )}
+    </main>
+  );
+}

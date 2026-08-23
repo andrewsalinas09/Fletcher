@@ -1004,6 +1004,7 @@ dependencies = [
 name = "fletcher-app"
 version = "0.1.0"
 dependencies = [
+ "fletcher-core",
  "serde",
  "serde_json",
  "tauri",
@@ -1016,6 +1017,7 @@ name = "fletcher-core"
 version = "0.1.0"
 dependencies = [
  "wasapi",
+ "winreg",
 ]
 
 [[package]]
