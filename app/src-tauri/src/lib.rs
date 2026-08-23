@@ -1244,6 +1244,34 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Undo/redo shortcuts for the history pop-out, active only while it has
+/// focus. Fired in Rust, forwarded to the main window's rail.
+fn set_history_shortcuts(app: &tauri::AppHandle, enable: bool) {
+    use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+    let gs = app.global_shortcut();
+    let pairs: [(&str, &str); 3] = [
+        ("ctrl+z", "undo"),
+        ("ctrl+shift+z", "redo"),
+        ("ctrl+y", "redo"),
+    ];
+    for (sc, action) in pairs {
+        if enable {
+            let _ = gs.on_shortcut(sc, move |app, _shortcut, event| {
+                if event.state == ShortcutState::Pressed {
+                    use tauri::Emitter;
+                    let _ = app.emit_to(
+                        "main",
+                        "hist-cmd",
+                        serde_json::json!({ "type": action, "id": 0 }),
+                    );
+                }
+            });
+        } else {
+            let _ = gs.unregister(sc);
+        }
+    }
+}
+
 fn setup_hotkey(app: &tauri::App) {
     use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
     let result = app
@@ -1273,13 +1301,28 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Only the MAIN window hides to the tray (hotkeys keep working);
-            // satellite windows (history pop-out) genuinely close.
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == "main" {
-                    api.prevent_close();
-                    let _ = window.hide();
+            use tauri::Manager;
+            match event {
+                // Only the MAIN window hides to the tray (hotkeys keep
+                // working); satellite windows genuinely close.
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    if window.label() == "main" {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    } else if window.label() == "history" {
+                        set_history_shortcuts(window.app_handle(), false);
+                    }
                 }
+                // The pop-out webview doesn't receive DOM keyboard events, so
+                // its undo/redo keys are OS-level shortcuts registered only
+                // while it is focused — they never leak into other apps.
+                tauri::WindowEvent::Focused(focused) if window.label() == "history" => {
+                    set_history_shortcuts(window.app_handle(), *focused);
+                }
+                tauri::WindowEvent::Destroyed if window.label() == "history" => {
+                    set_history_shortcuts(window.app_handle(), false);
+                }
+                _ => {}
             }
         })
         .invoke_handler(tauri::generate_handler![
