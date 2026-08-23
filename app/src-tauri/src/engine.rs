@@ -30,8 +30,11 @@ pub struct BusConfig {
     /// Bus A: the user's chain (enabled filters only) + its matched preamp.
     pub specs: Vec<FilterSpec>,
     pub preamp_a_db: f64,
-    /// Bus B: flat at its matched preamp, plus the true-LUFS trim measured
-    /// against bus A on this exact track (ADR-0003: track mode measures).
+    /// Bus B's chain — empty = flat (the default, and every pre-trial path).
+    /// Blind clip trials put an arbitrary contender here.
+    pub specs_b: Vec<FilterSpec>,
+    /// Bus B's matched preamp, plus the true-LUFS trim measured against
+    /// bus A on this exact material (ADR-0003: track mode measures).
     pub preamp_b_db: f64,
     pub trim_b_db: f64,
     /// Honesty switch snapshot: false = no trim, comparisons marked unmatched.
@@ -48,7 +51,7 @@ pub struct TrackShared {
     /// Playhead in frames at the session's sample rate.
     pub pos: AtomicU64,
     pub paused: AtomicBool,
-    /// false = A (the chain), true = B (flat).
+    /// false = bus A, true = bus B (flat by default; a trial's contender B).
     pub side_b: AtomicBool,
     /// Loop region (frames); when on and b > a the playhead wraps b → a —
     /// how a clip solos on loop.
@@ -114,7 +117,7 @@ impl TrackSource {
         let cfg = self.shared.bus.lock().unwrap().clone();
         self.in_engine_eq = cfg.in_engine_eq;
         self.bus_a.set_chain(&cfg.specs, cfg.preamp_a_db, fs);
-        self.bus_b.set_chain(&[], cfg.preamp_b_db, fs);
+        self.bus_b.set_chain(&cfg.specs_b, cfg.preamp_b_db, fs);
         self.gain_b_extra = if cfg.matched {
             10f64.powf(cfg.trim_b_db / 20.0)
         } else {
@@ -240,14 +243,28 @@ pub fn lufs_through(
     specs: &[FilterSpec],
     preamp_db: f64,
 ) -> Result<f64, String> {
+    lufs_peak_through(pcm, rate, specs, preamp_db).map(|(lufs, _)| lufs)
+}
+
+/// One pass, two answers: integrated LUFS AND the post-chain sample peak in
+/// dBFS. The peak bounds how far a positive trim may push bus B before it
+/// clips (TB-06: level matching never buys loudness with distortion).
+pub fn lufs_peak_through(
+    pcm: &[f32],
+    rate: u32,
+    specs: &[FilterSpec],
+    preamp_db: f64,
+) -> Result<(f64, f64), String> {
     let mut chain = ChainProcessor::new(specs, preamp_db, rate as f64);
     let mut meter =
         ebur128::EbuR128::new(2, rate, ebur128::Mode::I).map_err(|e| format!("ebur128: {e:?}"))?;
+    let mut peak = 0f64;
     let mut out = vec![0f64; 19_200];
     for block in pcm.chunks(19_200) {
         out.resize(block.len(), 0.0);
         for (i, fr) in block.chunks_exact(2).enumerate() {
             let (l, r) = chain.process_frame(fr[0] as f64, fr[1] as f64);
+            peak = peak.max(l.abs()).max(r.abs());
             out[i * 2] = l;
             out[i * 2 + 1] = r;
         }
@@ -255,9 +272,10 @@ pub fn lufs_through(
             .add_frames_f64(&out[..block.len() - block.len() % 2])
             .map_err(|e| format!("ebur128: {e:?}"))?;
     }
-    meter
+    let lufs = meter
         .loudness_global()
-        .map_err(|e| format!("ebur128: {e:?}"))
+        .map_err(|e| format!("ebur128: {e:?}"))?;
+    Ok((lufs, 20.0 * peak.max(1e-9).log10()))
 }
 
 /// Decode any audio file to interleaved stereo f32le PCM at `rate` via

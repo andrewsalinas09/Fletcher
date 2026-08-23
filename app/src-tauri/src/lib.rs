@@ -742,7 +742,7 @@ fn chain_curves(chains: Vec<Vec<FilterIn>>) -> Result<ChainCurves, String> {
 /// Refused mid-ABX: an outside write would break the blinding.
 #[tauri::command]
 fn preview_chain(filters: Vec<FilterIn>) -> Result<(), String> {
-    if ABX.lock().unwrap().is_some() {
+    if TRIAL.lock().unwrap().is_some() {
         return Err("a blind test is running — finish or cancel it first".into());
     }
     activate_chain(&chain_of(&filters)?)
@@ -777,7 +777,7 @@ fn preset_create_from_chain(name: String, filters: Vec<FilterIn>) -> Result<Stri
 #[tauri::command]
 fn engine_test_tone(mode: String) -> Result<String, String> {
     use fletcher_core::{playback, signal};
-    if ABX.lock().unwrap().is_some() {
+    if TRIAL.lock().unwrap().is_some() {
         return Err("a blind test is running — finish or cancel it first".into());
     }
     let mode = if mode == "shared" {
@@ -834,7 +834,7 @@ fn stop_cal_noise() {
 #[tauri::command]
 fn calibration_noise(app: tauri::AppHandle, on: bool) -> Result<(), String> {
     use std::sync::{atomic::AtomicBool, Arc};
-    if ABX.lock().unwrap().is_some() {
+    if TRIAL.lock().unwrap().is_some() {
         return Err("a blind test is running — finish or cancel it first".into());
     }
     let mut guard = CAL_NOISE.lock().unwrap();
@@ -960,6 +960,18 @@ fn library_db() -> Result<rusqlite::Connection, String> {
         CREATE TABLE IF NOT EXISTS clip_tags (
             clip_id INTEGER NOT NULL,
             tag TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS batteries (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            note TEXT,
+            created_ms INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS battery_clips (
+            battery_id INTEGER NOT NULL,
+            clip_id INTEGER NOT NULL,
+            ord INTEGER NOT NULL,
+            PRIMARY KEY (battery_id, clip_id)
         );",
     )
     .map_err(|e| e.to_string())?;
@@ -1169,13 +1181,183 @@ fn clip_delete(id: i64) -> Result<LibraryState, String> {
         rusqlite::params![id],
     )
     .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM battery_clips WHERE clip_id = ?1",
+        rusqlite::params![id],
+    )
+    .map_err(|e| e.to_string())?;
     library_state_now()
+}
+
+// ---------------- batteries: the Lab's test material (phase 3) ----------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BatteryRow {
+    id: i64,
+    name: String,
+    note: Option<String>,
+    clip_ids: Vec<i64>,
+    created_ms: i64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BatteryState {
+    batteries: Vec<BatteryRow>,
+}
+
+fn battery_state_now() -> Result<BatteryState, String> {
+    let conn = library_db()?;
+    let mut stmt = conn
+        .prepare("SELECT id, name, note, created_ms FROM batteries ORDER BY created_ms DESC")
+        .map_err(|e| e.to_string())?;
+    let mut batteries = stmt
+        .query_map([], |r| {
+            Ok(BatteryRow {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                note: r.get(2)?,
+                clip_ids: Vec::new(),
+                created_ms: r.get(3)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT battery_id, clip_id FROM battery_clips ORDER BY battery_id, ord")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
+        .map_err(|e| e.to_string())?;
+    let mut map: std::collections::HashMap<i64, Vec<i64>> = std::collections::HashMap::new();
+    for row in rows.flatten() {
+        map.entry(row.0).or_default().push(row.1);
+    }
+    for b in &mut batteries {
+        if let Some(ids) = map.remove(&b.id) {
+            b.clip_ids = ids;
+        }
+    }
+    Ok(BatteryState { batteries })
+}
+
+#[tauri::command]
+fn battery_state() -> Result<BatteryState, String> {
+    battery_state_now()
+}
+
+#[tauri::command]
+fn battery_create(name: String, clip_ids: Option<Vec<i64>>) -> Result<BatteryState, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("a battery needs a name".into());
+    }
+    let conn = library_db()?;
+    conn.execute(
+        "INSERT INTO batteries (name, created_ms) VALUES (?1, ?2)",
+        rusqlite::params![name, now_ms() as i64],
+    )
+    .map_err(|e| e.to_string())?;
+    let id = conn.last_insert_rowid();
+    drop(conn);
+    if let Some(ids) = clip_ids {
+        battery_set_clips_inner(id, ids)?;
+    }
+    battery_state_now()
+}
+
+#[tauri::command]
+fn battery_update(
+    id: i64,
+    name: Option<String>,
+    note: Option<String>,
+) -> Result<BatteryState, String> {
+    let conn = library_db()?;
+    if let Some(n) = name {
+        let n = n.trim().to_string();
+        if n.is_empty() {
+            return Err("a battery needs a name".into());
+        }
+        conn.execute(
+            "UPDATE batteries SET name = ?1 WHERE id = ?2",
+            rusqlite::params![n, id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    if let Some(n) = note {
+        conn.execute(
+            "UPDATE batteries SET note = ?1 WHERE id = ?2",
+            rusqlite::params![n, id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    battery_state_now()
+}
+
+/// Replace a battery's clip list wholesale; vec order = play order. Missing
+/// clip ids are dropped silently (they may have been deleted since).
+fn battery_set_clips_inner(id: i64, clip_ids: Vec<i64>) -> Result<(), String> {
+    let mut conn = library_db()?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM battery_clips WHERE battery_id = ?1",
+        rusqlite::params![id],
+    )
+    .map_err(|e| e.to_string())?;
+    let mut seen = std::collections::HashSet::new();
+    let mut ord = 0i64;
+    for cid in clip_ids {
+        if !seen.insert(cid) {
+            continue;
+        }
+        let exists: bool = tx
+            .query_row(
+                "SELECT 1 FROM clips WHERE id = ?1",
+                rusqlite::params![cid],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+        if !exists {
+            continue;
+        }
+        tx.execute(
+            "INSERT INTO battery_clips (battery_id, clip_id, ord) VALUES (?1, ?2, ?3)",
+            rusqlite::params![id, cid, ord],
+        )
+        .map_err(|e| e.to_string())?;
+        ord += 1;
+    }
+    tx.commit().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn battery_set_clips(id: i64, clip_ids: Vec<i64>) -> Result<BatteryState, String> {
+    battery_set_clips_inner(id, clip_ids)?;
+    battery_state_now()
+}
+
+#[tauri::command]
+fn battery_delete(id: i64) -> Result<BatteryState, String> {
+    let conn = library_db()?;
+    conn.execute("DELETE FROM batteries WHERE id = ?1", rusqlite::params![id])
+        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM battery_clips WHERE battery_id = ?1",
+        rusqlite::params![id],
+    )
+    .map_err(|e| e.to_string())?;
+    battery_state_now()
 }
 
 /// Set (or clear) the engine's loop region — how a clip solos on loop.
 #[tauri::command]
 fn track_loop(a_s: f64, b_s: f64, on: bool) -> Result<(), String> {
     use std::sync::atomic::Ordering::Relaxed;
+    if trial_owns_track() {
+        return Err("a blind trial owns the player — finish or cancel it first".into());
+    }
     let guard = TRACK.lock().unwrap();
     let s = guard.as_ref().ok_or("no track playing")?;
     let rate = s.shared.rate as f64;
@@ -1620,7 +1802,7 @@ static PREVIEW_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 #[tauri::command]
 fn signal_preview(app: tauri::AppHandle, spec: Option<SigSpec>) -> Result<u64, String> {
     use std::sync::{atomic::AtomicBool, Arc};
-    if ABX.lock().unwrap().is_some() {
+    if TRIAL.lock().unwrap().is_some() {
         return Err("a blind test is running — finish or cancel it first".into());
     }
     let Some(spec) = spec else {
@@ -1910,6 +2092,11 @@ fn track_stop_inner() -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
 /// reference — the trim is the measured residual.
 fn push_chain_to_track(chain: &[ChainFilter]) {
     use std::sync::atomic::Ordering::Relaxed;
+    // A trial's chains are captured at start — live EQ edits must not
+    // mutate what a blind session is playing.
+    if trial_owns_track() {
+        return;
+    }
     let guard = TRACK.lock().unwrap();
     if let Some(s) = guard.as_ref() {
         let specs = specs_of(chain);
@@ -1982,7 +2169,7 @@ fn track_state_now() -> TrackState {
 #[tauri::command]
 async fn track_play(app: tauri::AppHandle, id: i64) -> Result<(), String> {
     use fletcher_core::playback::OutputMode;
-    if ABX.lock().unwrap().is_some() {
+    if TRIAL.lock().unwrap().is_some() {
         return Err("a blind test is running — finish or cancel it first".into());
     }
     stop_cal_noise();
@@ -2143,6 +2330,9 @@ fn track_toggle_inner() -> bool {
 
 #[tauri::command]
 fn track_toggle() -> Result<TrackState, String> {
+    if trial_owns_track() {
+        return Err("a blind trial owns the player — finish or cancel it first".into());
+    }
     if !track_toggle_inner() {
         return Err("no track playing".into());
     }
@@ -2152,6 +2342,9 @@ fn track_toggle() -> Result<TrackState, String> {
 #[tauri::command]
 fn track_seek(seconds: f64) -> Result<TrackState, String> {
     use std::sync::atomic::Ordering::Relaxed;
+    if trial_owns_track() {
+        return Err("a blind trial owns the player — finish or cancel it first".into());
+    }
     {
         let guard = TRACK.lock().unwrap();
         let s = guard.as_ref().ok_or("no track playing")?;
@@ -2169,6 +2362,9 @@ fn track_seek(seconds: f64) -> Result<TrackState, String> {
 #[tauri::command]
 fn track_scrub(on: bool) -> Result<(), String> {
     use std::sync::atomic::Ordering::Relaxed;
+    if trial_owns_track() {
+        return Err("a blind trial owns the player — finish or cancel it first".into());
+    }
     let guard = TRACK.lock().unwrap();
     let s = guard.as_ref().ok_or("no track playing")?;
     s.shared.scrub.store(on, Relaxed);
@@ -2193,6 +2389,10 @@ fn track_scrub_params(tau_ms: f64, max_speed: f64) -> Result<(), String> {
 
 #[tauri::command]
 fn track_stop() -> TrackState {
+    if trial_owns_track() {
+        // The trial's stream is not the user's to stop from the transport.
+        return track_state_now();
+    }
     track_stop_inner();
     track_state_now()
 }
@@ -2421,7 +2621,7 @@ fn settings_state() -> SettingsState {
 /// Re-applies the current side so the change is immediately audible.
 #[tauri::command]
 fn set_reference_db(db: f64) -> Result<EqState, String> {
-    if ABX.lock().unwrap().is_some() {
+    if TRIAL.lock().unwrap().is_some() {
         return Err("a blind test is running — finish or cancel it first".into());
     }
     write_state_field("referenceDb", serde_json::json!(db.clamp(-30.0, 0.0)));
@@ -2433,7 +2633,7 @@ fn set_reference_db(db: f64) -> Result<EqState, String> {
 /// test would corrupt what the trials are measuring.
 #[tauri::command]
 fn set_level_matching(on: bool) -> Result<EqState, String> {
-    if ABX.lock().unwrap().is_some() {
+    if TRIAL.lock().unwrap().is_some() {
         return Err("a blind test is running — finish or cancel it first".into());
     }
     write_state_field("levelMatching", serde_json::json!(on));
@@ -2554,14 +2754,16 @@ fn ab_set(side: String) -> Result<EqState, String> {
 fn ab_flip(app: &tauri::AppHandle) {
     use tauri::Emitter;
     {
-        let mut guard = ABX.lock().unwrap();
+        let mut guard = TRIAL.lock().unwrap();
         if let Some(session) = guard.as_mut() {
-            let next = match session.audition.as_str() {
-                "a" => "b",
-                "b" => "x",
-                _ => "a",
+            let next = match (session.protocol, session.audition.as_str()) {
+                (Protocol::Abx, "a") => "b",
+                (Protocol::Abx, "b") => "x",
+                (Protocol::Abx, _) => "a",
+                (Protocol::Pref, "1") => "2",
+                (Protocol::Pref, _) => "1",
             };
-            if abx_apply_audition(session, next).is_ok() {
+            if trial_apply_audition(session, next).is_ok() {
                 let _ = app.emit("abx-audition", next);
             }
             return;
@@ -2580,33 +2782,111 @@ fn ab_flip(app: &tauri::AppHandle) {
     }
 }
 
-// ---------------- ABX: the trial room engine ----------------
+// ---------------- the trial room engine (ABX + preference) ----------------
 //
-// The session lives server-side only; X assignments never reach the UI while
-// the session runs (that's the blinding). Everything is journaled and the
-// finished session persists with full labels for replay (Q-05).
+// The session lives server-side only; X/slot assignments never reach the UI
+// while the session runs (that's the blinding). Everything is journaled and
+// the finished session persists with full labels for replay (Q-05).
+//
+// One engine, three axes: protocol (ABX discrimination | blind preference),
+// material (system audio via config swap | clips through the track engine's
+// testing mode — ADR-0011's third play method), and stop rule (fixed N |
+// Wald SPRT sequential). Lock order where both are held: TRIAL → TRACK.
 
-struct AbxSession {
+#[derive(Clone, Copy, PartialEq)]
+enum Protocol {
+    Abx,
+    Pref,
+}
+
+/// One planned trial's material + leveling, measured at session start.
+/// Names are denormalized: provenance survives clip/track deletion.
+#[derive(Clone)]
+struct TrialClip {
+    clip_id: i64,
+    track_id: i64,
+    clip_name: String,
+    track_title: String,
+    frame_in: u64,
+    frame_out: u64,
+    /// True-LUFS trim bringing bus B to bus A's loudness on this clip.
+    trim_b_db: f64,
+    /// >0 when the TB-06 headroom cap kept the trim short of a perfect match.
+    trim_shortfall_db: f64,
+    lufs_a: f64,
+    lufs_b: f64,
+    /// Whole-stream gain while this clip's track plays (per-track, attenuate-only).
+    gain_db: f64,
+}
+
+enum Material {
+    /// Config-swap auditions through APO — the classic system-wide test.
+    System,
+    /// The trial owns the track engine; each trial solos one clip on loop
+    /// with both contender chains running in-engine (TB-12 dual bus).
+    Clips {
+        battery_id: Option<i64>,
+        battery_name: Option<String>,
+        plan: Vec<TrialClip>,
+        rate: u32,
+        /// Device lost mid-session: auditions/votes refused until resume.
+        suspended: bool,
+    },
+}
+
+enum StopRule {
+    FixedN {
+        planned: usize,
+    },
+    /// Declared before the first vote and recorded — the stop rule is part
+    /// of the test's provenance (no optional-stopping p-hacking).
+    Sprt {
+        p1: f64,
+        alpha: f64,
+        beta: f64,
+        max_trials: usize,
+    },
+}
+
+const SPRT_P1: f64 = 0.75;
+const SPRT_ALPHA: f64 = 0.05;
+const SPRT_BETA: f64 = 0.05;
+const SPRT_CAP: usize = 40;
+
+struct TrialSession {
     id: String,
+    protocol: Protocol,
+    material: Material,
+    stop_rule: StopRule,
     a_name: String,
     b_name: String,
-    /// The two competing chains, captured at start. Classic mode is the active
-    /// preset's chain vs an empty (flat) chain; node-vs-node passes both
-    /// explicitly. Every audition writes through the level-matched path, so
-    /// both sides land at the reference loudness by construction.
+    /// The two competing chains, captured at start. Every audition plays
+    /// level-matched (config path: shared matched-preamp write; clips path:
+    /// matched preamps + measured trim), so A and B land at the reference
+    /// loudness by construction.
     a: Vec<ChainFilter>,
     b: Vec<ChainFilter>,
-    planned: usize,
-    assignments: Vec<bool>, // per trial: X is A
-    answers: Vec<bool>,     // per answered trial: user said "X is A"
+    /// ABX: trial t's X is A.  Pref: trial t's slot "1" is A.
+    assignments: Vec<bool>,
+    /// ABX: user said "X is A".  Pref: user picked slot "1".
+    answers: Vec<bool>,
     stats_viewed: Vec<usize>,
-    audition: String, // "a" | "b" | "x"
+    audition: String, // ABX: "a"|"b"|"x"   Pref: "1"|"2"
     /// Whether the honesty switch was on when the session started (provenance).
     level_matched: bool,
     started_ms: u64,
 }
 
-static ABX: std::sync::Mutex<Option<AbxSession>> = std::sync::Mutex::new(None);
+static TRIAL: std::sync::Mutex<Option<TrialSession>> = std::sync::Mutex::new(None);
+
+/// Raised while a clips-material trial owns the track engine: public track
+/// commands and live chain pushes are refused/skipped, and the trial drives
+/// TRACK through the same internals.
+static TRIAL_OWNS_TRACK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn trial_owns_track() -> bool {
+    TRIAL_OWNS_TRACK.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -2615,40 +2895,130 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Write the config for what the listener should hear right now.
-fn abx_apply_audition(session: &mut AbxSession, target: &str) -> Result<(), String> {
+/// Which chain the listener should hear for an audition target.
+fn trial_hear_a(session: &TrialSession, target: &str) -> bool {
     let trial = session.answers.len();
-    let hear_a = match target {
-        "a" => true,
-        "b" => false,
-        _ => *session.assignments.get(trial).unwrap_or(&true),
-    };
-    activate_chain(if hear_a { &session.a } else { &session.b })?;
+    let assigned = *session.assignments.get(trial).unwrap_or(&true);
+    match (session.protocol, target) {
+        (Protocol::Abx, "a") => true,
+        (Protocol::Abx, "b") => false,
+        (Protocol::Abx, _) => assigned, // "x"
+        // Pref: slot "1" is A exactly when assigned; "2" is the mirror.
+        (Protocol::Pref, t) => (t == "1") == assigned,
+    }
+}
+
+/// Make what the listener should hear right now actually play.
+fn trial_apply_audition(session: &mut TrialSession, target: &str) -> Result<(), String> {
+    let hear_a = trial_hear_a(session, target);
+    match &session.material {
+        Material::System => {
+            activate_chain(if hear_a { &session.a } else { &session.b })?;
+        }
+        Material::Clips { suspended, .. } => {
+            if *suspended {
+                return Err("the audio device was lost — resume or finish the session".into());
+            }
+            let guard = TRACK.lock().unwrap();
+            let s = guard
+                .as_ref()
+                .ok_or("trial playback is not running — resume the session")?;
+            // The engine's 15 ms equal-power crossfade does the switch —
+            // sample-accurate, APO out of the path (TB-12).
+            s.shared
+                .side_b
+                .store(!hear_a, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
     session.audition = target.to_string();
     Ok(())
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct AbxState {
+struct TrialState {
     active: bool,
+    protocol: &'static str, // "abx" | "pref"
+    material: &'static str, // "system" | "clips"
     a_name: String,
     b_name: String,
     planned: usize,
+    adaptive: bool,
     answered: usize,
     audition: String,
     level_matched: bool,
     /// Correct count so far — present only after an explicit reveal (TB-24).
+    /// For preference: the preferred-A count.
     running_correct: Option<usize>,
+    // Clips material, current trial (None for system material):
+    #[serde(skip_serializing_if = "Option::is_none")]
+    clip_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    track_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    clip_index: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    clip_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    battery_name: Option<String>,
+    suspended: bool,
 }
 
-fn abx_state_of(session: &AbxSession, revealed: bool) -> AbxState {
-    AbxState {
+fn trial_state_of(session: &TrialSession, revealed: bool) -> TrialState {
+    let trial = session.answers.len();
+    let (clip_name, track_title, clip_index, clip_count, battery_name, suspended) = match &session
+        .material
+    {
+        Material::System => (None, None, None, None, None, false),
+        Material::Clips {
+            plan,
+            battery_name,
+            suspended,
+            ..
+        } => {
+            let cur = plan.get(trial.min(plan.len().saturating_sub(1)));
+            let distinct: std::collections::HashSet<i64> = plan.iter().map(|c| c.clip_id).collect();
+            (
+                cur.map(|c| c.clip_name.clone()),
+                cur.map(|c| c.track_title.clone()),
+                cur.map(|c| {
+                    // Position within the distinct battery, 1-based.
+                    let mut seen = std::collections::HashSet::new();
+                    let mut idx = 0;
+                    for p in plan.iter().take(trial + 1) {
+                        if seen.insert(p.clip_id) {
+                            idx += 1;
+                        }
+                        if p.clip_id == c.clip_id {
+                            break;
+                        }
+                    }
+                    idx.max(1)
+                }),
+                Some(distinct.len()),
+                battery_name.clone(),
+                *suspended,
+            )
+        }
+    };
+    TrialState {
         active: true,
+        protocol: match session.protocol {
+            Protocol::Abx => "abx",
+            Protocol::Pref => "pref",
+        },
+        material: match session.material {
+            Material::System => "system",
+            Material::Clips { .. } => "clips",
+        },
         a_name: session.a_name.clone(),
         b_name: session.b_name.clone(),
         level_matched: session.level_matched,
-        planned: session.planned,
+        planned: match session.stop_rule {
+            StopRule::FixedN { planned } => planned,
+            StopRule::Sprt { max_trials, .. } => max_trials,
+        },
+        adaptive: matches!(session.stop_rule, StopRule::Sprt { .. }),
         answered: session.answers.len(),
         audition: session.audition.clone(),
         running_correct: if revealed {
@@ -2656,10 +3026,17 @@ fn abx_state_of(session: &AbxSession, revealed: bool) -> AbxState {
         } else {
             None
         },
+        clip_name,
+        track_title,
+        clip_index,
+        clip_count,
+        battery_name,
+        suspended,
     }
 }
 
-fn abx_correct(session: &AbxSession) -> usize {
+/// ABX: correct answers. Pref: preferred-A count (picked the slot holding A).
+fn abx_correct(session: &TrialSession) -> usize {
     session
         .answers
         .iter()
@@ -2668,47 +3045,204 @@ fn abx_correct(session: &AbxSession) -> usize {
         .count()
 }
 
-/// Start a session. With no chains: classic mode — the active preset vs flat.
-/// With both `a` and `b`: any two chains (e.g. two history nodes); level
-/// matching between them comes from the shared write path.
-#[tauri::command]
-fn abx_start(
-    trials: usize,
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TrialSpec {
+    protocol: Option<String>, // "abx" (default) | "pref"
+    material: Option<MaterialSpec>,
     a: Option<Vec<FilterIn>>,
     b: Option<Vec<FilterIn>>,
     a_name: Option<String>,
     b_name: Option<String>,
-) -> Result<AbxState, String> {
-    let (chain_a, chain_b, name_a, name_b) = match (a, b) {
-        (Some(a), Some(b)) => (
+    stop: Option<StopSpec>,
+}
+
+#[derive(Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+enum MaterialSpec {
+    System,
+    Clips {
+        battery_id: Option<i64>,
+        clip_ids: Option<Vec<i64>>,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+enum StopSpec {
+    FixedN { trials: usize },
+    Sprt { max_trials: Option<usize> },
+}
+
+/// Shuffle in place with the session RNG (Fisher–Yates).
+fn shuffle<T>(v: &mut [T], rng: &mut fletcher_core::stats::Xorshift) {
+    for i in (1..v.len()).rev() {
+        let j = (rng.next_u64() % (i as u64 + 1)) as usize;
+        v.swap(i, j);
+    }
+}
+
+/// Resolve chains + names for a trial (both explicit, or active-vs-flat).
+fn trial_chains(
+    a: Option<Vec<FilterIn>>,
+    b: Option<Vec<FilterIn>>,
+    a_name: Option<String>,
+    b_name: Option<String>,
+) -> Result<(Vec<ChainFilter>, Vec<ChainFilter>, String, String), String> {
+    match (a, b) {
+        (Some(a), Some(b)) => Ok((
             chain_of(&a)?,
             chain_of(&b)?,
             a_name.unwrap_or_else(|| "A".into()),
             b_name.unwrap_or_else(|| "B".into()),
-        ),
+        )),
         (None, None) => {
             let chain = active_chain();
             if chain.iter().filter(|f| f.enabled).count() == 0 {
                 return Err("activate a preset with at least one enabled filter first — A and B would sound identical".into());
             }
-            (
+            Ok((
                 chain,
                 Vec::new(),
                 active_preset().unwrap_or_else(|| "Fletcher chain".into()),
                 "Flat".into(),
-            )
+            ))
         }
-        _ => return Err("provide both chains or neither".into()),
-    };
-    // Leveling noise and blind trials must never overlap (TB-26 class), and
-    // the track engine can't share the device with config-swap auditions.
-    stop_cal_noise();
-    if TRACK.lock().unwrap().is_some() {
-        return Err(
-            "stop track playback first — blind tests and the track engine can't run together yet"
-                .into(),
-        );
+        _ => Err("provide both chains or neither".into()),
     }
+}
+
+/// The contender chains + honesty snapshot a spawn needs.
+struct TrialChains<'a> {
+    a: &'a [ChainFilter],
+    b: &'a [ChainFilter],
+    level_matched: bool,
+}
+
+/// Spawn the track engine for one trial clip: exclusive, both contender
+/// chains in-engine, clip soloed on loop, opening side set blind. On stream
+/// error the trial suspends instead of dying (answers survive — ADR-0006).
+fn spawn_trial_clip(
+    app: &tauri::AppHandle,
+    session_id: &str,
+    chains: TrialChains<'_>,
+    clip: &TrialClip,
+    rate: u32,
+    hear_a: bool,
+) -> Result<(), String> {
+    use std::sync::atomic::Ordering::Relaxed;
+    let pcm = prepare_pcm(clip.track_id, rate, || {})?;
+    let total = (pcm.len() / 2) as u64;
+    let start = clip.frame_in.min(total.saturating_sub(1));
+    let session = engine::TrackSession::new(
+        clip.track_id,
+        fletcher_core::playback::OutputMode::Exclusive,
+        rate,
+        total,
+        start,
+    );
+    session.shared.loop_a.store(clip.frame_in, Relaxed);
+    session
+        .shared
+        .loop_b
+        .store(clip.frame_out.min(total), Relaxed);
+    session.shared.loop_on.store(true, Relaxed);
+    session.shared.side_b.store(!hear_a, Relaxed);
+    let (sa, sb) = (specs_of(chains.a), specs_of(chains.b));
+    let (pa, pb) = (matched_preamp(&sa), matched_preamp(&sb));
+    {
+        let mut bus = session.shared.bus.lock().unwrap();
+        *bus = engine::BusConfig {
+            specs: sa,
+            preamp_a_db: pa,
+            specs_b: sb,
+            preamp_b_db: pb,
+            trim_b_db: clip.trim_b_db,
+            matched: chains.level_matched,
+            in_engine_eq: true,
+        };
+    }
+    session.shared.chain_gen.fetch_add(1, Relaxed);
+    let _ = TRACK_SESS.fetch_add(1, Relaxed);
+    let stop_end = session.stop.clone();
+    let (app_end, sid) = (app.clone(), session_id.to_string());
+    session.spawn_audio(
+        pcm,
+        10f64.powf(clip.gain_db / 20.0),
+        |_info| {},
+        move |err| {
+            use tauri::Emitter;
+            // Sequential locks, never nested: TRACK first, then TRIAL.
+            {
+                let mut guard = TRACK.lock().unwrap();
+                if let Some(cur) = guard.as_ref() {
+                    if std::sync::Arc::ptr_eq(&cur.stop, &stop_end) {
+                        *guard = None;
+                    }
+                }
+            }
+            if let Some(e) = err {
+                let mut guard = TRIAL.lock().unwrap();
+                if let Some(s) = guard.as_mut() {
+                    if s.id == sid {
+                        if let Material::Clips { suspended, .. } = &mut s.material {
+                            *suspended = true;
+                        }
+                        let _ = app_end.emit("trial-error", e);
+                    }
+                }
+            }
+        },
+    );
+    *TRACK.lock().unwrap() = Some(session);
+    Ok(())
+}
+
+/// Start a session from a full spec. Clip material decodes + measures before
+/// the first trial, so it runs blocking.
+#[tauri::command]
+async fn trial_start(app: tauri::AppHandle, spec: TrialSpec) -> Result<TrialState, String> {
+    tauri::async_runtime::spawn_blocking(move || trial_start_inner(&app, spec))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn trial_start_inner(app: &tauri::AppHandle, spec: TrialSpec) -> Result<TrialState, String> {
+    let protocol = match spec.protocol.as_deref() {
+        None | Some("abx") => Protocol::Abx,
+        Some("pref") => Protocol::Pref,
+        Some(other) => return Err(format!("unknown protocol: {other}")),
+    };
+    let stop_rule = match spec.stop {
+        None => StopRule::FixedN { planned: 16 },
+        Some(StopSpec::FixedN { trials }) => StopRule::FixedN {
+            planned: trials.clamp(4, 100),
+        },
+        Some(StopSpec::Sprt { max_trials }) => {
+            if protocol == Protocol::Pref {
+                return Err(
+                    "preference runs a fixed count — sequential stopping would inflate the preference score"
+                        .into(),
+                );
+            }
+            StopRule::Sprt {
+                p1: SPRT_P1,
+                alpha: SPRT_ALPHA,
+                beta: SPRT_BETA,
+                max_trials: max_trials.unwrap_or(SPRT_CAP).clamp(8, 100),
+            }
+        }
+    };
+    let (chain_a, chain_b, name_a, name_b) =
+        trial_chains(spec.a, spec.b, spec.a_name, spec.b_name)?;
     // Two chains that level-match to the same response leave nothing to test.
     // Comparing responses, not filter lists, catches differently-written but
     // audibly identical chains.
@@ -2723,52 +3257,342 @@ fn abx_start(
             );
         }
     }
-    let trials = trials.clamp(4, 100);
+    if TRIAL.lock().unwrap().is_some() {
+        return Err("a blind test is already running — finish or cancel it first".into());
+    }
+    // Leveling noise and blind trials must never overlap (TB-26 class).
+    stop_cal_noise();
+
+    let cap = match stop_rule {
+        StopRule::FixedN { planned } => planned,
+        StopRule::Sprt { max_trials, .. } => max_trials,
+    };
     let mut rng = fletcher_core::stats::Xorshift::new(now_ms() | 1);
-    let mut session = AbxSession {
-        id: format!("abx-{}", now_ms()),
+    let assignments: Vec<bool> = (0..cap).map(|_| rng.next_bool()).collect();
+    let opening = match protocol {
+        Protocol::Abx => "a",
+        Protocol::Pref => "1",
+    };
+    let id_prefix = match protocol {
+        Protocol::Abx => "abx",
+        Protocol::Pref => "pref",
+    };
+
+    let material = match spec.material {
+        None | Some(MaterialSpec::System) => {
+            if TRACK.lock().unwrap().is_some() {
+                return Err(
+                    "stop track playback first — system-wide tests and the track engine can't share the device"
+                        .into(),
+                );
+            }
+            Material::System
+        }
+        Some(MaterialSpec::Clips {
+            battery_id,
+            clip_ids,
+        }) => trial_build_clips_material(&chain_a, &chain_b, battery_id, clip_ids, cap, &mut rng)?,
+    };
+
+    let mut session = TrialSession {
+        id: format!("{id_prefix}-{}", now_ms()),
+        protocol,
+        material,
+        stop_rule,
         a_name: name_a,
         b_name: name_b,
         a: chain_a,
         b: chain_b,
-        planned: trials,
-        assignments: (0..trials).map(|_| rng.next_bool()).collect(),
+        assignments,
         answers: Vec::new(),
         stats_viewed: Vec::new(),
-        audition: "a".into(),
+        audition: opening.into(),
         level_matched: level_matching(),
         started_ms: now_ms(),
     };
-    abx_apply_audition(&mut session, "a")?;
-    let state = abx_state_of(&session, false);
-    *ABX.lock().unwrap() = Some(session);
+
+    match &session.material {
+        Material::System => {
+            trial_apply_audition(&mut session, opening)?;
+        }
+        Material::Clips { plan, rate, .. } => {
+            // Takeover: the trial owns the track engine from here on.
+            let prior_done = track_stop_inner();
+            TRIAL_OWNS_TRACK.store(true, std::sync::atomic::Ordering::Relaxed);
+            if let Some(done) = prior_done {
+                let t0 = std::time::Instant::now();
+                while !done.load(std::sync::atomic::Ordering::Relaxed)
+                    && t0.elapsed() < std::time::Duration::from_secs(3)
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+            }
+            let hear_a = trial_hear_a(&session, opening);
+            let clip = plan[0].clone();
+            let rate = *rate;
+            if let Err(e) = spawn_trial_clip(
+                app,
+                &session.id,
+                TrialChains {
+                    a: &session.a,
+                    b: &session.b,
+                    level_matched: session.level_matched,
+                },
+                &clip,
+                rate,
+                hear_a,
+            ) {
+                TRIAL_OWNS_TRACK.store(false, std::sync::atomic::Ordering::Relaxed);
+                return Err(e);
+            }
+        }
+    }
+
+    let state = trial_state_of(&session, false);
+    *TRIAL.lock().unwrap() = Some(session);
     Ok(state)
 }
 
-#[tauri::command]
-fn abx_audition(target: String) -> Result<AbxState, String> {
-    let mut guard = ABX.lock().unwrap();
-    let session = guard.as_mut().ok_or("no session running")?;
-    let target = match target.as_str() {
-        "a" | "b" | "x" => target,
-        _ => return Err("unknown target".into()),
+/// Resolve, order, and level-measure a battery (or ad-hoc clip list) into a
+/// full trial plan. Shuffled but grouped by track: the blind protects the
+/// assignment (iid per trial regardless of material order), and grouping
+/// minimizes exclusive open/close churn — the flakiest driver operation.
+fn trial_build_clips_material(
+    chain_a: &[ChainFilter],
+    chain_b: &[ChainFilter],
+    battery_id: Option<i64>,
+    clip_ids: Option<Vec<i64>>,
+    cap: usize,
+    rng: &mut fletcher_core::stats::Xorshift,
+) -> Result<Material, String> {
+    let conn = library_db()?;
+    let (ids, battery_name) = match (battery_id, clip_ids) {
+        (Some(bid), _) => {
+            let name: String = conn
+                .query_row(
+                    "SELECT name FROM batteries WHERE id = ?1",
+                    rusqlite::params![bid],
+                    |r| r.get(0),
+                )
+                .map_err(|_| "battery not found".to_string())?;
+            let mut stmt = conn
+                .prepare("SELECT clip_id FROM battery_clips WHERE battery_id = ?1 ORDER BY ord")
+                .map_err(|e| e.to_string())?;
+            let ids: Vec<i64> = stmt
+                .query_map(rusqlite::params![bid], |r| r.get(0))
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            (ids, Some(name))
+        }
+        (None, Some(ids)) => (ids, None),
+        (None, None) => return Err("pick a battery or clips to test on".into()),
     };
-    abx_apply_audition(session, &target)?;
-    Ok(abx_state_of(session, false))
+    if ids.is_empty() {
+        return Err("that battery is empty — add clips to it first".into());
+    }
+    // Fetch clip + track rows (names denormalized for provenance).
+    struct ClipRef {
+        clip_id: i64,
+        track_id: i64,
+        name: String,
+        title: String,
+        t_in: f64,
+        t_out: f64,
+    }
+    let mut clips: Vec<ClipRef> = Vec::new();
+    for cid in &ids {
+        let row = conn
+            .query_row(
+                "SELECT c.id, c.track_id, c.name, t.title, c.t_in, c.t_out
+                 FROM clips c JOIN tracks t ON t.id = c.track_id WHERE c.id = ?1",
+                rusqlite::params![cid],
+                |r| {
+                    Ok(ClipRef {
+                        clip_id: r.get(0)?,
+                        track_id: r.get(1)?,
+                        name: r.get(2)?,
+                        title: r.get(3)?,
+                        t_in: r.get(4)?,
+                        t_out: r.get(5)?,
+                    })
+                },
+            )
+            .map_err(|_| format!("clip #{cid} no longer exists"))?;
+        if row.t_out - row.t_in < 0.5 {
+            return Err(format!(
+                "clip \"{}\" is under 0.5 s — too short for a blind switch",
+                row.name
+            ));
+        }
+        clips.push(row);
+    }
+    drop(conn);
+
+    // Exclusive only: the shared path would run the engine's output through
+    // APO — double-processing (TB-03). No degraded mode.
+    let rate = fletcher_core::playback::probe_rate(fletcher_core::playback::OutputMode::Exclusive)
+        .map_err(|_| {
+            "blind clip trials need exclusive mode (the shared path would double-process through APO) — the device refused it"
+                .to_string()
+        })?;
+
+    // Measure each distinct clip once: LUFS through both chains over the clip
+    // region, trim B to match A (TB-06: positive trims capped at post-chain
+    // peak headroom − 0.3 dB, shortfall recorded). Per-track stream gain from
+    // the loudest clip so nothing exceeds the reference target and clips keep
+    // their natural relative loudness.
+    let (sa, sb) = (specs_of(chain_a), specs_of(chain_b));
+    let (pa, pb) = (matched_preamp(&sa), matched_preamp(&sb));
+    let target = -16.0 + (reference_db() + 8.0);
+    let mut measured: std::collections::HashMap<i64, TrialClip> = std::collections::HashMap::new();
+    let mut track_gain: std::collections::HashMap<i64, f64> = std::collections::HashMap::new();
+    let mut track_ids: Vec<i64> = Vec::new();
+    for c in &clips {
+        if !track_ids.contains(&c.track_id) {
+            track_ids.push(c.track_id);
+        }
+    }
+    for tid in &track_ids {
+        let pcm = prepare_pcm(*tid, rate, || {})?;
+        let total = (pcm.len() / 2) as u64;
+        for c in clips.iter().filter(|c| c.track_id == *tid) {
+            let fi = ((c.t_in * rate as f64) as u64).min(total.saturating_sub(1));
+            let fo = ((c.t_out * rate as f64) as u64).clamp(fi + 1, total);
+            let mut slice: Vec<f32> = pcm[(fi as usize) * 2..(fo as usize) * 2].to_vec();
+            // R128 gating needs runway; tiling matches what looping sounds like.
+            let min_len = (rate as usize) * 3 * 2;
+            while slice.len() < min_len {
+                let take = (min_len - slice.len()).min((fo - fi) as usize * 2);
+                let head: Vec<f32> = slice[..take].to_vec();
+                slice.extend_from_slice(&head);
+            }
+            let (lufs_a, _) = engine::lufs_peak_through(&slice, rate, &sa, pa)?;
+            let (lufs_b, peak_b) = engine::lufs_peak_through(&slice, rate, &sb, pb)?;
+            let want = lufs_a - lufs_b;
+            let (trim, shortfall) = if want > 0.0 {
+                let headroom = (-peak_b - 0.3).max(0.0);
+                (want.min(headroom), (want - headroom).max(0.0))
+            } else {
+                (want, 0.0)
+            };
+            let g = (target - lufs_a).min(0.0);
+            let e = track_gain.entry(*tid).or_insert(g);
+            *e = e.min(g);
+            measured.insert(
+                c.clip_id,
+                TrialClip {
+                    clip_id: c.clip_id,
+                    track_id: c.track_id,
+                    clip_name: c.name.clone(),
+                    track_title: c.title.clone(),
+                    frame_in: fi,
+                    frame_out: fo,
+                    trim_b_db: trim,
+                    trim_shortfall_db: shortfall,
+                    lufs_a,
+                    lufs_b,
+                    gain_db: 0.0, // filled below from the track minimum
+                },
+            );
+        }
+        // PCM Arc drops here — one track resident at a time.
+    }
+    for tc in measured.values_mut() {
+        tc.gain_db = *track_gain.get(&tc.track_id).unwrap_or(&0.0);
+    }
+
+    // Order: shuffle tracks, shuffle clips within each track, repeat fresh
+    // passes until the plan covers the trial cap, truncate.
+    let mut plan: Vec<TrialClip> = Vec::new();
+    while plan.len() < cap {
+        let mut order = track_ids.clone();
+        shuffle(&mut order, rng);
+        for tid in order {
+            let mut group: Vec<i64> = clips
+                .iter()
+                .filter(|c| c.track_id == tid)
+                .map(|c| c.clip_id)
+                .collect();
+            shuffle(&mut group, rng);
+            for cid in group {
+                plan.push(measured[&cid].clone());
+            }
+        }
+    }
+    plan.truncate(cap);
+
+    Ok(Material::Clips {
+        battery_id,
+        battery_name,
+        plan,
+        rate,
+        suspended: false,
+    })
+}
+
+/// Classic entry, kept for existing callers: system material, fixed N.
+#[tauri::command]
+fn abx_start(
+    app: tauri::AppHandle,
+    trials: usize,
+    a: Option<Vec<FilterIn>>,
+    b: Option<Vec<FilterIn>>,
+    a_name: Option<String>,
+    b_name: Option<String>,
+) -> Result<TrialState, String> {
+    trial_start_inner(
+        &app,
+        TrialSpec {
+            protocol: Some("abx".into()),
+            material: Some(MaterialSpec::System),
+            a,
+            b,
+            a_name,
+            b_name,
+            stop: Some(StopSpec::FixedN { trials }),
+        },
+    )
+}
+
+#[tauri::command]
+fn abx_audition(target: String) -> Result<TrialState, String> {
+    let mut guard = TRIAL.lock().unwrap();
+    let session = guard.as_mut().ok_or("no session running")?;
+    let valid = match session.protocol {
+        Protocol::Abx => matches!(target.as_str(), "a" | "b" | "x"),
+        // Open A/B auditioning would unblind the slot — 1/2 only.
+        Protocol::Pref => matches!(target.as_str(), "1" | "2"),
+    };
+    if !valid {
+        return Err("unknown target".into());
+    }
+    trial_apply_audition(session, &target)?;
+    Ok(trial_state_of(session, false))
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct AbxTrialLog {
+struct TrialLogEntry {
+    /// ABX: X was A on this trial. Pref: slot "1" held A.
     x_was_a: bool,
+    /// ABX: the listener said "X is A". Pref: the listener picked slot "1".
     answered_a: bool,
+    /// ABX: right answer. Pref: this trial preferred A.
     correct: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    clip_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    clip_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    track_id: Option<i64>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct AbxResult {
+struct TrialResult {
     id: String,
+    protocol: &'static str,
     a_name: String,
     b_name: String,
     /// Full provenance: what A and B actually were, and the reference both
@@ -2778,10 +3602,32 @@ struct AbxResult {
     reference_db: f64,
     level_matched: bool,
     trials: usize,
-    correct: usize,
-    p_value: f64,
+    /// ABX only: correct count + one-sided exact binomial p.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    correct: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    p_value: Option<f64>,
+    /// Preference only: no correct answer exists (TB-15) — the preferred-A
+    /// count and a TWO-sided exact test against no-preference.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    preferred_a: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    p_value_two_sided: Option<f64>,
+    material: serde_json::Value,
+    stop_rule: serde_json::Value,
+    /// Sequential (SPRT) sessions: p was computed at a data-dependent stop —
+    /// nominal, never the primary criterion. The decision carries the
+    /// calibrated error rates.
+    sequential: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    decision: Option<&'static str>, // "difference" | "noDifference" | "cap"
+    finished_early: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    playback: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    trims: Vec<serde_json::Value>,
     stats_viewed: Vec<usize>,
-    log: Vec<AbxTrialLog>,
+    log: Vec<TrialLogEntry>,
     started_ms: u64,
 }
 
@@ -2798,33 +3644,108 @@ fn dto_chain(chain: &[ChainFilter]) -> Vec<PastedFilter> {
         .collect()
 }
 
-fn abx_result_of(session: &AbxSession) -> AbxResult {
-    let correct = abx_correct(session);
-    AbxResult {
+fn trial_result_of(
+    session: &TrialSession,
+    decision: Option<&'static str>,
+    finished_early: bool,
+) -> TrialResult {
+    let k = abx_correct(session);
+    let n = session.answers.len();
+    let (material, playback, trims) = match &session.material {
+        Material::System => (serde_json::json!({ "kind": "system" }), None, Vec::new()),
+        Material::Clips {
+            battery_id,
+            battery_name,
+            plan,
+            rate,
+            ..
+        } => {
+            let mut seen = std::collections::HashSet::new();
+            let mut clip_ids = Vec::new();
+            let mut trims = Vec::new();
+            for c in plan {
+                if seen.insert(c.clip_id) {
+                    clip_ids.push(c.clip_id);
+                    trims.push(serde_json::json!({
+                        "clipId": c.clip_id,
+                        "trimBDb": c.trim_b_db,
+                        "trimShortfallDb": c.trim_shortfall_db,
+                        "lufsA": c.lufs_a,
+                        "lufsB": c.lufs_b,
+                        "gainDb": c.gain_db,
+                    }));
+                }
+            }
+            (
+                serde_json::json!({
+                    "kind": "clips",
+                    "batteryId": battery_id,
+                    "batteryName": battery_name,
+                    "clipIds": clip_ids,
+                }),
+                Some(serde_json::json!({ "mode": "exclusive", "rate": rate })),
+                trims,
+            )
+        }
+    };
+    let stop_rule = match session.stop_rule {
+        StopRule::FixedN { planned } => {
+            serde_json::json!({ "kind": "fixedN", "planned": planned })
+        }
+        StopRule::Sprt {
+            p1,
+            alpha,
+            beta,
+            max_trials,
+        } => serde_json::json!({
+            "kind": "sprt", "p1": p1, "alpha": alpha, "beta": beta, "maxTrials": max_trials
+        }),
+    };
+    let log = session
+        .answers
+        .iter()
+        .zip(&session.assignments)
+        .enumerate()
+        .map(|(i, (ans, actual))| {
+            let clip = match &session.material {
+                Material::System => None,
+                Material::Clips { plan, .. } => plan.get(i),
+            };
+            TrialLogEntry {
+                x_was_a: *actual,
+                answered_a: *ans,
+                correct: ans == actual,
+                clip_id: clip.map(|c| c.clip_id),
+                clip_name: clip.map(|c| c.clip_name.clone()),
+                track_id: clip.map(|c| c.track_id),
+            }
+        })
+        .collect();
+    let is_abx = session.protocol == Protocol::Abx;
+    TrialResult {
         id: session.id.clone(),
+        protocol: if is_abx { "abx" } else { "pref" },
         a_name: session.a_name.clone(),
         b_name: session.b_name.clone(),
         a_chain: dto_chain(&session.a),
         b_chain: dto_chain(&session.b),
         reference_db: reference_db(),
         level_matched: session.level_matched,
-        trials: session.answers.len(),
-        correct,
-        p_value: fletcher_core::stats::binomial_p_one_sided(
-            correct as u32,
-            session.answers.len() as u32,
-        ),
+        trials: n,
+        correct: is_abx.then_some(k),
+        p_value: is_abx.then(|| fletcher_core::stats::binomial_p_one_sided(k as u32, n as u32)),
+        preferred_a: (!is_abx).then_some(k),
+        p_value_two_sided: (!is_abx)
+            .then(|| fletcher_core::stats::binomial_p_two_sided(k as u32, n as u32)),
+        material,
+        stop_rule,
+        sequential: matches!(session.stop_rule, StopRule::Sprt { .. }),
+        decision,
+        finished_early,
+        playback,
+        trims,
         stats_viewed: session.stats_viewed.clone(),
-        log: session
-            .answers
-            .iter()
-            .zip(&session.assignments)
-            .map(|(ans, actual)| AbxTrialLog {
-                x_was_a: *actual,
-                answered_a: *ans,
-                correct: ans == actual,
-            })
-            .collect(),
+        log,
         started_ms: session.started_ms,
     }
 }
@@ -2833,54 +3754,276 @@ fn sessions_dir() -> PathBuf {
     data_dir().join("sessions")
 }
 
-/// Vote for the current trial. Returns the final result on the last trial.
+/// Persist a finished session and restore normal playback for its material.
+/// Returns the result as a JSON value.
+fn trial_finalize(
+    session: &TrialSession,
+    decision: Option<&'static str>,
+    finished_early: bool,
+) -> Result<serde_json::Value, String> {
+    let result = trial_result_of(session, decision, finished_early);
+    let _ = std::fs::create_dir_all(sessions_dir());
+    let json = serde_json::to_string_pretty(&result).map_err(|e| e.to_string())?;
+    let _ = fsx::write_atomic(&sessions_dir().join(format!("{}.json", result.id)), &json);
+    match session.material {
+        Material::System => {
+            let _ = apply_side("a");
+            set_ab_side("a");
+        }
+        Material::Clips { .. } => {
+            // APO was never touched — releasing the exclusive stream is the
+            // whole restoration; system audio comes back by itself.
+            TRIAL_OWNS_TRACK.store(false, std::sync::atomic::Ordering::Relaxed);
+            track_stop_inner();
+        }
+    }
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+/// Vote for the current trial. Returns the final result when the stop rule
+/// says the session is over (fixed count reached, or SPRT decided).
 #[tauri::command]
-fn abx_vote(x_is_a: bool) -> Result<serde_json::Value, String> {
-    let mut guard = ABX.lock().unwrap();
+async fn abx_vote(app: tauri::AppHandle, x_is_a: bool) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || trial_vote_inner(&app, x_is_a))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn trial_vote_inner(app: &tauri::AppHandle, pick: bool) -> Result<serde_json::Value, String> {
+    let mut guard = TRIAL.lock().unwrap();
     let session = guard.as_mut().ok_or("no session running")?;
-    if session.answers.len() >= session.planned {
+    if let Material::Clips {
+        suspended: true, ..
+    } = session.material
+    {
+        return Err("the audio device was lost — resume or finish the session".into());
+    }
+    let cap = match session.stop_rule {
+        StopRule::FixedN { planned } => planned,
+        StopRule::Sprt { max_trials, .. } => max_trials,
+    };
+    if session.answers.len() >= cap {
         return Err("session already complete".into());
     }
-    session.answers.push(x_is_a);
+    session.answers.push(pick);
+    let k = abx_correct(session);
+    let n = session.answers.len();
+    let (done, decision) = match session.stop_rule {
+        StopRule::FixedN { planned } => (n >= planned, None),
+        StopRule::Sprt {
+            p1,
+            alpha,
+            beta,
+            max_trials,
+        } => {
+            // The server decides and finishes — bounds-vs-score never reaches
+            // the UI mid-session (TB-24-clean adaptive stopping).
+            use fletcher_core::stats::SprtDecision::*;
+            match fletcher_core::stats::sprt_step(k as u32, n as u32, p1, alpha, beta) {
+                AcceptH1 => (true, Some("difference")),
+                AcceptH0 => (true, Some("noDifference")),
+                Continue if n >= max_trials => (true, Some("cap")),
+                Continue => (false, None),
+            }
+        }
+    };
 
-    if session.answers.len() == session.planned {
-        let result = abx_result_of(session);
-        let _ = std::fs::create_dir_all(sessions_dir());
-        let json = serde_json::to_string_pretty(&result).map_err(|e| e.to_string())?;
-        let _ = fsx::write_atomic(&sessions_dir().join(format!("{}.json", result.id)), &json);
-        let _ = apply_side("a");
-        set_ab_side("a");
+    if done {
+        let result = trial_finalize(session, decision, false)?;
         *guard = None;
-        Ok(
-            serde_json::json!({ "done": true, "result": serde_json::from_str::<serde_json::Value>(&json).unwrap() }),
-        )
-    } else {
-        // Next trial opens auditioning X (its fresh mystery assignment).
-        abx_apply_audition(session, "x")?;
-        Ok(
-            serde_json::json!({ "done": false, "state": serde_json::to_value(abx_state_of(session, false)).unwrap() }),
-        )
+        return Ok(serde_json::json!({ "done": true, "result": result }));
     }
+
+    // Next trial opens blind: X's fresh assignment (ABX) or slot 1 (Pref).
+    let opening = match session.protocol {
+        Protocol::Abx => "x",
+        Protocol::Pref => "1",
+    };
+    match &session.material {
+        Material::System => {
+            trial_apply_audition(session, opening)?;
+        }
+        Material::Clips { plan, rate, .. } => {
+            let idx = session.answers.len();
+            let (next, prev_track, rate) = (plan[idx].clone(), plan[idx - 1].track_id, *rate);
+            let hear_a = trial_hear_a(session, opening);
+            session.audition = opening.into();
+            if next.track_id == prev_track {
+                // In-place retune: pause masks the seam; same stream, same gain.
+                use std::sync::atomic::Ordering::Relaxed;
+                let tg = TRACK.lock().unwrap();
+                let s = tg
+                    .as_ref()
+                    .ok_or("trial playback is not running — resume the session")?;
+                s.shared.paused.store(true, Relaxed);
+                s.shared.loop_a.store(next.frame_in, Relaxed);
+                s.shared.loop_b.store(next.frame_out, Relaxed);
+                s.shared.pos.store(next.frame_in, Relaxed);
+                {
+                    let mut bus = s.shared.bus.lock().unwrap();
+                    bus.trim_b_db = next.trim_b_db;
+                }
+                s.shared.chain_gen.fetch_add(1, Relaxed);
+                s.shared.side_b.store(!hear_a, Relaxed);
+                s.shared.paused.store(false, Relaxed);
+            } else {
+                // Track handoff: drop the TRIAL lock while the device turns
+                // around; re-verify afterwards so a concurrent cancel wins.
+                let sid = session.id.clone();
+                let (a, b, lm) = (session.a.clone(), session.b.clone(), session.level_matched);
+                drop(guard);
+                if let Some(donef) = track_stop_inner() {
+                    let t0 = std::time::Instant::now();
+                    while !donef.load(std::sync::atomic::Ordering::Relaxed)
+                        && t0.elapsed() < std::time::Duration::from_secs(3)
+                    {
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                    }
+                }
+                let spawn = spawn_trial_clip(
+                    app,
+                    &sid,
+                    TrialChains {
+                        a: &a,
+                        b: &b,
+                        level_matched: lm,
+                    },
+                    &next,
+                    rate,
+                    hear_a,
+                );
+                let mut guard = TRIAL.lock().unwrap();
+                match guard.as_mut() {
+                    Some(s) if s.id == sid => {
+                        if let Err(e) = spawn {
+                            if let Material::Clips { suspended, .. } = &mut s.material {
+                                *suspended = true;
+                            }
+                            return Err(format!("the device refused the next track — {e}"));
+                        }
+                        return Ok(serde_json::json!({
+                            "done": false,
+                            "state": serde_json::to_value(trial_state_of(s, false)).unwrap()
+                        }));
+                    }
+                    _ => {
+                        // Cancelled while we were away: tear down what we made.
+                        TRIAL_OWNS_TRACK.store(false, std::sync::atomic::Ordering::Relaxed);
+                        track_stop_inner();
+                        return Err("session was cancelled".into());
+                    }
+                }
+            }
+        }
+    }
+    Ok(serde_json::json!({
+        "done": false,
+        "state": serde_json::to_value(trial_state_of(session, false)).unwrap()
+    }))
 }
 
 /// Reveal the running score mid-session — recorded in provenance (TB-24).
 #[tauri::command]
-fn abx_reveal() -> Result<AbxState, String> {
-    let mut guard = ABX.lock().unwrap();
+fn abx_reveal() -> Result<TrialState, String> {
+    let mut guard = TRIAL.lock().unwrap();
     let session = guard.as_mut().ok_or("no session running")?;
     let at = session.answers.len();
     if !session.stats_viewed.contains(&at) {
         session.stats_viewed.push(at);
     }
-    Ok(abx_state_of(session, true))
+    Ok(trial_state_of(session, true))
 }
 
 #[tauri::command]
 fn abx_cancel() -> Result<(), String> {
-    *ABX.lock().unwrap() = None;
-    let _ = apply_side("a");
-    set_ab_side("a");
+    let mut guard = TRIAL.lock().unwrap();
+    let was_clips = matches!(
+        guard.as_ref().map(|s| &s.material),
+        Some(Material::Clips { .. })
+    );
+    *guard = None;
+    drop(guard);
+    if was_clips {
+        TRIAL_OWNS_TRACK.store(false, std::sync::atomic::Ordering::Relaxed);
+        track_stop_inner();
+    } else {
+        let _ = apply_side("a");
+        set_ab_side("a");
+    }
     Ok(())
+}
+
+/// The honest exit after device loss or fatigue: persist what exists,
+/// flagged `finishedEarly`. Refused before 4 answers — nothing worth keeping.
+#[tauri::command]
+fn trial_finish_early() -> Result<serde_json::Value, String> {
+    let mut guard = TRIAL.lock().unwrap();
+    let session = guard.as_mut().ok_or("no session running")?;
+    if session.answers.len() < 4 {
+        return Err(
+            "fewer than 4 trials answered — cancel instead, there is nothing to record".into(),
+        );
+    }
+    let result = trial_finalize(session, None, true)?;
+    *guard = None;
+    Ok(result)
+}
+
+/// After a device failure: respawn the current trial's clip and continue.
+#[tauri::command]
+async fn trial_resume(app: tauri::AppHandle) -> Result<TrialState, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<TrialState, String> {
+        let mut guard = TRIAL.lock().unwrap();
+        let session = guard.as_mut().ok_or("no session running")?;
+        let (clip, rate) = match &session.material {
+            Material::Clips {
+                plan,
+                rate,
+                suspended: true,
+                ..
+            } => {
+                let idx = session.answers.len().min(plan.len() - 1);
+                (plan[idx].clone(), *rate)
+            }
+            Material::Clips { .. } => return Err("the session is already running".into()),
+            Material::System => return Err("nothing to resume".into()),
+        };
+        let new_rate =
+            fletcher_core::playback::probe_rate(fletcher_core::playback::OutputMode::Exclusive)
+                .map_err(|_| "the device still refuses exclusive mode".to_string())?;
+        if new_rate != rate {
+            return Err(
+                "the device now runs at a different rate — finish early or cancel this session"
+                    .into(),
+            );
+        }
+        let opening = session.audition.clone();
+        let hear_a = {
+            // The audition string survives suspension; re-resolve it.
+            let t = if opening.is_empty() { "x" } else { &opening };
+            trial_hear_a(session, t)
+        };
+        let sid = session.id.clone();
+        let (a, b, lm) = (session.a.clone(), session.b.clone(), session.level_matched);
+        spawn_trial_clip(
+            &app,
+            &sid,
+            TrialChains {
+                a: &a,
+                b: &b,
+                level_matched: lm,
+            },
+            &clip,
+            rate,
+            hear_a,
+        )?;
+        if let Material::Clips { suspended, .. } = &mut session.material {
+            *suspended = false;
+        }
+        Ok(trial_state_of(session, false))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Past sessions, newest first.
@@ -3297,6 +4440,9 @@ pub fn run() {
             abx_reveal,
             abx_cancel,
             abx_sessions,
+            trial_start,
+            trial_finish_early,
+            trial_resume,
             autoeq_search,
             autoeq_import,
             preset_rename,
@@ -3338,6 +4484,11 @@ pub fn run() {
             clip_update,
             clip_tag,
             clip_delete,
+            battery_state,
+            battery_create,
+            battery_update,
+            battery_set_clips,
+            battery_delete,
             history_save,
             history_load,
             history_export,
