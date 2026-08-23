@@ -1,0 +1,110 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400..700;1,6..72,400..600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500&display=swap">
+  <style>
+    body { margin: 0; font-family: "IBM Plex Sans", "Segoe UI", sans-serif; }
+    a { color: #8c3a22; } a:hover { color: #6d2c19; }
+  </style>
+</helmet>
+<div style="width: 1140px; height: 760px; background: #f8f3e7; color: #2b2418; overflow: hidden; display: flex; flex-direction: column;">
+
+  <!-- masthead -->
+  <div style="display: flex; align-items: baseline; gap: 16px; padding: 22px 40px 14px; border-bottom: 1px solid #2b2418;">
+    <span style="font-family: 'Newsreader', serif; font-weight: 600; font-size: 26px;">Fletcher</span>
+    <span style="font-family: 'Newsreader', serif; font-style: italic; font-size: 14px; color: #8c3a22;">an honest equalizer</span>
+    <span style="flex: 1;"></span>
+    <span style="font-size: 13px;">Equalization</span>
+    <span style="font-size: 13px; color: #a49a85;">Listening&nbsp;tests</span>
+    <span style="font-size: 13px; color: #a49a85;">Clips</span>
+    <span style="font-size: 13px; color: #cec3a9;">Fingerprints</span>
+    <span style="font-size: 13px; color: #a49a85;">Settings</span>
+  </div>
+
+  <div style="display: flex; flex: 1; gap: 0;">
+    <!-- left: the figure -->
+    <div style="flex: 1.6; padding: 24px 28px 20px 40px; display: flex; flex-direction: column; gap: 10px;">
+      <div style="display: flex; align-items: baseline; gap: 14px;">
+        <span style="font-family: 'Newsreader', serif; font-size: 19px; font-weight: 500;">Sennheiser HD 650 — correction toward Harman</span>
+        <span style="flex: 1;"></span>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #8c3a22;">preamp −8.1 dB</span>
+      </div>
+
+      <!-- graph paper figure -->
+      <div style="border: 1px solid #2b2418; background: #fdfaf1; background-image: repeating-linear-gradient(0deg, #eee5cf 0, #eee5cf 1px, transparent 1px, transparent 24px), repeating-linear-gradient(90deg, #eee5cf 0, #eee5cf 1px, transparent 1px, transparent 24px); padding: 8px;">
+        <svg width="620" height="330" viewBox="0 0 620 330">
+          <line x1="0" y1="165" x2="620" y2="165" stroke="#b7aa8c" stroke-width="1"></line>
+          <path d="M0 92 C 35 95, 65 100, 92 122 C 115 140, 132 186, 160 182 C 190 176, 220 168, 248 168 C 278 168, 300 172, 322 175 C 350 179, 378 170, 402 177 C 425 183, 448 181, 470 175 C 495 166, 518 104, 540 102 C 562 100, 585 130, 620 142" fill="none" stroke="#2b2418" stroke-width="2"></path>
+          <g fill="#8c3a22">
+            <circle cx="52" cy="106" r="3.5"></circle>
+            <circle cx="74" cy="102" r="3.5"></circle>
+            <circle cx="92" cy="122" r="3.5"></circle>
+            <circle cx="120" cy="158" r="3.5"></circle>
+            <circle cx="138" cy="185" r="3.5"></circle>
+            <circle cx="248" cy="168" r="3.5"></circle>
+            <circle cx="322" cy="175" r="3.5"></circle>
+            <circle cx="402" cy="177" r="3.5"></circle>
+            <circle cx="470" cy="175" r="3.5"></circle>
+            <circle cx="540" cy="102" r="3.5"></circle>
+            <circle cx="575" cy="122" r="3.5"></circle>
+          </g>
+          <g font-family="IBM Plex Mono, monospace" font-size="10" fill="#8a7c60">
+            <text x="45" y="322">100</text>
+            <text x="243" y="322">1k</text>
+            <text x="463" y="322">10k</text>
+            <text x="4" y="60">+12 dB</text>
+            <text x="4" y="160">0</text>
+            <text x="4" y="270">−12</text>
+          </g>
+          <g font-family="IBM Plex Mono, monospace" font-size="10" fill="#8c3a22">
+            <text x="100" y="112">+6.4 @ 105</text>
+            <text x="500" y="92">+5.1 @ 8.8k</text>
+          </g>
+        </svg>
+      </div>
+      <div style="font-family: 'Newsreader', serif; font-style: italic; font-size: 13px; color: #6f6551;">
+        Fig. 1 — Eleven biquad corrections, plotted. Marks show filter centers; the line is the summed response.
+      </div>
+
+      <div style="display: flex; gap: 12px; margin-top: 4px;">
+        <span style="border: 1px solid #2b2418; background: #2b2418; color: #f8f3e7; font-size: 13px; padding: 8px 18px;">Begin a blind test</span>
+        <span style="border: 1px solid #2b2418; font-size: 13px; padding: 8px 18px;">A/B against flat</span>
+        <span style="align-self: center; font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #a49a85;">levels matched, −18.2 LUFS</span>
+      </div>
+    </div>
+
+    <!-- right: the data table -->
+    <div style="flex: 1; border-left: 1px solid #2b2418; padding: 24px 40px 20px 28px; display: flex; flex-direction: column; gap: 8px;">
+      <span style="font-family: 'Newsreader', serif; font-style: italic; font-size: 14px; color: #6f6551;">Table 1 — corrections, by frequency</span>
+      <div style="display: flex; flex-direction: column;">
+        <div style="display: flex; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; color: #8a7c60; border-bottom: 1px solid #2b2418; padding: 4px 0;">
+          <span style="width: 44px;">type</span><span style="width: 72px; text-align: right;">Fc</span><span style="width: 72px; text-align: right;">gain</span><span style="width: 60px; text-align: right;">Q</span>
+        </div>
+        <div style="display: flex; font-family: 'IBM Plex Mono', monospace; font-size: 12px; padding: 4.5px 0; border-bottom: 1px solid #eee5cf;"><span style="width: 44px;">PK</span><span style="width: 72px; text-align: right;">37</span><span style="width: 72px; text-align: right; color: #8c3a22;">+0.7</span><span style="width: 60px; text-align: right; color: #8a7c60;">3.96</span></div>
+        <div style="display: flex; font-family: 'IBM Plex Mono', monospace; font-size: 12px; padding: 4.5px 0; border-bottom: 1px solid #eee5cf;"><span style="width: 44px;">LSC</span><span style="width: 72px; text-align: right;">60</span><span style="width: 72px; text-align: right; color: #8c3a22;">+2.0</span><span style="width: 60px; text-align: right; color: #8a7c60;">0.70</span></div>
+        <div style="display: flex; font-family: 'IBM Plex Mono', monospace; font-size: 12px; padding: 4.5px 0; border-bottom: 1px solid #eee5cf; background: #f3ecd9;"><span style="width: 44px;">LSC</span><span style="width: 72px; text-align: right;">105</span><span style="width: 72px; text-align: right; color: #8c3a22;">+6.4</span><span style="width: 60px; text-align: right; color: #8a7c60;">0.70</span></div>
+        <div style="display: flex; font-family: 'IBM Plex Mono', monospace; font-size: 12px; padding: 4.5px 0; border-bottom: 1px solid #eee5cf;"><span style="width: 44px;">PK</span><span style="width: 72px; text-align: right;">118</span><span style="width: 72px; text-align: right; color: #33526e;">−3.1</span><span style="width: 60px; text-align: right; color: #8a7c60;">0.50</span></div>
+        <div style="display: flex; font-family: 'IBM Plex Mono', monospace; font-size: 12px; padding: 4.5px 0; border-bottom: 1px solid #eee5cf;"><span style="width: 44px;">PK</span><span style="width: 72px; text-align: right;">587</span><span style="width: 72px; text-align: right; color: #8c3a22;">+0.4</span><span style="width: 60px; text-align: right; color: #8a7c60;">1.19</span></div>
+        <div style="display: flex; font-family: 'IBM Plex Mono', monospace; font-size: 12px; padding: 4.5px 0; border-bottom: 1px solid #eee5cf;"><span style="width: 44px;">PK</span><span style="width: 72px; text-align: right;">1227</span><span style="width: 72px; text-align: right; color: #33526e;">−1.2</span><span style="width: 60px; text-align: right; color: #8a7c60;">2.53</span></div>
+        <div style="display: flex; font-family: 'IBM Plex Mono', monospace; font-size: 12px; padding: 4.5px 0; border-bottom: 1px solid #eee5cf;"><span style="width: 44px;">PK</span><span style="width: 72px; text-align: right;">2055</span><span style="width: 72px; text-align: right; color: #8c3a22;">+1.2</span><span style="width: 60px; text-align: right; color: #8a7c60;">3.23</span></div>
+        <div style="display: flex; font-family: 'IBM Plex Mono', monospace; font-size: 12px; padding: 4.5px 0; border-bottom: 1px solid #eee5cf;"><span style="width: 44px;">PK</span><span style="width: 72px; text-align: right;">3169</span><span style="width: 72px; text-align: right; color: #33526e;">−1.7</span><span style="width: 60px; text-align: right; color: #8a7c60;">3.89</span></div>
+        <div style="display: flex; font-family: 'IBM Plex Mono', monospace; font-size: 12px; padding: 4.5px 0; border-bottom: 1px solid #eee5cf;"><span style="width: 44px;">PK</span><span style="width: 72px; text-align: right;">5332</span><span style="width: 72px; text-align: right; color: #33526e;">−1.1</span><span style="width: 60px; text-align: right; color: #8a7c60;">5.75</span></div>
+        <div style="display: flex; font-family: 'IBM Plex Mono', monospace; font-size: 12px; padding: 4.5px 0; border-bottom: 1px solid #eee5cf;"><span style="width: 44px;">PK</span><span style="width: 72px; text-align: right;">8800</span><span style="width: 72px; text-align: right; color: #8c3a22;">+5.1</span><span style="width: 60px; text-align: right; color: #8a7c60;">1.42</span></div>
+        <div style="display: flex; font-family: 'IBM Plex Mono', monospace; font-size: 12px; padding: 4.5px 0;"><span style="width: 44px;">HSC</span><span style="width: 72px; text-align: right;">10k</span><span style="width: 72px; text-align: right; color: #33526e;">−2.1</span><span style="width: 60px; text-align: right; color: #8a7c60;">0.70</span></div>
+      </div>
+      <span style="flex: 1;"></span>
+      <div style="font-size: 12px; color: #6f6551; border-top: 1px solid #2b2418; padding-top: 10px;">
+        Playing through <span style="font-weight: 500; color: #2b2418;">Schiit Modi 3+</span>. Fingerprints is greyed until you have measured a headphone — hover it to learn what it does.
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

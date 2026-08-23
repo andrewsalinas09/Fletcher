@@ -1,0 +1,176 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+  <style>
+    body { margin: 0; font-family: "IBM Plex Sans", "Segoe UI", sans-serif; }
+    a { color: #14171a; } a:hover { color: #c85a13; }
+  </style>
+</helmet>
+<div style="width: 1140px; height: 760px; background: #f2efe9; color: #14171a; overflow: hidden; display: flex; flex-direction: column;">
+
+  <!-- top bar -->
+  <div style="display: flex; align-items: center; gap: 24px; padding: 14px 28px 12px; border-bottom: 2px solid #14171a;">
+    <div style="display: flex; align-items: baseline; gap: 10px;">
+      <span style="font-family: 'IBM Plex Mono', monospace; font-weight: 600; font-size: 17px; letter-spacing: 0.14em;">FLETCHER</span>
+      <span style="font-size: 12px; color: #8b8578;">honest EQ</span>
+    </div>
+    <div style="display: flex; gap: 2px; flex: 1; justify-content: center;">
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.08em; padding: 6px 14px; background: #14171a; color: #f2efe9;">EQ</span>
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.08em; padding: 6px 14px; color: #14171a;">LAB</span>
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.08em; padding: 6px 14px; color: #14171a;">CLIPS</span>
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.08em; padding: 6px 14px; color: #b3ac9c;">PRINTS</span>
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.08em; padding: 6px 14px; color: #14171a;">SETTINGS</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 10px;">
+      <span style="font-size: 12px; border: 1px solid #c9c2b0; padding: 5px 12px; display: flex; align-items: center; gap: 7px;">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#14171a" stroke-width="1.4"><path d="M3 6v4h3l4 3V3L6 6H3z"></path><path d="M12 6c1 1 1 3 0 4"></path></svg>
+        Schiit Modi 3+
+      </span>
+      <span style="font-size: 12px; background: #14171a; color: #f2efe9; padding: 6px 14px; font-weight: 500;">Blind test</span>
+    </div>
+  </div>
+
+  <!-- preset row -->
+  <div style="display: flex; align-items: baseline; gap: 18px; padding: 18px 28px 10px;">
+    <span style="font-size: 22px; font-weight: 600;">Sennheiser HD 650</span>
+    <span style="font-size: 13px; color: #8b8578;">AutoEQ · Harman target</span>
+    <span style="flex: 1;"></span>
+    <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #8b8578;">preamp</span>
+    <span style="font-family: 'IBM Plex Mono', monospace; font-size: 16px; font-weight: 600;">−8.1 dB</span>
+    <span style="font-size: 11px; border: 1px solid #c9c2b0; color: #8b8578; padding: 3px 9px; font-family: 'IBM Plex Mono', monospace;">A/B  Ctrl·Shift·A</span>
+  </div>
+
+  <!-- response curve -->
+  <div style="margin: 0 28px; border: 1px solid #c9c2b0; background: #f9f7f2;">
+    <svg width="1082" height="240" viewBox="0 0 1082 240">
+      <g stroke="#e2ddd0" stroke-width="1">
+        <line x1="0" y1="40" x2="1082" y2="40"></line>
+        <line x1="0" y1="120" x2="1082" y2="120"></line>
+        <line x1="0" y1="200" x2="1082" y2="200"></line>
+        <line x1="90" y1="0" x2="90" y2="240"></line>
+        <line x1="270" y1="0" x2="270" y2="240"></line>
+        <line x1="451" y1="0" x2="451" y2="240"></line>
+        <line x1="631" y1="0" x2="631" y2="240"></line>
+        <line x1="811" y1="0" x2="811" y2="240"></line>
+        <line x1="992" y1="0" x2="992" y2="240"></line>
+      </g>
+      <line x1="0" y1="120" x2="1082" y2="120" stroke="#b3ac9c" stroke-width="1"></line>
+      <path d="M0 68 C 60 70, 110 74, 160 92 C 200 106, 230 138, 278 134 C 330 128, 380 122, 430 122 C 480 122, 520 126, 560 128 C 610 132, 660 124, 700 130 C 740 136, 780 134, 820 128 C 860 120, 900 78, 940 76 C 980 74, 1020 96, 1082 104" fill="none" stroke="#14171a" stroke-width="2.2"></path>
+      <path d="M0 68 C 60 70, 110 74, 160 92 C 200 106, 230 138, 278 134 C 330 128, 380 122, 430 122 C 480 122, 520 126, 560 128 C 610 132, 660 124, 700 130 C 740 136, 780 134, 820 128 C 860 120, 900 78, 940 76 C 980 74, 1020 96, 1082 104 L 1082 120 L 0 120 Z" fill="#c85a13" opacity="0.09"></path>
+      <g font-family="IBM Plex Mono, monospace" font-size="10" fill="#8b8578">
+        <text x="84" y="234">100</text>
+        <text x="445" y="234">1k</text>
+        <text x="805" y="234">10k</text>
+        <text x="6" y="36">+12</text>
+        <text x="6" y="116">0 dB</text>
+        <text x="6" y="212">−12</text>
+      </g>
+    </svg>
+  </div>
+
+  <!-- filter rail -->
+  <div style="display: flex; gap: 6px; padding: 16px 28px 8px; align-items: stretch;">
+    <div style="flex: 1; display: flex; gap: 6px;">
+      <!-- one strip per filter, sorted by Fc -->
+      <div style="flex: 1; border: 1px solid #c9c2b0; background: #f9f7f2; display: flex; flex-direction: column; align-items: center; padding: 8px 4px 7px; gap: 5px;">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; color: #8b8578;">PK</span>
+        <div style="position: relative; width: 22px; height: 100px;"><div style="position: absolute; top: 50%; left: 0; right: 0; border-top: 1px solid #b3ac9c;"></div><div style="position: absolute; left: 7px; right: 7px; bottom: 50%; height: 3%; background: #c85a13;"></div></div>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; color: #c85a13;">+0.7</span>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px;">37</span>
+        <span style="font-size: 9px; color: #b3ac9c;">Q 3.96</span>
+      </div>
+      <div style="flex: 1; border: 1px solid #c9c2b0; background: #f9f7f2; display: flex; flex-direction: column; align-items: center; padding: 8px 4px 7px; gap: 5px;">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; color: #8b8578;">LSC</span>
+        <div style="position: relative; width: 22px; height: 100px;"><div style="position: absolute; top: 50%; left: 0; right: 0; border-top: 1px solid #b3ac9c;"></div><div style="position: absolute; left: 7px; right: 7px; bottom: 50%; height: 8%; background: #c85a13;"></div></div>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; color: #c85a13;">+2.0</span>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px;">60</span>
+        <span style="font-size: 9px; color: #b3ac9c;">Q 0.7</span>
+      </div>
+      <div style="flex: 1; border: 1.5px solid #14171a; background: #f9f7f2; display: flex; flex-direction: column; align-items: center; padding: 8px 4px 7px; gap: 5px;">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; color: #14171a; font-weight: 600;">LSC</span>
+        <div style="position: relative; width: 22px; height: 100px;"><div style="position: absolute; top: 50%; left: 0; right: 0; border-top: 1px solid #b3ac9c;"></div><div style="position: absolute; left: 7px; right: 7px; bottom: 50%; height: 27%; background: #c85a13;"></div></div>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; color: #c85a13;">+6.4</span>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px;">105</span>
+        <span style="font-size: 9px; color: #b3ac9c;">Q 0.7</span>
+      </div>
+      <div style="flex: 1; border: 1px solid #c9c2b0; background: #f9f7f2; display: flex; flex-direction: column; align-items: center; padding: 8px 4px 7px; gap: 5px;">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; color: #8b8578;">PK</span>
+        <div style="position: relative; width: 22px; height: 100px;"><div style="position: absolute; top: 50%; left: 0; right: 0; border-top: 1px solid #b3ac9c;"></div><div style="position: absolute; left: 7px; right: 7px; top: 50%; height: 13%; background: #3f6d9e;"></div></div>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; color: #3f6d9e;">−3.1</span>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px;">118</span>
+        <span style="font-size: 9px; color: #b3ac9c;">Q 0.5</span>
+      </div>
+      <div style="flex: 1; border: 1px solid #c9c2b0; background: #f9f7f2; display: flex; flex-direction: column; align-items: center; padding: 8px 4px 7px; gap: 5px;">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; color: #8b8578;">PK</span>
+        <div style="position: relative; width: 22px; height: 100px;"><div style="position: absolute; top: 50%; left: 0; right: 0; border-top: 1px solid #b3ac9c;"></div><div style="position: absolute; left: 7px; right: 7px; bottom: 50%; height: 2%; background: #c85a13;"></div></div>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; color: #c85a13;">+0.4</span>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px;">587</span>
+        <span style="font-size: 9px; color: #b3ac9c;">Q 1.19</span>
+      </div>
+      <div style="flex: 1; border: 1px solid #c9c2b0; background: #f9f7f2; display: flex; flex-direction: column; align-items: center; padding: 8px 4px 7px; gap: 5px;">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; color: #8b8578;">PK</span>
+        <div style="position: relative; width: 22px; height: 100px;"><div style="position: absolute; top: 50%; left: 0; right: 0; border-top: 1px solid #b3ac9c;"></div><div style="position: absolute; left: 7px; right: 7px; top: 50%; height: 5%; background: #3f6d9e;"></div></div>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; color: #3f6d9e;">−1.2</span>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px;">1.2k</span>
+        <span style="font-size: 9px; color: #b3ac9c;">Q 2.53</span>
+      </div>
+      <div style="flex: 1; border: 1px solid #c9c2b0; background: #f9f7f2; display: flex; flex-direction: column; align-items: center; padding: 8px 4px 7px; gap: 5px;">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; color: #8b8578;">PK</span>
+        <div style="position: relative; width: 22px; height: 100px;"><div style="position: absolute; top: 50%; left: 0; right: 0; border-top: 1px solid #b3ac9c;"></div><div style="position: absolute; left: 7px; right: 7px; bottom: 50%; height: 5%; background: #c85a13;"></div></div>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; color: #c85a13;">+1.2</span>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px;">2.1k</span>
+        <span style="font-size: 9px; color: #b3ac9c;">Q 3.23</span>
+      </div>
+      <div style="flex: 1; border: 1px solid #c9c2b0; background: #f9f7f2; display: flex; flex-direction: column; align-items: center; padding: 8px 4px 7px; gap: 5px;">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; color: #8b8578;">PK</span>
+        <div style="position: relative; width: 22px; height: 100px;"><div style="position: absolute; top: 50%; left: 0; right: 0; border-top: 1px solid #b3ac9c;"></div><div style="position: absolute; left: 7px; right: 7px; top: 50%; height: 7%; background: #3f6d9e;"></div></div>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; color: #3f6d9e;">−1.7</span>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px;">3.2k</span>
+        <span style="font-size: 9px; color: #b3ac9c;">Q 3.89</span>
+      </div>
+      <div style="flex: 1; border: 1px solid #c9c2b0; background: #f9f7f2; display: flex; flex-direction: column; align-items: center; padding: 8px 4px 7px; gap: 5px;">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; color: #8b8578;">PK</span>
+        <div style="position: relative; width: 22px; height: 100px;"><div style="position: absolute; top: 50%; left: 0; right: 0; border-top: 1px solid #b3ac9c;"></div><div style="position: absolute; left: 7px; right: 7px; top: 50%; height: 4%; background: #3f6d9e;"></div></div>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; color: #3f6d9e;">−1.1</span>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px;">5.3k</span>
+        <span style="font-size: 9px; color: #b3ac9c;">Q 5.75</span>
+      </div>
+      <div style="flex: 1; border: 1px solid #c9c2b0; background: #f9f7f2; display: flex; flex-direction: column; align-items: center; padding: 8px 4px 7px; gap: 5px;">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; color: #8b8578;">PK</span>
+        <div style="position: relative; width: 22px; height: 100px;"><div style="position: absolute; top: 50%; left: 0; right: 0; border-top: 1px solid #b3ac9c;"></div><div style="position: absolute; left: 7px; right: 7px; bottom: 50%; height: 21%; background: #c85a13;"></div></div>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; color: #c85a13;">+5.1</span>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px;">8.8k</span>
+        <span style="font-size: 9px; color: #b3ac9c;">Q 1.42</span>
+      </div>
+      <div style="flex: 1; border: 1px solid #c9c2b0; background: #f9f7f2; display: flex; flex-direction: column; align-items: center; padding: 8px 4px 7px; gap: 5px;">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; color: #8b8578;">HSC</span>
+        <div style="position: relative; width: 22px; height: 100px;"><div style="position: absolute; top: 50%; left: 0; right: 0; border-top: 1px solid #b3ac9c;"></div><div style="position: absolute; left: 7px; right: 7px; top: 50%; height: 9%; background: #3f6d9e;"></div></div>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; color: #3f6d9e;">−2.1</span>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px;">10k</span>
+        <span style="font-size: 9px; color: #b3ac9c;">Q 0.7</span>
+      </div>
+      <div style="flex: 0 0 64px; border: 1px dashed #c9c2b0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; color: #b3ac9c;">
+        <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="#b3ac9c" stroke-width="1.4"><path d="M8 3v10M3 8h10"></path></svg>
+        <span style="font-size: 10px;">add</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- status footer -->
+  <div style="display: flex; gap: 20px; align-items: center; padding: 8px 28px 16px; margin-top: auto; font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #8b8578;">
+    <span style="display: flex; align-items: center; gap: 6px;"><span style="width: 7px; height: 7px; background: #3d7d43; border-radius: 50%;"></span>level matched to flat reference</span>
+    <span>config: fletcher.txt · live</span>
+    <span style="flex: 1;"></span>
+    <span>A = this preset · B = flat</span>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

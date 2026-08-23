@@ -1,0 +1,109 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap">
+  <style>
+    body { margin: 0; font-family: "Archivo", "Segoe UI", sans-serif; }
+    a { color: #0a0a0a; } a:hover { color: #d0442a; }
+  </style>
+</helmet>
+<div style="width: 1140px; height: 760px; background: #ffffff; color: #0a0a0a; overflow: hidden; display: flex; flex-direction: column;">
+
+  <!-- masthead -->
+  <div style="display: flex; align-items: stretch; border-bottom: 5px solid #0a0a0a;">
+    <div style="padding: 18px 28px 14px; display: flex; align-items: baseline; gap: 12px; flex: 1;">
+      <span style="font-weight: 800; font-size: 30px; letter-spacing: -0.02em;">Fletcher</span>
+      <span style="font-weight: 500; font-size: 13px; color: #d0442a;">HONEST EQ</span>
+    </div>
+    <div style="display: flex; align-items: stretch;">
+      <span style="display: flex; align-items: center; padding: 0 22px; font-weight: 700; font-size: 14px; background: #0a0a0a; color: #ffffff;">EQ</span>
+      <span style="display: flex; align-items: center; padding: 0 22px; font-weight: 600; font-size: 14px; border-left: 1px solid #0a0a0a;">Lab</span>
+      <span style="display: flex; align-items: center; padding: 0 22px; font-weight: 600; font-size: 14px; border-left: 1px solid #0a0a0a;">Clips</span>
+      <span style="display: flex; align-items: center; padding: 0 22px; font-weight: 600; font-size: 14px; border-left: 1px solid #0a0a0a; color: #b9b9b9;">Prints</span>
+      <span style="display: flex; align-items: center; padding: 0 22px; font-weight: 600; font-size: 14px; border-left: 1px solid #0a0a0a;">Set&shy;tings</span>
+    </div>
+  </div>
+
+  <!-- preset banner -->
+  <div style="display: flex; align-items: stretch; border-bottom: 2px solid #0a0a0a;">
+    <div style="flex: 1; padding: 20px 28px 16px;">
+      <div style="font-weight: 800; font-size: 40px; letter-spacing: -0.03em; line-height: 1;">HD 650</div>
+      <div style="font-weight: 500; font-size: 13px; margin-top: 6px; color: #6b6b6b;">AutoEQ · Harman target · Schiit Modi 3+</div>
+    </div>
+    <div style="width: 190px; border-left: 2px solid #0a0a0a; display: flex; flex-direction: column; justify-content: center; padding: 0 24px;">
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6b6b6b;">PREAMP</span>
+      <span style="font-weight: 800; font-size: 34px; letter-spacing: -0.02em;">−8.1</span>
+    </div>
+    <div style="width: 210px; border-left: 2px solid #0a0a0a; background: #d0442a; color: #ffffff; display: flex; flex-direction: column; justify-content: center; padding: 0 24px; gap: 2px;">
+      <span style="font-weight: 800; font-size: 19px;">BLIND TEST</span>
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px;">A/B · CTRL+SHIFT+A</span>
+    </div>
+  </div>
+
+  <!-- bar field -->
+  <div style="flex: 1; display: flex; align-items: stretch; padding: 26px 28px 0; gap: 10px;">
+    <div style="flex: 1; display: flex; gap: 10px; align-items: stretch;">
+      <!-- each filter: a column with a bar from center -->
+      <div style="flex: 1; display: flex; flex-direction: column;">
+        <div style="flex: 1; position: relative;"><div style="position: absolute; top: 50%; left: 0; right: 0; border-top: 2px solid #0a0a0a;"></div><div style="position: absolute; left: 12%; right: 12%; bottom: 50%; height: 3%; background: #d0442a;"></div></div>
+        <div style="padding-top: 10px; border-top: 3px solid #0a0a0a; margin-top: 8px;"><div style="font-weight: 700; font-size: 15px;">+0.7</div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6b6b6b;">37 Hz · PK</div></div>
+      </div>
+      <div style="flex: 1; display: flex; flex-direction: column;">
+        <div style="flex: 1; position: relative;"><div style="position: absolute; top: 50%; left: 0; right: 0; border-top: 2px solid #0a0a0a;"></div><div style="position: absolute; left: 12%; right: 12%; bottom: 50%; height: 8%; background: #d0442a;"></div></div>
+        <div style="padding-top: 10px; border-top: 3px solid #0a0a0a; margin-top: 8px;"><div style="font-weight: 700; font-size: 15px;">+2.0</div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6b6b6b;">60 Hz · LSC</div></div>
+      </div>
+      <div style="flex: 1; display: flex; flex-direction: column;">
+        <div style="flex: 1; position: relative;"><div style="position: absolute; top: 50%; left: 0; right: 0; border-top: 2px solid #0a0a0a;"></div><div style="position: absolute; left: 12%; right: 12%; bottom: 50%; height: 27%; background: #d0442a;"></div></div>
+        <div style="padding-top: 10px; border-top: 3px solid #0a0a0a; margin-top: 8px;"><div style="font-weight: 700; font-size: 15px;">+6.4</div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6b6b6b;">105 Hz · LSC</div></div>
+      </div>
+      <div style="flex: 1; display: flex; flex-direction: column;">
+        <div style="flex: 1; position: relative;"><div style="position: absolute; top: 50%; left: 0; right: 0; border-top: 2px solid #0a0a0a;"></div><div style="position: absolute; left: 12%; right: 12%; top: 50%; height: 13%; background: #1e4fd8;"></div></div>
+        <div style="padding-top: 10px; border-top: 3px solid #0a0a0a; margin-top: 8px;"><div style="font-weight: 700; font-size: 15px;">−3.1</div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6b6b6b;">118 Hz · PK</div></div>
+      </div>
+      <div style="flex: 1; display: flex; flex-direction: column;">
+        <div style="flex: 1; position: relative;"><div style="position: absolute; top: 50%; left: 0; right: 0; border-top: 2px solid #0a0a0a;"></div><div style="position: absolute; left: 12%; right: 12%; bottom: 50%; height: 2%; background: #d0442a;"></div></div>
+        <div style="padding-top: 10px; border-top: 3px solid #0a0a0a; margin-top: 8px;"><div style="font-weight: 700; font-size: 15px;">+0.4</div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6b6b6b;">587 Hz · PK</div></div>
+      </div>
+      <div style="flex: 1; display: flex; flex-direction: column;">
+        <div style="flex: 1; position: relative;"><div style="position: absolute; top: 50%; left: 0; right: 0; border-top: 2px solid #0a0a0a;"></div><div style="position: absolute; left: 12%; right: 12%; top: 50%; height: 5%; background: #1e4fd8;"></div></div>
+        <div style="padding-top: 10px; border-top: 3px solid #0a0a0a; margin-top: 8px;"><div style="font-weight: 700; font-size: 15px;">−1.2</div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6b6b6b;">1.2 kHz · PK</div></div>
+      </div>
+      <div style="flex: 1; display: flex; flex-direction: column;">
+        <div style="flex: 1; position: relative;"><div style="position: absolute; top: 50%; left: 0; right: 0; border-top: 2px solid #0a0a0a;"></div><div style="position: absolute; left: 12%; right: 12%; bottom: 50%; height: 5%; background: #d0442a;"></div></div>
+        <div style="padding-top: 10px; border-top: 3px solid #0a0a0a; margin-top: 8px;"><div style="font-weight: 700; font-size: 15px;">+1.2</div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6b6b6b;">2.1 kHz · PK</div></div>
+      </div>
+      <div style="flex: 1; display: flex; flex-direction: column;">
+        <div style="flex: 1; position: relative;"><div style="position: absolute; top: 50%; left: 0; right: 0; border-top: 2px solid #0a0a0a;"></div><div style="position: absolute; left: 12%; right: 12%; top: 50%; height: 7%; background: #1e4fd8;"></div></div>
+        <div style="padding-top: 10px; border-top: 3px solid #0a0a0a; margin-top: 8px;"><div style="font-weight: 700; font-size: 15px;">−1.7</div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6b6b6b;">3.2 kHz · PK</div></div>
+      </div>
+      <div style="flex: 1; display: flex; flex-direction: column;">
+        <div style="flex: 1; position: relative;"><div style="position: absolute; top: 50%; left: 0; right: 0; border-top: 2px solid #0a0a0a;"></div><div style="position: absolute; left: 12%; right: 12%; top: 50%; height: 4%; background: #1e4fd8;"></div></div>
+        <div style="padding-top: 10px; border-top: 3px solid #0a0a0a; margin-top: 8px;"><div style="font-weight: 700; font-size: 15px;">−1.1</div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6b6b6b;">5.3 kHz · PK</div></div>
+      </div>
+      <div style="flex: 1; display: flex; flex-direction: column;">
+        <div style="flex: 1; position: relative;"><div style="position: absolute; top: 50%; left: 0; right: 0; border-top: 2px solid #0a0a0a;"></div><div style="position: absolute; left: 12%; right: 12%; bottom: 50%; height: 21%; background: #d0442a;"></div></div>
+        <div style="padding-top: 10px; border-top: 3px solid #0a0a0a; margin-top: 8px;"><div style="font-weight: 700; font-size: 15px;">+5.1</div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6b6b6b;">8.8 kHz · PK</div></div>
+      </div>
+      <div style="flex: 1; display: flex; flex-direction: column;">
+        <div style="flex: 1; position: relative;"><div style="position: absolute; top: 50%; left: 0; right: 0; border-top: 2px solid #0a0a0a;"></div><div style="position: absolute; left: 12%; right: 12%; top: 50%; height: 9%; background: #1e4fd8;"></div></div>
+        <div style="padding-top: 10px; border-top: 3px solid #0a0a0a; margin-top: 8px;"><div style="font-weight: 700; font-size: 15px;">−2.1</div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6b6b6b;">10 kHz · HSC</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- footer strip -->
+  <div style="display: flex; border-top: 5px solid #0a0a0a; margin-top: 18px;">
+    <span style="flex: 1; padding: 12px 28px; font-family: 'IBM Plex Mono', monospace; font-size: 12px;">LEVEL MATCHED · −18.2 LUFS</span>
+    <span style="padding: 12px 28px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; border-left: 2px solid #0a0a0a;">A = PRESET</span>
+    <span style="padding: 12px 28px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; border-left: 2px solid #0a0a0a; color: #6b6b6b;">B = FLAT</span>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

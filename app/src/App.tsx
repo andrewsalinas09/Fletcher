@@ -27,54 +27,122 @@ type ApoStatus = {
   files: { name: string; lines: Line[] }[];
 };
 
-function FilterRow({ line }: { line: Extract<Line, { kind: "filter" }> }) {
+type FilterLine = Extract<Line, { kind: "filter" }>;
+
+const fmtHz = (hz: number) =>
+  hz >= 1000 ? `${+(hz / 1000).toFixed(2)}k` : `${+hz.toFixed(1)}`;
+
+const fmtGain = (g: number) => `${g > 0 ? "+" : ""}${+g.toFixed(1)}`;
+
+function GainBar({ gain }: { gain: number | null }) {
+  const clamped = Math.max(-12, Math.min(12, gain ?? 0));
+  const half = Math.abs(clamped) / 12 / 2; // fraction of bar height
+  const isBoost = clamped >= 0;
   return (
-    <div className={`row filter ${line.enabled ? "" : "off"}`}>
-      <span className="badge type">{line.filterType}</span>
-      <span className="num">
-        {line.fcHz != null ? `${line.fcHz} Hz` : "—"}
-      </span>
-      <span className={`num gain ${line.gainDb != null && line.gainDb < 0 ? "cut" : "boost"}`}>
-        {line.gainDb != null ? `${line.gainDb > 0 ? "+" : ""}${line.gainDb} dB` : ""}
-      </span>
-      <span className="num q">{line.q != null ? `Q ${line.q}` : ""}</span>
+    <div className="gainbar" aria-hidden>
+      <div
+        className={`gainbar-fill ${isBoost ? "boost" : "cut"}`}
+        style={
+          isBoost
+            ? { bottom: "50%", height: `${half * 100}%` }
+            : { top: "50%", height: `${half * 100}%` }
+        }
+      />
+      <div className="gainbar-axis" />
     </div>
   );
 }
 
-function LineView({ line }: { line: Line }) {
-  switch (line.kind) {
-    case "filter":
-      return <FilterRow line={line} />;
-    case "preamp":
-      return (
-        <div className="row">
-          <span className="badge preamp">Preamp</span>
-          <span className="num">{line.db} dB</span>
+function FilterCard({ f }: { f: FilterLine }) {
+  return (
+    <div className={`fcard ${f.enabled ? "" : "off"}`}>
+      <span className="ftype">{f.filterType}</span>
+      <GainBar gain={f.gainDb} />
+      <span
+        className={`fgain ${
+          f.gainDb == null ? "" : f.gainDb >= 0 ? "boost" : "cut"
+        }`}
+      >
+        {f.gainDb != null ? fmtGain(f.gainDb) : "—"}
+      </span>
+      <span className="ffc">{f.fcHz != null ? fmtHz(f.fcHz) : "—"}</span>
+      <span className="fq">{f.q != null ? `Q ${f.q}` : " "}</span>
+    </div>
+  );
+}
+
+function FilePanel({ name, lines }: { name: string; lines: Line[] }) {
+  const filters = lines
+    .filter((l): l is FilterLine => l.kind === "filter")
+    .sort((a, b) => (a.fcHz ?? Infinity) - (b.fcHz ?? Infinity));
+  const preamps = lines.filter((l) => l.kind === "preamp");
+  const scopes = lines.filter(
+    (l) => l.kind === "device" || l.kind === "channel",
+  );
+  const includes = lines.filter((l) => l.kind === "include");
+  const other = lines.filter(
+    (l) => (l.kind === "unknown" && l.text.trim()) || l.kind === "comment",
+  );
+  const empty =
+    !filters.length && !preamps.length && !scopes.length && !includes.length;
+
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        <h2>{name}</h2>
+        <div className="chips">
+          {scopes.map((s, i) => (
+            <span className="chip scope" key={`s${i}`}>
+              {s.kind === "device" ? "Device" : "Channel"}{" "}
+              <b>{s.kind === "device" ? s.pattern : s.spec}</b>
+            </span>
+          ))}
+          {includes.map((inc, i) => (
+            <span className="chip include" key={`i${i}`}>
+              → {inc.kind === "include" ? inc.path : ""}
+            </span>
+          ))}
         </div>
-      );
-    case "include":
-      return (
-        <div className="row">
-          <span className="badge include">Include</span>
-          <span className="mono">{line.path}</span>
+      </div>
+
+      {(preamps.length > 0 || filters.length > 0) && (
+        <div className="strip">
+          {preamps.map((p, i) => (
+            <div className="fcard preamp" key={`p${i}`}>
+              <span className="ftype">PRE</span>
+              <GainBar gain={p.kind === "preamp" ? p.db : 0} />
+              <span
+                className={`fgain ${
+                  p.kind === "preamp" && p.db >= 0 ? "boost" : "cut"
+                }`}
+              >
+                {p.kind === "preamp" ? fmtGain(p.db) : ""}
+              </span>
+              <span className="ffc">amp</span>
+              <span className="fq">dB</span>
+            </div>
+          ))}
+          {filters.map((f, i) => (
+            <FilterCard f={f} key={i} />
+          ))}
         </div>
-      );
-    case "device":
-    case "channel":
-      return (
-        <div className="row">
-          <span className="badge scope">{line.kind === "device" ? "Device" : "Channel"}</span>
-          <span className="mono">{line.kind === "device" ? line.pattern : line.spec}</span>
-        </div>
-      );
-    case "comment":
-      return <div className="row dim mono">{line.text}</div>;
-    case "blank":
-      return null;
-    case "unknown":
-      return <div className="row dim mono">{line.text || "‹empty›"}</div>;
-  }
+      )}
+
+      {empty && other.length === 0 && <p className="empty">empty</p>}
+      {other.length > 0 && (
+        <details className="raw">
+          <summary>
+            {other.length} other line{other.length > 1 ? "s" : ""}
+          </summary>
+          <pre>
+            {other
+              .map((l) => ("text" in l ? l.text : ""))
+              .join("\n")}
+          </pre>
+        </details>
+      )}
+    </section>
+  );
 }
 
 export default function App() {
@@ -82,48 +150,46 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
 
   const refresh = () =>
-    invoke<ApoStatus>("apo_status").then(setStatus).catch((e) => setError(String(e)));
+    invoke<ApoStatus>("apo_status")
+      .then((s) => {
+        setStatus(s);
+        setError(null);
+      })
+      .catch((e) => setError(String(e)));
 
   useEffect(() => {
     refresh();
   }, []);
 
   return (
-    <main>
+    <div className="frame">
       <header>
-        <h1>Fletcher</h1>
-        <span className="tagline">honest EQ</span>
+        <span className="wordmark">Fletcher</span>
+        <span className="sub">honest EQ</span>
+        <span className="spacer" />
+        {status && (
+          <span className="engine">
+            Equalizer APO · <span className="path">{status.installPath}</span>
+          </span>
+        )}
         <button onClick={refresh}>Refresh</button>
       </header>
 
       {error && (
-        <div className="card error">
-          <strong>Equalizer APO problem:</strong> {error}
-          <p>
-            Fletcher drives Equalizer APO — install it from sourceforge.net/projects/equalizerapo
-            and enable it for your output device, then hit Refresh.
+        <section className="panel alert">
+          <h2>Equalizer APO problem</h2>
+          <p>{error}</p>
+          <p className="dim">
+            Fletcher drives Equalizer APO — install it from
+            sourceforge.net/projects/equalizerapo, enable it for your output
+            device, then refresh.
           </p>
-        </div>
+        </section>
       )}
 
-      {status && (
-        <>
-          <div className="card status">
-            Equalizer APO found at <span className="mono">{status.installPath}</span>
-          </div>
-          {status.files.map((f) => (
-            <div className="card" key={f.name}>
-              <h2 className="mono">{f.name}</h2>
-              {f.lines.map((l, i) => (
-                <LineView key={i} line={l} />
-              ))}
-              {f.lines.every((l) => l.kind === "blank") && (
-                <div className="row dim">(empty)</div>
-              )}
-            </div>
-          ))}
-        </>
-      )}
-    </main>
+      {status?.files.map((f) => (
+        <FilePanel key={f.name} name={f.name} lines={f.lines} />
+      ))}
+    </div>
   );
 }

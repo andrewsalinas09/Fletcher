@@ -1,0 +1,18 @@
+{
+  "artboards": [
+    { "file": "Main.dc.html", "title": "A · Console", "x": 0, "y": 0, "w": 1140, "h": 760 },
+    { "file": "Notebook.dc.html", "title": "B · Notebook", "x": 1240, "y": 0, "w": 1140, "h": 760 },
+    { "file": "Swiss.dc.html", "title": "C · Swiss", "x": 2480, "y": 0, "w": 1140, "h": 760 },
+    { "file": "Settings.dc.html", "title": "Settings (drawn in A)", "x": 0, "y": 900, "w": 1140, "h": 760 }
+  ],
+  "annotations": [
+    {
+      "id": "direction-brief",
+      "x": 0,
+      "y": -280,
+      "w": 560,
+      "text": "Three directions for Fletcher, all built from your real HD650 preset.\n\nA · Console — broadcast equipment on paper. Dense, technical, mono type, channel-strip rail. Tradeoff: austere.\nB · Notebook — the 1933 Fletcher–Munson lab-paper angle. Plotted figure, data table, serif. Tradeoff: slower to scan, less software-y.\nC · Swiss — poster-bold: huge numerals, flat red/blue blocks, thick rules. Tradeoff: loud for a daily driver.\n\nSettings (bottom) is drawn in A's language and moves to whichever direction wins. Pick one, mix pieces, or tear them all up."
+    }
+  ],
+  "launch": { "view": "canvas" }
+}
