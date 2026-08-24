@@ -191,10 +191,10 @@ impl Signal {
 /// this: band-noise RMS scales with √bandwidth (a 63 Hz octave of filtered
 /// white noise is ~24 dB quieter than a 16 kHz one at equal amp), so
 /// offsets are meaningless without per-band normalization. Measured at
-/// MAX_AMP (Signal clamps amp) and referred back to amp = 1 — band noises
-/// never touch the sample clamp at that amplitude, so this is exact.
+/// DEFAULT_AMP and referred back to amp = 1 — at 0.1 no band's noise peaks
+/// reach the sample clamp (widest band peaks ≈ 1.7 × amp), so this is exact.
 pub fn rms_dbfs(kind: SignalKind, fs: f64, seed: u64, seconds: f64) -> f64 {
-    let mut sig = Signal::new(kind, MAX_AMP, fs, seed);
+    let mut sig = Signal::new(kind, DEFAULT_AMP, fs, seed);
     let skip = (fs * 0.2) as usize;
     let n = (fs * seconds.max(0.1)) as usize;
     let mut sum = 0.0;
@@ -205,7 +205,7 @@ pub fn rms_dbfs(kind: SignalKind, fs: f64, seed: u64, seconds: f64) -> f64 {
         }
     }
     let rms = (sum / n as f64).sqrt();
-    20.0 * rms.max(1e-12).log10() + 20.0 * (1.0 / MAX_AMP).log10()
+    20.0 * rms.max(1e-12).log10() + 20.0 * (1.0 / DEFAULT_AMP).log10()
 }
 
 #[cfg(test)]

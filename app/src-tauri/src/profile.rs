@@ -22,10 +22,16 @@ pub const GATE_S: f64 = 0.05;
 /// Excursion bound around the anchor (protects ears and headphones).
 const EXCURSION_DB: f64 = 20.0;
 /// Level-set starts here (TB-20: quiet, user raises).
-const LEVEL_START_DBFS: f64 = -70.0;
+const LEVEL_START_DBFS: f64 = -65.0;
+/// Absolute RMS ceiling for any presented interval: peaks of LR4 band noise
+/// sit ~13 dB above RMS, so -18 dBFS RMS keeps true peaks near -5 dBFS.
+/// (The generator's MAX_AMP cap protects raw library items; the profile's
+/// levels are staircase-bounded and user-anchored, so the honest ceiling is
+/// peak headroom, not the library cap.)
+pub const MAX_RMS_DBFS: f64 = -18.0;
 /// Accepting an anchor louder than this leaves low bands little headroom
 /// (surfaced as `levelWarn` in the state DTO).
-pub const LEVEL_WARN_DBFS: f64 = -55.0;
+pub const LEVEL_WARN_DBFS: f64 = -38.0;
 /// One catch trial per this many presentations (slot jittered).
 const CATCH_EVERY: u64 = 8;
 const LAPSE_DELTA_DB: f64 = 10.0;
@@ -138,20 +144,23 @@ impl Source for ProfileSource {
             self.seen = serial;
             let program = self.shared.program.lock().unwrap().clone();
             self.state = match program {
-                Program::LevelLoop { kind, seed } => {
-                    SrcState::Loop(Box::new(Signal::new(kind, signal::MAX_AMP, self.fs, seed)))
-                }
+                Program::LevelLoop { kind, seed } => SrcState::Loop(Box::new(Signal::new(
+                    kind,
+                    signal::DEFAULT_AMP,
+                    self.fs,
+                    seed,
+                ))),
                 Program::Pair { first, second } => SrcState::Pair {
                     sig1: Box::new(Signal::new(
                         first.kind,
-                        signal::MAX_AMP,
+                        signal::DEFAULT_AMP,
                         self.fs,
                         first.seed,
                     )),
                     m1: first.mult,
                     sig2: Box::new(Signal::new(
                         second.kind,
-                        signal::MAX_AMP,
+                        signal::DEFAULT_AMP,
                         self.fs,
                         second.seed,
                     )),
@@ -169,7 +178,7 @@ impl Source for ProfileSource {
                     let g = 10f64.powf(
                         f64::from_bits(self.shared.level_gain_bits.load(Ordering::Relaxed)) / 20.0,
                     );
-                    sig.next_sample() * g.min(1.0)
+                    sig.next_sample() * g
                 }
                 SrcState::Pair {
                     sig1,
@@ -274,17 +283,17 @@ impl ProfileSession {
         }
     }
 
-    /// RMS at MAX_AMP for a normalized rms measurement (the band ceiling).
-    fn rms_at_max(rms_norm_db: f64) -> f64 {
-        rms_norm_db + 20.0 * signal::MAX_AMP.log10()
+    /// RMS of the generated (DEFAULT_AMP) signal on the normalized axis.
+    fn rms_at_gen(rms_norm_db: f64) -> f64 {
+        rms_norm_db + 20.0 * signal::DEFAULT_AMP.log10()
     }
 
-    /// Multiplier (≤1) presenting `desired_dbfs` RMS for a signal built at
-    /// MAX_AMP whose amp-1 RMS is `rms_norm_db`.
+    /// Multiplier presenting `desired_dbfs` RMS for a signal built at
+    /// DEFAULT_AMP whose amp-1 RMS is `rms_norm_db`. May exceed 1 (the
+    /// generation amp is clamp-free-quiet); the MAX_RMS_DBFS ceiling bounds
+    /// the true peak instead.
     fn mult_for(rms_norm_db: f64, desired_dbfs: f64) -> f64 {
-        10f64
-            .powf((desired_dbfs - Self::rms_at_max(rms_norm_db)) / 20.0)
-            .min(1.0)
+        10f64.powf((desired_dbfs.min(MAX_RMS_DBFS) - Self::rms_at_gen(rms_norm_db)) / 20.0)
     }
 
     pub fn new(headphone: String, rate: u32, device: String) -> Self {
@@ -378,12 +387,11 @@ impl ProfileSession {
 
     pub fn level_dbfs(&self) -> f64 {
         f64::from_bits(self.shared.level_gain_bits.load(Ordering::Relaxed))
-            + Self::rms_at_max(self.anchor_rms_norm_db)
+            + Self::rms_at_gen(self.anchor_rms_norm_db)
     }
 
     pub fn set_level_dbfs(&self, dbfs: f64) {
-        let ceiling = Self::rms_at_max(self.anchor_rms_norm_db);
-        let gain = (dbfs.clamp(-80.0, ceiling) - ceiling).min(0.0);
+        let gain = dbfs.clamp(-80.0, MAX_RMS_DBFS) - Self::rms_at_gen(self.anchor_rms_norm_db);
         self.shared
             .level_gain_bits
             .store(gain.to_bits(), Ordering::Relaxed);
@@ -395,7 +403,7 @@ impl ProfileSession {
         let anchor = self.level_dbfs();
         self.anchor_dbfs = Some(anchor);
         for b in &mut self.bands {
-            let ceil = (Self::rms_at_max(b.rms_norm_db) - anchor).min(EXCURSION_DB);
+            let ceil = (MAX_RMS_DBFS - anchor).min(EXCURSION_DB);
             b.ceil_db = ceil;
             b.floor_db = -EXCURSION_DB;
             let seed = b.seed_db.clamp(b.floor_db, ceil);
@@ -709,7 +717,7 @@ impl ProfileSession {
             s.set_level_dbfs(a);
             s.anchor_dbfs = Some(a);
             for b in &mut s.bands {
-                let ceil = (Self::rms_at_max(b.rms_norm_db) - a).min(EXCURSION_DB);
+                let ceil = (MAX_RMS_DBFS - a).min(EXCURSION_DB);
                 b.ceil_db = ceil;
                 b.floor_db = -EXCURSION_DB;
                 let seed = b.seed_db.clamp(b.floor_db, ceil);

@@ -6019,9 +6019,9 @@ function MainApp() {
                   className="hp-level"
                   type="range"
                   min={-80}
-                  max={-30}
+                  max={-18}
                   step={0.5}
-                  value={hp.levelDbfs ?? -70}
+                  value={hp.levelDbfs ?? -65}
                   onChange={(e) => hpSetLevel(+e.target.value)}
                 />
                 <span className="mono dim-sm">
