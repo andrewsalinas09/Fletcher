@@ -76,7 +76,8 @@ Raised 2026-08-22 during design: any tab can pop out into its own OS window (cur
 ## Q-22 · Mini clip picker on the EQ tab — **Open (deferred until real use)**
 User idea 2026-08-22: the EQ tab's spare space above the A/B bar could host a compact track/clip picker so you can flip test material without leaving the curve. Explicitly gated on dogfooding ("we'd have to really use it first") — decide after living with the app, not on the mockup.
 
-## Q-23 · Rich preset/profile search and management — **Open (deliberately deferred)**
+## Q-23 · Rich preset/profile search and management — **v1 shipped 2026-08-23 (the palette); management residuals open**
+**Shipped ("this is the time we do it for real" — user):** the palette — one centered search surface (spotlight-style: big input, ↑↓/Enter/Esc, keyboard cursor distinct from the active marker). Two homes: the EQ preset selector (one query searches your presets AND AutoEQ; flat/external/create rows preserved with their teaching tooltips and row actions) and the Lab's A/B contender picker (search presets → picking one opens **its history tree in the exact history popover** (HistoryTree `onPickNode` mode; the active preset uses the live tree, others load from `history_load`) → click any node to use its exact sound, or "Use as saved"). Still open: richer metadata on rows (last-used, tested-counts), organization/folders, per-device profiles.
 User direction 2026-08-22: presets start simple (list, switch, duplicate-from-anything, delete) but will eventually deserve a full first-class subsystem — rich search, organization, metadata — on the product principle that **anything non-trivial gets built out into its own complete "software within the software"** (as Clip Studio and the Lab are). Filed to keep v1 lean without forgetting the ambition. Relates: Q-17 (history tree), per-device profiles.
 
 ## Q-24 · The history inspector — **Shipped 2026-08-23 (v1); presentation residuals open**
