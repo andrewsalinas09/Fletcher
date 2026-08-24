@@ -33,6 +33,10 @@
 - **The finder** — the Lab's search-and-assemble column: query clips across every track (`tag:` `genre:` `note:` + free text), see tested-counts, save selections as batteries. Clip Studio curates; the Lab finds.
 - **Sequential test (SPRT)** — adaptive ABX stopping rule (Wald): the session ends the moment the running score crosses a pre-declared evidence bound (H1 p=0.75, α=β=0.05, cap 40). The decision carries the calibrated error rates; the p at stop is nominal.
 - **Testing play method** — ADR-0011's third method, live since ADR-0012: exclusive-mode dual-bus playback with both contender chains processed every frame and a 15 ms equal-power crossfade — sample-accurate blind switching over clips.
+- **Hearing profile** — the mic-free estimate of perceived frequency response (headphone × ear × hearing, at one loudness): equal-loudness offsets per octave band vs the 500 Hz **anchor band**, from timed 2AFC loudness matches (ADR-0013). Display + record only — never an EQ target (TB-23).
+- **PSE (point of subjective equality)** — the level at which two stimuli sound equally loud; a 1-up-1-down **staircase** converges on it (its 50% point), unlike threshold staircases (2-down-1-up → 70.7%).
+- **Catch trial** — a trial with a known right answer (or deliberately none) mixed into a session to measure the listener's lapse rate and order bias; the session's reliability annotation, never silently discarded.
+- **Railed (censored) band** — a band whose staircase hit its headroom/excursion clamp: the PSE is reported as a bound ("at least this"), drawn as an arrow, never a fudged point.
 - **The Record** — the Lab's session history: plain-language verdicts, labeled replay, provenance (including mid-session score reveals).
 - **Fingerprint** — Fletcher's term for one measured headphone response at one person's ears: the coupled HpTF∘ear transfer function, with reseating statistics attached.
 - **Bridging** — transferring a fingerprint across people via a headphone both have measured: (X_on_them − shared_on_them) + shared_on_you ≈ X on your ears. Valid mainly below ~5–6 kHz (TB-18).
