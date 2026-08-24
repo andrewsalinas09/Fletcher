@@ -1,0 +1,74 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+  <style>
+    body { margin: 0; font-family: "IBM Plex Sans", "Segoe UI", sans-serif; }
+  </style>
+</helmet>
+<div style="width: 1140px; height: 760px; background: #f2efe9; color: #14171a; overflow: hidden; display: flex; flex-direction: column;">
+
+  <!-- whisper-thin session line -->
+  <div style="display: flex; align-items: center; gap: 14px; padding: 12px 28px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #8b8578;">
+    <span style="color: #14171a; font-weight: 600;">HEARING PROFILE</span>
+    <span>HD 650</span>
+    <span style="flex: 1;"></span>
+    <span>answer 137 · ~15 min left</span>
+    <span style="border: 1px solid #c9c2b0; padding: 3px 10px; color: #55503f;">esc · pause</span>
+  </div>
+
+  <!-- the room -->
+  <div style="flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 30px;">
+
+    <div style="font-size: 15px; color: #55503f;">Which sounded <b style="color: #14171a;">louder</b>? <span style="font-size: 12px; color: #8b8578;">(louder — not brighter, not fuller)</span></div>
+
+    <div style="display: flex; gap: 26px; align-items: center;">
+      <div style="width: 168px; height: 168px; background: #14171a; color: #f2efe9; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;">
+        <span style="font-size: 52px; font-weight: 600;">1</span>
+        <span style="display: flex; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #e89a5f;"><span style="width: 7px; height: 7px; background: #e89a5f; border-radius: 50%;"></span>playing</span>
+      </div>
+      <div style="width: 168px; height: 168px; border: 1.5px solid #14171a; background: #f9f7f2; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;">
+        <span style="font-size: 52px; font-weight: 600;">2</span>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #b3ac9c;">&nbsp;</span>
+      </div>
+    </div>
+
+    <div style="display: flex; gap: 18px;">
+      <span style="border: 1.5px solid #14171a; padding: 12px 38px; font-size: 15px; font-weight: 600; background: #f9f7f2;">1 was louder <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #8b8578; font-weight: 400;">←</span></span>
+      <span style="border: 1.5px solid #14171a; padding: 12px 38px; font-size: 15px; font-weight: 600; background: #f9f7f2;">2 was louder <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #8b8578; font-weight: 400;">→</span></span>
+    </div>
+    <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; color: #b3ac9c;">R · hear the pair again</span>
+
+    <!-- per-band convergence: progress only, never levels -->
+    <div style="display: flex; gap: 10px; align-items: flex-end; margin-top: 8px;">
+      <div style="display:flex; flex-direction:column; align-items:center; gap:3px;"><div style="width: 13px; height: 44px; background: #ece8df; position: relative;"><div style="position:absolute; bottom:0; width:100%; height:100%; background:#3d7d43;"></div></div><span style="font-family:'IBM Plex Mono',monospace; font-size:8px; color:#8b8578;">63</span></div>
+      <div style="display:flex; flex-direction:column; align-items:center; gap:3px;"><div style="width: 13px; height: 44px; background: #ece8df; position: relative;"><div style="position:absolute; bottom:0; width:100%; height:75%; background:#c85a13;"></div></div><span style="font-family:'IBM Plex Mono',monospace; font-size:8px; color:#8b8578;">125</span></div>
+      <div style="display:flex; flex-direction:column; align-items:center; gap:3px;"><div style="width: 13px; height: 44px; background: #ece8df; position: relative;"><div style="position:absolute; bottom:0; width:100%; height:58%; background:#c85a13;"></div></div><span style="font-family:'IBM Plex Mono',monospace; font-size:8px; color:#8b8578;">250</span></div>
+      <div style="display:flex; flex-direction:column; align-items:center; gap:3px;"><div style="width: 13px; height: 44px; background: #ece8df; position: relative;"><div style="position:absolute; bottom:0; width:100%; height:66%; background:#c85a13;"></div></div><span style="font-family:'IBM Plex Mono',monospace; font-size:8px; color:#8b8578;">1k</span></div>
+      <div style="display:flex; flex-direction:column; align-items:center; gap:3px;"><div style="width: 13px; height: 44px; background: #ece8df; position: relative;"><div style="position:absolute; bottom:0; width:100%; height:50%; background:#c85a13;"></div></div><span style="font-family:'IBM Plex Mono',monospace; font-size:8px; color:#8b8578;">2k</span></div>
+      <div style="display:flex; flex-direction:column; align-items:center; gap:3px;"><div style="width: 13px; height: 44px; background: #ece8df; position: relative;"><div style="position:absolute; bottom:0; width:100%; height:41%; background:#c85a13;"></div></div><span style="font-family:'IBM Plex Mono',monospace; font-size:8px; color:#8b8578;">4k</span></div>
+      <div style="display:flex; flex-direction:column; align-items:center; gap:3px;"><div style="width: 13px; height: 44px; background: #ece8df; position: relative;"><div style="position:absolute; bottom:0; width:100%; height:33%; background:#c85a13;"></div></div><span style="font-family:'IBM Plex Mono',monospace; font-size:8px; color:#8b8578;">8k</span></div>
+      <div style="display:flex; flex-direction:column; align-items:center; gap:3px;"><div style="width: 13px; height: 44px; background: #ece8df; position: relative;"><div style="position:absolute; bottom:0; width:100%; height:25%; background:#c85a13;"></div></div><span style="font-family:'IBM Plex Mono',monospace; font-size:8px; color:#8b8578;">12k</span></div>
+      <div style="display:flex; flex-direction:column; align-items:center; gap:3px;"><div style="width: 13px; height: 44px; background: #ece8df; position: relative;"><div style="position:absolute; bottom:0; width:100%; height:12%; background:#c85a13;"></div></div><span style="font-family:'IBM Plex Mono',monospace; font-size:8px; color:#8b8578;">16k</span></div>
+      <span style="font-family:'IBM Plex Mono',monospace; font-size:9px; color:#8b8578; margin-left: 8px;">progress per band — the curve stays hidden until the end</span>
+    </div>
+  </div>
+
+  <!-- quiet footer -->
+  <div style="display: flex; align-items: center; gap: 16px; padding: 12px 28px; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; color: #8b8578;">
+    <span>don't touch the volume — the whole session lives at one level</span>
+    <span>·</span>
+    <span>a break every few minutes is part of the design</span>
+    <span style="flex: 1;"></span>
+    <span style="border-bottom: 1px dotted #8b8578;">reveal the curve so far — recorded, and it can bias your remaining answers</span>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

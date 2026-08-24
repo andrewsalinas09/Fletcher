@@ -2074,6 +2074,156 @@ type Contender =
   /** A node picked from any preset's history — chain captured at pick time. */
   | { kind: "picked"; name: string; chain: ChainSnap };
 
+// ---- the mic-free hearing profile (Q-19 / ADR-0013) ----
+type HpBandRec = {
+  loHz: number;
+  hiHz: number;
+  centerHz: number;
+  pseDb: number | null;
+  uncertaintyDb: number | null;
+  disagreementDb: number | null;
+  pseBoundDb: number | null;
+  end: string[];
+  trials: number;
+};
+type ProfileRecord = {
+  id: string;
+  headphone: string;
+  startedMs: number;
+  finished: boolean;
+  anchor: { centerHz: number; acceptedRmsDbfs: number | null };
+  bands: HpBandRec[];
+  catch: {
+    lapse: { total: number; missed: number };
+    order: { total: number; choseSecond: number };
+  };
+  lowReliability: boolean;
+  presentations: number;
+  resumes?: number;
+};
+type HpState = {
+  active: boolean;
+  phase?: "levelSet" | "trial" | "done";
+  paused?: boolean;
+  headphone?: string;
+  levelDbfs?: number;
+  levelWarn?: boolean;
+  presentations?: number;
+  answered?: number;
+  replays?: number;
+  pairMs?: number;
+  bands?: { centerHz: number; banked: number; state: string }[];
+};
+
+/** Rough ISO 226-shaped typical offsets vs 500 Hz (display context only). */
+const HP_TYPICAL: [number, number][] = [
+  [63, 16], [125, 8], [250, 3], [500, 0], [1000, -1], [2000, -3],
+  [4000, -4], [8000, 5], [12500, 11], [16000, 13],
+];
+
+/** The profile curve: offsets vs log-f with error bars, rail arrows, gaps. */
+function ProfileCurve({ bands, title }: { bands: HpBandRec[]; title: string }) {
+  const ref = useRef<HTMLCanvasElement | null>(null);
+  useEffect(() => {
+    const cv = ref.current;
+    if (!cv) return;
+    const dpr = window.devicePixelRatio || 1;
+    const w = cv.clientWidth;
+    const h = cv.clientHeight;
+    cv.width = Math.round(w * dpr);
+    cv.height = Math.round(h * dpr);
+    const ctx = cv.getContext("2d");
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    const fMin = 40, fMax = 22000, dbMax = 26;
+    const xOf = (f: number) =>
+      30 + ((Math.log10(f) - Math.log10(fMin)) / (Math.log10(fMax) - Math.log10(fMin))) * (w - 45);
+    const yOf = (db: number) => h / 2 - (db / dbMax) * (h / 2 - 24);
+    // zero line + label
+    ctx.strokeStyle = "#c9c2b0";
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(0, yOf(0));
+    ctx.lineTo(w, yOf(0));
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "#8b8578";
+    ctx.font = "9.5px 'IBM Plex Mono', monospace";
+    ctx.fillText("0 dB = as loud as 500 Hz", 34, yOf(0) - 5);
+    // typical range (±6 dB around the ISO-shaped context curve)
+    ctx.beginPath();
+    HP_TYPICAL.forEach(([f, db], i) => {
+      const x = xOf(f), y = yOf(db + 6);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    [...HP_TYPICAL].reverse().forEach(([f, db]) => ctx.lineTo(xOf(f), yOf(db - 6)));
+    ctx.closePath();
+    ctx.fillStyle = "rgba(63, 109, 158, 0.10)";
+    ctx.fill();
+    ctx.fillStyle = "#3f6d9e";
+    ctx.fillText("typical range for normal hearing", w - 230, 16);
+    // frequency ticks
+    ctx.fillStyle = "#8b8578";
+    for (const f of [63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]) {
+      ctx.fillText(f >= 1000 ? `${f / 1000}k` : `${f}`, xOf(f) - 8, h - 6);
+    }
+    // the measured curve: line between measured points only
+    const pts = bands
+      .filter((b) => b.pseDb != null)
+      .sort((a, b) => a.centerHz - b.centerHz);
+    ctx.strokeStyle = "#c85a13";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    pts.forEach((b, i) => {
+      const x = xOf(b.centerHz), y = yOf(b.pseDb!);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    ctx.lineWidth = 1.4;
+    for (const b of pts) {
+      const x = xOf(b.centerHz), y = yOf(b.pseDb!);
+      const u = b.uncertaintyDb ?? 0;
+      ctx.beginPath();
+      ctx.moveTo(x, yOf(b.pseDb! + u));
+      ctx.lineTo(x, yOf(b.pseDb! - u));
+      ctx.stroke();
+      ctx.fillStyle = "#c85a13";
+      ctx.beginPath();
+      ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // railed bands: arrows from the bound, never dots
+    ctx.strokeStyle = "#a3552e";
+    ctx.fillStyle = "#a3552e";
+    for (const b of bands) {
+      if (b.pseDb != null || b.pseBoundDb == null) continue;
+      const railedHigh = b.end.includes("railedHigh");
+      const x = xOf(b.centerHz);
+      const y0 = yOf(b.pseBoundDb);
+      const y1 = y0 + (railedHigh ? -26 : 26);
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(x, y0);
+      ctx.lineTo(x, y1);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(x - 5, y1 + (railedHigh ? 8 : -8));
+      ctx.lineTo(x, y1);
+      ctx.lineTo(x + 5, y1 + (railedHigh ? 8 : -8));
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.lineWidth = 1;
+    ctx.fillStyle = "#55503f";
+    ctx.font = "10px 'IBM Plex Mono', monospace";
+    ctx.fillText(title, 34, 16);
+  }, [bands, title]);
+  return <canvas ref={ref} className="hp-curve" />;
+}
+
 type BatteryItem = { kind: "clip" | "track"; id: number };
 type BatteryRow = {
   id: number;
@@ -3110,7 +3260,7 @@ function MainApp() {
   };
 
   // ---- Clip Studio (M2: library + track engine transport) ----
-  const [view, setView] = useState<"eq" | "lab" | "settings" | "clips">("eq");
+  const [view, setView] = useState<"eq" | "lab" | "settings" | "clips" | "prints">("eq");
   const viewModeRef = useRef(view);
   viewModeRef.current = view;
   const [library, setLibrary] = useState<LibraryState | null>(null);
@@ -3996,6 +4146,171 @@ function MainApp() {
   const editBattery = (b: BatteryRow) => {
     setFinderSel(new Set(b.items.map((i) => `${i.kind === "track" ? "t" : "c"}:${i.id}`)));
     setBatName(b.name);
+  };
+
+  // ---- the mic-free hearing profile (Fingerprints tab) ----
+  const [hp, setHp] = useState<HpState | null>(null);
+  const hpRef = useRef<HpState | null>(null);
+  hpRef.current = hp;
+  const [hpResult, setHpResult] = useState<ProfileRecord | null>(null);
+  const [profiles, setProfiles] = useState<ProfileRecord[]>([]);
+  const [hpName, setHpName] = useState("");
+  const [hpSel, setHpSel] = useState<string | null>(null);
+  const [hpLit, setHpLit] = useState<0 | 1 | 2>(0);
+  const hpTimers = useRef<number[]>([]);
+  const loadProfiles = () =>
+    invoke<ProfileRecord[]>("profile_results").then(setProfiles).catch(() => {});
+  /** Light the interval tiles in step with the pair (client-timed). */
+  const hpAnimate = () => {
+    for (const t of hpTimers.current) window.clearTimeout(t);
+    hpTimers.current = [];
+    setHpLit(1);
+    hpTimers.current.push(window.setTimeout(() => setHpLit(0), 800));
+    hpTimers.current.push(window.setTimeout(() => setHpLit(2), 1100));
+    hpTimers.current.push(window.setTimeout(() => setHpLit(0), 1900));
+  };
+  const startProfile = () => {
+    invoke<HpState>("profile_start", { headphone: hpName.trim() || "unnamed headphone" })
+      .then((s) => {
+        setHp(s);
+        setHpResult(null);
+      })
+      .catch((e) => showNotice(String(e)));
+  };
+  const hpSetLevel = (dbfs: number) => {
+    invoke<HpState>("profile_set_level", { dbfs }).then(setHp).catch(() => {});
+  };
+  const hpAccept = () =>
+    invoke<HpState>("profile_accept_level")
+      .then((s) => {
+        setHp(s);
+        hpAnimate();
+      })
+      .catch((e) => showNotice(String(e)));
+  const hpAnswer = (secondLouder: boolean) => {
+    if (hpRef.current?.phase !== "trial" || hpRef.current?.paused) return;
+    invoke<{ done: boolean; state?: HpState; result?: ProfileRecord }>("profile_answer", {
+      secondLouder,
+    })
+      .then((r) => {
+        if (r.done && r.result) {
+          setHp(null);
+          setHpResult(r.result);
+          loadProfiles();
+        } else if (r.state) {
+          setHp(r.state);
+          hpAnimate();
+        }
+      })
+      .catch((e) => showNotice(String(e)));
+  };
+  const hpReplay = () => invoke("profile_replay").then(() => hpAnimate()).catch(() => {});
+  const hpPause = () => invoke<HpState>("profile_pause").then(setHp).catch(() => {});
+  const hpResume = () =>
+    invoke<HpState>("profile_resume")
+      .then((s) => {
+        setHp(s);
+        if (s.phase === "trial") hpAnimate();
+      })
+      .catch((e) => showNotice(String(e)));
+  const hpDiscard = () =>
+    invoke("profile_cancel").finally(() => {
+      setHp(null);
+      loadProfiles();
+    });
+  /** Keep everything, close the room — resume later from the rail. */
+  const hpLater = () => {
+    invoke("profile_pause").catch(() => {});
+    setHp(null);
+    loadProfiles();
+  };
+  const hpResumeSaved = (id: string) => {
+    // In-memory session first (paused this app-run), else rebuild from disk.
+    invoke<HpState>("profile_resume")
+      .then((s) => {
+        setHp(s);
+        hpAnimate();
+      })
+      .catch(() =>
+        invoke<HpState>("profile_resume_saved", { id })
+          .then((s) => {
+            setHp(s);
+            hpAnimate();
+          })
+          .catch((e) => showNotice(String(e))),
+      );
+  };
+  // Hearing-room keyboard (trampoline; registered only while a session runs).
+  const hpKeyRef = useRef<(e: KeyboardEvent) => void>(() => {});
+  hpKeyRef.current = (e: KeyboardEvent) => {
+    const s = hpRef.current;
+    if (!s) return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      if (s.paused) hpResume();
+      else hpPause();
+      return;
+    }
+    if (s.phase !== "trial" || s.paused) return;
+    if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      hpAnswer(false);
+    } else if (e.key === "ArrowRight") {
+      e.preventDefault();
+      hpAnswer(true);
+    } else if (e.key.toLowerCase() === "r") {
+      e.preventDefault();
+      hpReplay();
+    }
+  };
+  useEffect(() => {
+    if (!hp) return;
+    const onKey = (e: KeyboardEvent) => hpKeyRef.current(e);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hp != null]);
+  /** The MASTER curve per headphone: inverse-variance weighted mean across
+   *  finished sessions; repeats tighten bars, disagreement widens them. */
+  const masterBands = (headphone: string): HpBandRec[] => {
+    const recs = profiles.filter((p) => p.headphone === headphone && p.finished);
+    const per = new Map<number, { pses: [number, number][]; bounds: number[]; base: HpBandRec }>();
+    for (const r of recs) {
+      for (const b of r.bands) {
+        const e = per.get(b.centerHz) ?? { pses: [], bounds: [], base: b };
+        if (b.pseDb != null) e.pses.push([b.pseDb, Math.max(b.uncertaintyDb ?? 0.5, 0.5)]);
+        else if (b.pseBoundDb != null) e.bounds.push(b.pseBoundDb);
+        per.set(b.centerHz, e);
+      }
+    }
+    const out: HpBandRec[] = [];
+    for (const e of per.values()) {
+      if (e.pses.length > 0) {
+        const wsum = e.pses.reduce((a, [, u]) => a + 1 / (u * u), 0);
+        const mean = e.pses.reduce((a, [p, u]) => a + p / (u * u), 0) / wsum;
+        const n = e.pses.length;
+        const sd =
+          n > 1 ? Math.sqrt(e.pses.reduce((a, [p]) => a + (p - mean) ** 2, 0) / (n - 1)) : 0;
+        const u = Math.max(1 / Math.sqrt(wsum), sd / Math.sqrt(n), 0.5);
+        out.push({
+          ...e.base,
+          pseDb: mean,
+          uncertaintyDb: u,
+          disagreementDb: sd,
+          pseBoundDb: null,
+          end: ["master"],
+        });
+      } else if (e.bounds.length > 0) {
+        out.push({
+          ...e.base,
+          pseDb: null,
+          uncertaintyDb: null,
+          disagreementDb: null,
+          pseBoundDb: Math.max(...e.bounds),
+        });
+      }
+    }
+    return out.sort((a, b) => a.centerHz - b.centerHz);
   };
 
   /** Start from the full setup — the unified trial engine. */
@@ -5408,12 +5723,12 @@ function MainApp() {
             CLIP STUDIO
           </span>
           <span
-            className={`tab ${uiMode === "advanced" ? "disabled" : "advanced"}`}
-            title={
-              uiMode === "advanced"
-                ? "Fingerprint Lab — measure and match headphones. Coming in Phase 4."
-                : "Measure and match headphones. Advanced: needs a measurement microphone — switch to Advanced mode in Settings."
-            }
+            className={`tab ${view === "prints" ? "active" : ""}`}
+            title="The Fingerprint Lab — first resident: the mic-free hearing profile"
+            onClick={() => {
+              setView("prints");
+              loadProfiles();
+            }}
           >
             FINGERPRINTS
           </span>
@@ -5657,6 +5972,150 @@ function MainApp() {
                   {`Run again · ${abxResult.trials}`}
                 </button>
                 <button className="primary" onClick={() => { setAbxResult(null); setView("lab"); }}>Done</button>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
+
+      {hp &&
+        createPortal(
+          <div className="trial-room">
+            <div className="trial-top mono">
+              <span className="ink">HEARING PROFILE</span>
+              <span>{hp.headphone}</span>
+              <span className="spacer" />
+              {hp.phase === "trial" && !hp.paused && <span>{`answer ${(hp.answered ?? 0) + 1}`}</span>}
+              <span
+                className="trial-leave"
+                onClick={() => (hp.paused ? hpResume() : hpPause())}
+              >
+                {hp.paused ? "esc · resume" : "esc · pause"}
+              </span>
+            </div>
+            {hp.paused ? (
+              <div className="trial-center">
+                <div className="trial-q"><b>Paused.</b></div>
+                <p className="result-note">
+                  The device is released; your {hp.answered ?? 0} answer
+                  {(hp.answered ?? 0) === 1 ? " is" : "s are"} safe on disk.
+                </p>
+                <div className="trial-vote">
+                  <button className="vote-btn" onClick={hpResume}>Resume</button>
+                  <button onClick={hpLater}>Finish later</button>
+                  <button onClick={hpDiscard}>Discard session</button>
+                </div>
+              </div>
+            ) : hp.phase === "levelSet" ? (
+              <div className="trial-center">
+                <div className="trial-q">
+                  Set your listening level: <b>raise until comfortable</b>, then accept.
+                </div>
+                <p className="result-note">
+                  The whole session lives at this one level — don't touch the volume afterwards.
+                  Comfortable-but-not-loud is right: the low bands need headroom above it.
+                </p>
+                <input
+                  className="hp-level"
+                  type="range"
+                  min={-80}
+                  max={-30}
+                  step={0.5}
+                  value={hp.levelDbfs ?? -70}
+                  onChange={(e) => hpSetLevel(+e.target.value)}
+                />
+                <span className="mono dim-sm">
+                  {`${(hp.levelDbfs ?? -70).toFixed(1)} dBFS RMS`}
+                  {hp.levelWarn &&
+                    " · ▲ loud anchor — low bands may hit their ceiling; go lower here and raise your hardware volume instead"}
+                </span>
+                <div className="trial-vote">
+                  <button className="vote-btn" onClick={hpAccept}>Accept — begin</button>
+                </div>
+              </div>
+            ) : (
+              <div className="trial-center">
+                <div className="trial-q">
+                  Which sounded <b>louder</b>?{" "}
+                  <span className="dim-sm">(louder — not brighter, not fuller)</span>
+                </div>
+                <div className="trial-targets">
+                  {[1, 2].map((n) => (
+                    <div key={n} className={`target ${hpLit === n ? "playing" : ""}`}>
+                      <span className="target-letter">{n}</span>
+                      <span className="mono target-sub">{hpLit === n ? "● playing" : " "}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="trial-vote">
+                  <button className="vote-btn" onClick={() => hpAnswer(false)}>
+                    1 was louder <span className="mono dim-sm">←</span>
+                  </button>
+                  <button className="vote-btn" onClick={() => hpAnswer(true)}>
+                    2 was louder <span className="mono dim-sm">→</span>
+                  </button>
+                </div>
+                <span className="mono dim-sm">R · hear the pair again</span>
+                <div className="hp-progress">
+                  {(hp.bands ?? []).map((b) => (
+                    <div
+                      key={b.centerHz}
+                      className="hp-bar-wrap"
+                      title={`${b.centerHz >= 1000 ? `${b.centerHz / 1000}k` : b.centerHz} Hz — ${b.state}`}
+                    >
+                      <div className="hp-bar">
+                        <div
+                          className={`hp-fill ${b.state === "open" ? "" : b.state === "converged" ? "done" : "odd"}`}
+                          style={{ height: `${Math.min(100, (b.banked / 12) * 100)}%` }}
+                        />
+                      </div>
+                      <span className="mono hp-bar-label">
+                        {b.centerHz >= 1000 ? `${b.centerHz / 1000}k` : b.centerHz}
+                      </span>
+                    </div>
+                  ))}
+                  <span className="mono dim-sm hp-progress-note">
+                    progress per band — the curve stays hidden until the end
+                  </span>
+                </div>
+              </div>
+            )}
+            <div className="trial-foot mono">
+              <span>don't touch the volume — the whole session lives at one level</span>
+              <span>·</span>
+              <span>a break every few minutes is part of the design</span>
+              <span className="spacer" />
+            </div>
+          </div>,
+          document.body,
+        )}
+
+      {hpResult &&
+        createPortal(
+          <div className="trial-room">
+            <div className="trial-center result-center hp-result">
+              <span className="mono dim-sm">SESSION COMPLETE</span>
+              <div className="result-verdict good">Your equal-loudness profile.</div>
+              <div className="hp-result-curve">
+                <ProfileCurve bands={hpResult.bands} title="" />
+              </div>
+              <p className="result-note">
+                A description of your hearing at one loudness — not an EQ target. The full
+                caveats live with the saved profile in the Fingerprints tab.
+              </p>
+              <div className="trial-vote">
+                <button
+                  className="primary"
+                  onClick={() => {
+                    const id = hpResult.id;
+                    setHpResult(null);
+                    setView("prints");
+                    setHpSel(id);
+                    loadProfiles();
+                  }}
+                >
+                  Done
+                </button>
               </div>
             </div>
           </div>,
@@ -6263,6 +6722,157 @@ function MainApp() {
                 </div>
               );
             })}
+          </div>
+        </div>
+      )}
+
+      {view === "prints" && (
+        <div className="prints">
+          <div className="hp-rail">
+            <span className="mono lab-label">HEARING PROFILE — no mic needed</span>
+            <div className="hp-new">
+              <span className="dim-sm">
+                ~45 min of quick "which was louder?" answers → your equal-loudness curve, with
+                honest error bars.
+              </span>
+              <div className="hp-new-row">
+                <input
+                  className="hp-name mono"
+                  placeholder="which headphone? e.g. HD 650"
+                  value={hpName}
+                  onChange={(e) => setHpName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") startProfile();
+                  }}
+                />
+                <button className="primary" onClick={startProfile}>
+                  New session
+                </button>
+              </div>
+              <span className="mono dim-sm">exclusive device · pausable anytime · resume later</span>
+            </div>
+            {[...new Set(profiles.map((p) => p.headphone))].map((hpn) => {
+              const group = profiles.filter((p) => p.headphone === hpn);
+              const finished = group.filter((p) => p.finished);
+              return (
+                <div key={hpn} className="hp-group">
+                  <span className="mono lab-label">{`${hpn.toUpperCase()} · ${group.length} session${group.length === 1 ? "" : "s"}`}</span>
+                  {finished.length > 1 && (
+                    <div
+                      className={`hp-card master ${hpSel === `m:${hpn}` ? "on" : ""}`}
+                      onClick={() => setHpSel(`m:${hpn}`)}
+                    >
+                      <span className="mono badge-abx">MASTER</span>
+                      <div>
+                        <div className="hp-card-title">{`Average of ${finished.length} sessions`}</div>
+                        <div className="dim-sm">repeats tighten the bars · disagreement widens them</div>
+                      </div>
+                    </div>
+                  )}
+                  {group.map((p) => (
+                    <div
+                      key={p.id}
+                      className={`hp-card ${hpSel === p.id ? "on" : ""}`}
+                      onClick={() => setHpSel(p.id)}
+                    >
+                      <div style={{ flex: 1 }}>
+                        <div className="hp-card-title">
+                          {`${fmtWhen(p.startedMs)}${p.finished ? "" : " · unfinished"}`}
+                        </div>
+                        <div className={`dim-sm ${p.lowReliability ? "warn-text" : "ok-text"}`}>
+                          {p.finished
+                            ? `${p.lowReliability ? "low reliability" : "reliable"} — ${p.catch.lapse.missed}/${p.catch.lapse.total} catch misses`
+                            : `${p.presentations} answers so far`}
+                        </div>
+                        {!p.finished && (
+                          <span
+                            className="reveal-link"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              hpResumeSaved(p.id);
+                            }}
+                          >
+                            resume →
+                          </span>
+                        )}
+                      </div>
+                      <span
+                        className="row-act"
+                        title="delete this session's record"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          invoke("profile_delete", { id: p.id })
+                            .then(loadProfiles)
+                            .catch(() => {});
+                        }}
+                      >
+                        ×
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
+            <span className="spacer" />
+            <div className="hp-coming">
+              <span className="mono lab-label">COMING TO THIS TAB</span>
+              <span>Capture — mic + sweeps, reseating statistics</span>
+              <span>Library — fingerprints per headphone</span>
+              <span>Bridging — audition headphones you don't own</span>
+            </div>
+          </div>
+          <div className="hp-main">
+            {(() => {
+              const sel = hpSel?.startsWith("m:")
+                ? {
+                    title: `MASTER · ${hpSel.slice(2)}`,
+                    bands: masterBands(hpSel.slice(2)),
+                    rec: null as ProfileRecord | null,
+                  }
+                : (() => {
+                    const p =
+                      profiles.find((x) => x.id === hpSel) ??
+                      profiles.find((x) => x.finished) ??
+                      profiles[0];
+                    return p
+                      ? { title: `${p.headphone} · ${fmtWhen(p.startedMs)}`, bands: p.bands, rec: p }
+                      : null;
+                  })();
+              if (!sel) {
+                return (
+                  <p className="dim-sm" style={{ padding: 24 }}>
+                    No profiles yet — run your first session from the left.
+                  </p>
+                );
+              }
+              return (
+                <>
+                  <div className="hp-head">
+                    <span className="mono lab-label">{sel.title}</span>
+                    <span className="dim-sm">
+                      equal-loudness offsets vs your 500 Hz anchor —{" "}
+                      <b>a description of your hearing at one loudness, not an EQ target</b>
+                    </span>
+                  </div>
+                  <ProfileCurve bands={sel.bands} title="" />
+                  <div className="hp-honesty dim-sm">
+                    Equal loudness across bands IS natural hearing, not a defect — this contour
+                    shape is what normal hearing looks like; flattening it with EQ would sound
+                    wrong for everyone. · Measured at one loudness you chose — a different volume
+                    gives a different curve (Fletcher–Munson). · This is your ears AND your
+                    headphone AND that session, combined — it cannot separate them. · Not a
+                    hearing test in the medical sense.
+                  </div>
+                  {sel.rec && (
+                    <div className={`mono dim-sm ${sel.rec.lowReliability ? "warn-text" : "ok-text"}`}>
+                      {`${sel.rec.lowReliability ? "▲ low reliability" : "● reliable"} — ${sel.rec.catch.lapse.missed} missed of ${sel.rec.catch.lapse.total} catch trials`}
+                      {sel.rec.catch.order.total > 0 &&
+                        ` · order: chose the 2nd interval ${Math.round((sel.rec.catch.order.choseSecond / sel.rec.catch.order.total) * 100)}% on identical pairs`}
+                    </div>
+                  )}
+                </>
+              );
+            })()}
           </div>
         </div>
       )}

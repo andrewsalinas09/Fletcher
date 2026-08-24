@@ -1,0 +1,131 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+  <style>
+    body { margin: 0; font-family: "IBM Plex Sans", "Segoe UI", sans-serif; }
+  </style>
+</helmet>
+<div style="width: 1140px; height: 760px; background: #f2efe9; color: #14171a; overflow: hidden; display: flex; flex-direction: column;">
+
+  <!-- header -->
+  <div style="display: flex; align-items: center; gap: 18px; padding: 9px 24px; border-bottom: 2px solid #14171a;">
+    <span style="font-family: 'IBM Plex Mono', monospace; font-weight: 600; font-size: 15px; letter-spacing: 0.14em;">FLETCHER</span>
+    <div style="display: flex; gap: 2px;">
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; padding: 6px 13px;">EQ</span>
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; padding: 6px 13px;">LISTENING LAB</span>
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; padding: 6px 13px;">CLIP STUDIO</span>
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; padding: 6px 13px; background: #14171a; color: #f2efe9;">FINGERPRINTS</span>
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; padding: 6px 13px;">SETTINGS</span>
+    </div>
+  </div>
+
+  <div style="display: flex; flex: 1; min-height: 0;">
+
+    <!-- left rail: hearing profile sessions -->
+    <div style="flex: 0 0 322px; border-right: 2px solid #14171a; background: #f9f7f2; display: flex; flex-direction: column; padding: 12px 16px; gap: 10px; overflow: hidden;">
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.12em; color: #8b8578;">HEARING PROFILE — no mic needed</span>
+
+      <div style="display: flex; flex-direction: column; gap: 6px; border: 1px solid #c9c2b0; background: #f2efe9; padding: 9px 11px;">
+        <span style="font-size: 12px;">~45 min of quick "which was louder?" answers → your equal-loudness curve, with honest error bars.</span>
+        <div style="display: flex; gap: 7px; align-items: center;">
+          <input style="flex: 1; border: 1px solid #14171a; background: #fffdf6; font-size: 12px; padding: 5px 8px;" value="HD 650">
+          <span style="background: #c85a13; color: #f9f7f2; padding: 6px 13px; font-size: 12.5px; font-weight: 600;">New session</span>
+        </div>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 9.5px; color: #8b8578;">exclusive device · pausable anytime · resume later</span>
+      </div>
+
+      <!-- master + sessions, grouped per headphone -->
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; letter-spacing: 0.1em; color: #8b8578; margin-top: 4px;">HD 650 · 3 sessions</span>
+      <div style="border: 1.5px solid #14171a; background: #ece8df; padding: 8px 11px; display: flex; align-items: center; gap: 8px;">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 9.5px; background: #14171a; color: #f2efe9; padding: 2px 7px;">MASTER</span>
+        <div style="flex: 1;">
+          <div style="font-size: 12px; font-weight: 600;">Average of 3 sessions</div>
+          <div style="font-size: 10px; color: #8b8578;">repeats tighten the bars · disagreement widens them</div>
+        </div>
+      </div>
+      <div style="border: 1px solid #b3ac9c; background: #f2efe9; padding: 7px 11px; display: flex; align-items: center; gap: 8px;">
+        <div style="flex: 1;">
+          <div style="font-size: 11.5px;">today 21:04 · complete</div>
+          <div style="font-size: 9.5px; color: #3d7d43;">reliable — 1/26 catch misses</div>
+        </div>
+        <span style="font-size: 10px; color: #8b8578;">×</span>
+      </div>
+      <div style="border: 1px solid #b3ac9c; background: #f2efe9; padding: 7px 11px; display: flex; align-items: center; gap: 8px;">
+        <div style="flex: 1;">
+          <div style="font-size: 11.5px;">yesterday · unfinished (241 answers)</div>
+          <div style="font-size: 9.5px; color: #c85a13;">resume →</div>
+        </div>
+        <span style="font-size: 10px; color: #8b8578;">×</span>
+      </div>
+      <div style="border: 1px solid #b3ac9c; background: #f2efe9; padding: 7px 11px;">
+        <div style="font-size: 11.5px;">Aug 20 · complete</div>
+        <div style="font-size: 9.5px; color: #a3552e;">low reliability — 4/24 catch misses</div>
+      </div>
+
+      <span style="flex: 1;"></span>
+      <!-- the rest of the Fingerprint Lab, greyed (grey-don't-hide) -->
+      <div style="opacity: 0.45; display: flex; flex-direction: column; gap: 5px;">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; letter-spacing: 0.1em; color: #8b8578;">COMING TO THIS TAB</span>
+        <span style="font-size: 11px;">Capture — mic + sweeps, reseating stats</span>
+        <span style="font-size: 11px;">Library — fingerprints per headphone</span>
+        <span style="font-size: 11px;">Bridging — audition headphones you don't own</span>
+      </div>
+    </div>
+
+    <!-- the result curve -->
+    <div style="flex: 1; display: flex; flex-direction: column; background: #f2efe9; padding: 14px 20px; gap: 8px;">
+      <div style="display: flex; align-items: baseline; gap: 10px;">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.12em; color: #8b8578;">MASTER · HD 650</span>
+        <span style="font-size: 11px; color: #55503f;">equal-loudness offsets vs your 500 Hz anchor — <b>a description of your hearing at one loudness, not an EQ target</b></span>
+      </div>
+      <!-- curve mock -->
+      <svg width="100%" height="420" viewBox="0 0 860 420" style="border: 1px solid #b3ac9c; background: #fffdf6;">
+        <line x1="40" y1="210" x2="840" y2="210" stroke="#c9c2b0" stroke-dasharray="4 4"/>
+        <text x="44" y="204" font-size="10" fill="#8b8578" font-family="monospace">0 dB = as loud as 500 Hz</text>
+        <!-- shaded typical range -->
+        <path d="M60,150 C200,190 340,205 480,200 C620,196 720,170 830,120 L830,170 C720,215 620,236 480,240 C340,244 200,228 60,205 Z" fill="#3f6d9e" opacity="0.10"/>
+        <text x="640" y="115" font-size="9.5" fill="#3f6d9e" font-family="monospace">typical range for normal hearing (ISO 226, 40–80 phon)</text>
+        <!-- user curve with error bars -->
+        <polyline points="100,175 210,195 320,205 430,212 540,208 650,190 740,150" fill="none" stroke="#c85a13" stroke-width="2"/>
+        <g stroke="#c85a13" stroke-width="1.4">
+          <line x1="100" y1="160" x2="100" y2="190"/><circle cx="100" cy="175" r="3.5" fill="#c85a13"/>
+          <line x1="210" y1="187" x2="210" y2="203"/><circle cx="210" cy="195" r="3.5" fill="#c85a13"/>
+          <line x1="320" y1="199" x2="320" y2="211"/><circle cx="320" cy="205" r="3.5" fill="#c85a13"/>
+          <line x1="430" y1="206" x2="430" y2="218"/><circle cx="430" cy="212" r="3.5" fill="#c85a13"/>
+          <line x1="540" y1="200" x2="540" y2="216"/><circle cx="540" cy="208" r="3.5" fill="#c85a13"/>
+          <line x1="650" y1="178" x2="650" y2="202"/><circle cx="650" cy="190" r="3.5" fill="#c85a13"/>
+          <line x1="740" y1="132" x2="740" y2="168"/><circle cx="740" cy="150" r="3.5" fill="#c85a13"/>
+        </g>
+        <!-- railed band: an arrow, not a dot -->
+        <g stroke="#a3552e" fill="#a3552e">
+          <line x1="820" y1="150" x2="820" y2="110" stroke-width="2"/>
+          <path d="M814,116 L820,104 L826,116 z"/>
+          <text x="770" y="96" font-size="9.5" font-family="monospace">16k: at least this — couldn't play louder</text>
+        </g>
+        <g font-size="10" fill="#8b8578" font-family="monospace">
+          <text x="92" y="405">63</text><text x="200" y="405">125</text><text x="312" y="405">250</text>
+          <text x="425" y="405">1k</text><text x="535" y="405">2k</text><text x="645" y="405">4k</text>
+          <text x="732" y="405">8k</text><text x="806" y="405">16k</text>
+        </g>
+      </svg>
+      <div style="font-size: 10.5px; color: #55503f; line-height: 1.5; border: 1px solid #ddd6c4; background: #f9f7f2; padding: 8px 12px;">
+        Equal loudness across bands IS natural hearing, not a defect — this contour shape is what normal
+        hearing looks like; flattening it with EQ would sound wrong for everyone. · Measured at one loudness
+        you chose — a different volume gives a different curve (Fletcher–Munson). · This is your ears AND
+        your headphone AND that session, combined — it cannot separate them. · Not a hearing test in the
+        medical sense.
+      </div>
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #3d7d43;">● reliable — 1 missed of 26 catch trials · order bias: chose the 2nd interval 54% on identical pairs</div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>
