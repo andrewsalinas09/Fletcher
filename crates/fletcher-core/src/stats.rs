@@ -216,25 +216,25 @@ impl Staircase {
         self.trials += 1;
         // Comparison louder → turn it down; anchor louder → turn it up.
         let dir = if comparison_judged_louder { -1.0 } else { 1.0 };
-        if let Some(last) = self.last_dir {
-            if last != dir {
-                // Reversal at the currently presented level.
-                self.reversals.push((self.level_db, self.step_db));
-                self.reversals_at_step += 1;
-                if self.step_db <= self.cfg.min_step_db {
-                    let n = self
-                        .reversals
-                        .iter()
-                        .filter(|(_, s)| *s <= self.cfg.min_step_db)
-                        .count() as u32;
-                    if n >= self.cfg.min_step_reversals {
-                        self.end = Some(StaircaseEnd::Converged);
-                        return;
-                    }
-                } else if self.reversals_at_step >= self.cfg.reversals_per_halving {
-                    self.step_db = (self.step_db / 2.0).max(self.cfg.min_step_db);
-                    self.reversals_at_step = 0;
+        if let Some(last) = self.last_dir
+            && last != dir
+        {
+            // Reversal at the currently presented level.
+            self.reversals.push((self.level_db, self.step_db));
+            self.reversals_at_step += 1;
+            if self.step_db <= self.cfg.min_step_db {
+                let n = self
+                    .reversals
+                    .iter()
+                    .filter(|(_, s)| *s <= self.cfg.min_step_db)
+                    .count() as u32;
+                if n >= self.cfg.min_step_reversals {
+                    self.end = Some(StaircaseEnd::Converged);
+                    return;
                 }
+            } else if self.reversals_at_step >= self.cfg.reversals_per_halving {
+                self.step_db = (self.step_db / 2.0).max(self.cfg.min_step_db);
+                self.reversals_at_step = 0;
             }
         }
         self.last_dir = Some(dir);

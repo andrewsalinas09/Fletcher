@@ -10,6 +10,7 @@ use std::path::PathBuf;
 
 mod analysis;
 mod engine;
+mod profile;
 mod tools;
 
 fn data_dir() -> PathBuf {
@@ -755,6 +756,9 @@ fn preview_chain(filters: Vec<FilterIn>) -> Result<(), String> {
     if TRIAL.lock().unwrap().is_some() {
         return Err("a blind test is running — finish or cancel it first".into());
     }
+    if profile_running() {
+        return Err("a hearing-profile session is running — finish or cancel it first".into());
+    }
     activate_chain(&chain_of(&filters)?)
 }
 
@@ -789,6 +793,9 @@ fn engine_test_tone(mode: String) -> Result<String, String> {
     use fletcher_core::{playback, signal};
     if TRIAL.lock().unwrap().is_some() {
         return Err("a blind test is running — finish or cancel it first".into());
+    }
+    if profile_running() {
+        return Err("a hearing-profile session is running — finish or cancel it first".into());
     }
     let mode = if mode == "shared" {
         playback::OutputMode::Shared
@@ -846,6 +853,9 @@ fn calibration_noise(app: tauri::AppHandle, on: bool) -> Result<(), String> {
     use std::sync::{atomic::AtomicBool, Arc};
     if TRIAL.lock().unwrap().is_some() {
         return Err("a blind test is running — finish or cancel it first".into());
+    }
+    if profile_running() {
+        return Err("a hearing-profile session is running — finish or cancel it first".into());
     }
     let mut guard = CAL_NOISE.lock().unwrap();
     if !on {
@@ -1822,6 +1832,351 @@ fn open_data_dir() -> Result<(), String> {
     Ok(())
 }
 
+// ---------------- the mic-free hearing profile (Q-19 / ADR-0013) ----------------
+
+fn profiles_dir() -> PathBuf {
+    data_dir().join("profiles")
+}
+
+fn profile_running() -> bool {
+    profile::PROFILE.lock().unwrap().is_some()
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProfileBandProgress {
+    center_hz: f64,
+    /// Min-step reversals banked across both staircases (0–12).
+    banked: usize,
+    state: &'static str, // "open" | "converged" | "railed" | "capped"
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProfileState {
+    active: bool,
+    phase: &'static str, // "levelSet" | "trial" | "done"
+    paused: bool,
+    headphone: String,
+    level_dbfs: f64,
+    level_warn: bool,
+    presentations: u64,
+    answered: u64,
+    replays: u32,
+    /// Total pair duration in ms — the UI animates interval tiles from this.
+    pair_ms: u64,
+    bands: Vec<ProfileBandProgress>,
+}
+
+fn profile_state_of(s: &profile::ProfileSession, paused: bool) -> ProfileState {
+    use fletcher_core::stats::StaircaseEnd;
+    let bands = s
+        .bands
+        .iter()
+        .map(|b| {
+            let banked: usize = b
+                .stairs
+                .iter()
+                .map(|st| st.reversals().iter().filter(|(_, sp)| *sp <= 1.0).count())
+                .sum();
+            let ends: Vec<_> = b.stairs.iter().map(|st| st.done()).collect();
+            let state = if ends.iter().all(|e| e.is_some()) {
+                if ends.iter().any(|e| {
+                    matches!(
+                        e,
+                        Some(StaircaseEnd::RailedHigh) | Some(StaircaseEnd::RailedLow)
+                    )
+                }) {
+                    "railed"
+                } else if ends.iter().any(|e| {
+                    matches!(
+                        e,
+                        Some(StaircaseEnd::CappedOut) | Some(StaircaseEnd::Unconverged)
+                    )
+                }) {
+                    "capped"
+                } else {
+                    "converged"
+                }
+            } else {
+                "open"
+            };
+            ProfileBandProgress {
+                center_hz: b.center_hz,
+                banked,
+                state,
+            }
+        })
+        .collect();
+    ProfileState {
+        active: true,
+        phase: if s.complete {
+            "done"
+        } else if s.anchor_dbfs.is_none() {
+            "levelSet"
+        } else {
+            "trial"
+        },
+        paused,
+        headphone: s.headphone.clone(),
+        level_dbfs: s.level_dbfs(),
+        level_warn: s.level_dbfs() > profile::LEVEL_WARN_DBFS,
+        presentations: s.presentations,
+        answered: s.answered,
+        replays: s.current.as_ref().map(|c| c.replays).unwrap_or(0),
+        pair_ms: ((profile::INTERVAL_S * 2.0 + profile::GAP_S) * 1000.0) as u64,
+        bands,
+    }
+}
+
+fn write_profile_record(record: &serde_json::Value) {
+    let _ = std::fs::create_dir_all(profiles_dir());
+    if let (Some(id), Ok(json)) = (
+        record.get("id").and_then(|v| v.as_str()),
+        serde_json::to_string_pretty(record),
+    ) {
+        let _ = fsx::write_atomic(&profiles_dir().join(format!("{id}.json")), &json);
+    }
+}
+
+/// Start a hearing-profile session: exclusive-only (nothing may color the
+/// measurement — not APO, not Fletcher, not Peace), opening in the level-set
+/// step (anchor loops from −70 dBFS RMS; TB-20).
+#[tauri::command]
+async fn profile_start(app: tauri::AppHandle, headphone: String) -> Result<ProfileState, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<ProfileState, String> {
+        if TRIAL.lock().unwrap().is_some() {
+            return Err("a blind test is running — finish or cancel it first".into());
+        }
+        if TRACK.lock().unwrap().is_some() {
+            return Err("stop track playback first — the profile needs the device exclusively".into());
+        }
+        if profile_running() {
+            return Err("a hearing-profile session is already running".into());
+        }
+        stop_cal_noise();
+        let rate = fletcher_core::playback::probe_rate(fletcher_core::playback::OutputMode::Exclusive)
+            .map_err(|_| {
+                "the hearing profile needs exclusive mode (nothing may color the measurement) — the device refused it"
+                    .to_string()
+            })?;
+        let mut session = profile::ProfileSession::new(
+            headphone.trim().to_string(),
+            rate,
+            String::new(),
+        );
+        session.shared.serial.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let app_err = app.clone();
+        session.spawn_stream(move |e| {
+            use tauri::Emitter;
+            let _ = app_err.emit("profile-error", e);
+        });
+        let state = profile_state_of(&session, false);
+        *profile::PROFILE.lock().unwrap() = Some(session);
+        Ok(state)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn profile_set_level(dbfs: f64) -> Result<ProfileState, String> {
+    let guard = profile::PROFILE.lock().unwrap();
+    let s = guard.as_ref().ok_or("no profile session running")?;
+    if s.anchor_dbfs.is_some() {
+        return Err("the level is fixed for the whole session once accepted".into());
+    }
+    s.set_level_dbfs(dbfs);
+    Ok(profile_state_of(s, false))
+}
+
+#[tauri::command]
+fn profile_accept_level() -> Result<ProfileState, String> {
+    let mut guard = profile::PROFILE.lock().unwrap();
+    let s = guard.as_mut().ok_or("no profile session running")?;
+    if s.anchor_dbfs.is_some() {
+        return Err("the level is already accepted".into());
+    }
+    s.accept_level();
+    write_profile_record(&s.record());
+    Ok(profile_state_of(s, false))
+}
+
+/// One answer: "the second interval was louder" (true) or the first (false).
+/// Journals, advances the staircase, persists the partial record (crash-safe
+/// resume), and presents the next pair — or finishes the session.
+#[tauri::command]
+fn profile_answer(second_louder: bool) -> Result<serde_json::Value, String> {
+    let mut guard = profile::PROFILE.lock().unwrap();
+    let s = guard.as_mut().ok_or("no profile session running")?;
+    s.answer(second_louder)?;
+    let record = s.record();
+    write_profile_record(&record);
+    if s.complete {
+        s.stop_stream();
+        *guard = None;
+        let mut result = record;
+        if let Some(o) = result.as_object_mut() {
+            o.remove("journal");
+        }
+        return Ok(serde_json::json!({ "done": true, "result": result }));
+    }
+    Ok(
+        serde_json::json!({ "done": false, "state": serde_json::to_value(profile_state_of(s, false)).unwrap() }),
+    )
+}
+
+/// Replay the identical pair (same seeds, same order). Recorded.
+#[tauri::command]
+fn profile_replay() -> Result<(), String> {
+    let mut guard = profile::PROFILE.lock().unwrap();
+    let s = guard.as_mut().ok_or("no profile session running")?;
+    s.replay();
+    Ok(())
+}
+
+/// Pause: release the device (the session stays; resume respawns).
+#[tauri::command]
+fn profile_pause() -> Result<ProfileState, String> {
+    let guard = profile::PROFILE.lock().unwrap();
+    let s = guard.as_ref().ok_or("no profile session running")?;
+    s.stop_stream();
+    Ok(profile_state_of(s, true))
+}
+
+#[tauri::command]
+async fn profile_resume(app: tauri::AppHandle) -> Result<ProfileState, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<ProfileState, String> {
+        let mut guard = profile::PROFILE.lock().unwrap();
+        let s = guard.as_mut().ok_or("no profile session running")?;
+        // Wait for the old stream to actually release before reopening.
+        let done = s.stream_done.clone();
+        let t0 = std::time::Instant::now();
+        while !done.load(std::sync::atomic::Ordering::Relaxed)
+            && t0.elapsed() < std::time::Duration::from_secs(3)
+        {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let app_err = app.clone();
+        s.resumes += 1;
+        s.spawn_stream(move |e| {
+            use tauri::Emitter;
+            let _ = app_err.emit("profile-error", e);
+        });
+        // Re-present whatever was current (level loop or the same pair).
+        s.shared
+            .serial
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(profile_state_of(s, false))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Discard the running session entirely (its partial record included).
+#[tauri::command]
+fn profile_cancel() -> Result<(), String> {
+    let mut guard = profile::PROFILE.lock().unwrap();
+    if let Some(s) = guard.take() {
+        s.stop_stream();
+        let _ = std::fs::remove_file(profiles_dir().join(format!("{}.json", s.id)));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn profile_state() -> serde_json::Value {
+    let guard = profile::PROFILE.lock().unwrap();
+    match guard.as_ref() {
+        Some(s) => {
+            let paused = s.stream_done.load(std::sync::atomic::Ordering::Relaxed);
+            serde_json::to_value(profile_state_of(s, paused)).unwrap()
+        }
+        None => serde_json::json!({ "active": false }),
+    }
+}
+
+/// Saved profiles, newest first, journals stripped (they're large; the full
+/// record stays on disk for provenance).
+#[tauri::command]
+fn profile_results() -> Vec<serde_json::Value> {
+    let mut out: Vec<serde_json::Value> = std::fs::read_dir(profiles_dir())
+        .map(|rd| {
+            rd.filter_map(|e| {
+                let text = std::fs::read_to_string(e.ok()?.path()).ok()?;
+                let mut v: serde_json::Value = serde_json::from_str(&text).ok()?;
+                if let Some(o) = v.as_object_mut() {
+                    o.remove("journal");
+                }
+                Some(v)
+            })
+            .collect()
+        })
+        .unwrap_or_default();
+    out.sort_by_key(|v| {
+        std::cmp::Reverse(v.get("startedMs").and_then(|m| m.as_u64()).unwrap_or(0))
+    });
+    out
+}
+
+#[tauri::command]
+fn profile_delete(id: String) -> Result<(), String> {
+    if id.contains(['\\', '/', ':']) {
+        return Err("invalid id".into());
+    }
+    std::fs::remove_file(profiles_dir().join(format!("{id}.json"))).map_err(|e| e.to_string())
+}
+
+/// Resume an unfinished session from its saved record after an app restart:
+/// the staircases are rebuilt by replaying the journal (exact — proven by
+/// the core replay test), the stream respawns, and the next trial presents.
+#[tauri::command]
+async fn profile_resume_saved(app: tauri::AppHandle, id: String) -> Result<ProfileState, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<ProfileState, String> {
+        if profile_running() {
+            return Err("a hearing-profile session is already running".into());
+        }
+        if TRIAL.lock().unwrap().is_some() || TRACK.lock().unwrap().is_some() {
+            return Err(
+                "stop other playback first — the profile needs the device exclusively".into(),
+            );
+        }
+        if id.contains(['\\', '/', ':']) {
+            return Err("invalid id".into());
+        }
+        let text = std::fs::read_to_string(profiles_dir().join(format!("{id}.json")))
+            .map_err(|_| "saved session not found".to_string())?;
+        let rec: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+        if rec.get("finished").and_then(|v| v.as_bool()) == Some(true) {
+            return Err("that session is already finished".into());
+        }
+        let rate =
+            fletcher_core::playback::probe_rate(fletcher_core::playback::OutputMode::Exclusive)
+                .map_err(|_| "the device refused exclusive mode".to_string())?;
+        if rec.get("sampleRateHz").and_then(|v| v.as_u64()) != Some(rate as u64) {
+            return Err("the device now runs at a different rate than the saved session".into());
+        }
+        let mut session = profile::ProfileSession::resume_from(&rec, rate)?;
+        session
+            .shared
+            .serial
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let app_err = app.clone();
+        session.spawn_stream(move |e| {
+            use tauri::Emitter;
+            let _ = app_err.emit("profile-error", e);
+        });
+        if session.anchor_dbfs.is_some() {
+            session.next_trial();
+        }
+        let state = profile_state_of(&session, false);
+        *profile::PROFILE.lock().unwrap() = Some(session);
+        Ok(state)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Validate a recipe (the text editor's Apply): returns the auto title it
 /// would get in the library.
 #[tauri::command]
@@ -1843,6 +2198,9 @@ fn signal_preview(app: tauri::AppHandle, spec: Option<SigSpec>) -> Result<u64, S
     use std::sync::{atomic::AtomicBool, Arc};
     if TRIAL.lock().unwrap().is_some() {
         return Err("a blind test is running — finish or cancel it first".into());
+    }
+    if profile_running() {
+        return Err("a hearing-profile session is running — finish or cancel it first".into());
     }
     let Some(spec) = spec else {
         stop_cal_noise();
@@ -2220,6 +2578,9 @@ async fn track_play(app: tauri::AppHandle, id: i64) -> Result<(), String> {
     use fletcher_core::playback::OutputMode;
     if TRIAL.lock().unwrap().is_some() {
         return Err("a blind test is running — finish or cancel it first".into());
+    }
+    if profile_running() {
+        return Err("a hearing-profile session is running — finish or cancel it first".into());
     }
     stop_cal_noise();
     let prior_done = track_stop_inner();
@@ -2673,6 +3034,9 @@ fn set_reference_db(db: f64) -> Result<EqState, String> {
     if TRIAL.lock().unwrap().is_some() {
         return Err("a blind test is running — finish or cancel it first".into());
     }
+    if profile_running() {
+        return Err("a hearing-profile session is running — finish or cancel it first".into());
+    }
     write_state_field("referenceDb", serde_json::json!(db.clamp(-30.0, 0.0)));
     apply_side(&ab_side())?;
     eq_state()
@@ -2684,6 +3048,9 @@ fn set_reference_db(db: f64) -> Result<EqState, String> {
 fn set_level_matching(on: bool) -> Result<EqState, String> {
     if TRIAL.lock().unwrap().is_some() {
         return Err("a blind test is running — finish or cancel it first".into());
+    }
+    if profile_running() {
+        return Err("a hearing-profile session is running — finish or cancel it first".into());
     }
     write_state_field("levelMatching", serde_json::json!(on));
     apply_side(&ab_side())?;
@@ -3314,6 +3681,9 @@ fn trial_start_inner(app: &tauri::AppHandle, spec: TrialSpec) -> Result<TrialSta
     }
     if TRIAL.lock().unwrap().is_some() {
         return Err("a blind test is already running — finish or cancel it first".into());
+    }
+    if profile_running() {
+        return Err("a hearing-profile session is running — finish or cancel it first".into());
     }
     // Leveling noise and blind trials must never overlap (TB-26 class).
     stop_cal_noise();
@@ -4563,6 +4933,18 @@ pub fn run() {
             trial_finish_early,
             trial_resume,
             preset_chain,
+            profile_start,
+            profile_set_level,
+            profile_accept_level,
+            profile_answer,
+            profile_replay,
+            profile_pause,
+            profile_resume,
+            profile_resume_saved,
+            profile_cancel,
+            profile_state,
+            profile_results,
+            profile_delete,
             autoeq_search,
             autoeq_import,
             preset_rename,
