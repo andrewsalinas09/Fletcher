@@ -186,6 +186,28 @@ impl Signal {
     }
 }
 
+/// Deterministic RMS (dBFS) of `kind` at amp = 1.0: renders `seconds` after
+/// skipping 200 ms of filter warm-up. The hearing profile's level axis needs
+/// this: band-noise RMS scales with √bandwidth (a 63 Hz octave of filtered
+/// white noise is ~24 dB quieter than a 16 kHz one at equal amp), so
+/// offsets are meaningless without per-band normalization. Measured at
+/// MAX_AMP (Signal clamps amp) and referred back to amp = 1 — band noises
+/// never touch the sample clamp at that amplitude, so this is exact.
+pub fn rms_dbfs(kind: SignalKind, fs: f64, seed: u64, seconds: f64) -> f64 {
+    let mut sig = Signal::new(kind, MAX_AMP, fs, seed);
+    let skip = (fs * 0.2) as usize;
+    let n = (fs * seconds.max(0.1)) as usize;
+    let mut sum = 0.0;
+    for i in 0..skip + n {
+        let s = sig.next_sample();
+        if i >= skip {
+            sum += s * s;
+        }
+    }
+    let rms = (sum / n as f64).sqrt();
+    20.0 * rms.max(1e-12).log10() + 20.0 * (1.0 / MAX_AMP).log10()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -323,6 +345,61 @@ mod tests {
         let r = rms(&mut trem, 96_000, 0);
         let plain = DEFAULT_AMP / 2f64.sqrt();
         assert!(r < 0.8 * plain, "tremolo RMS {r:.4} vs plain {plain:.4}");
+    }
+
+    #[test]
+    fn rms_dbfs_normalization_axis() {
+        // White at amp 1: uniform [-1,1) noise has RMS 1/√3 ≈ −4.77 dBFS.
+        let w = rms_dbfs(SignalKind::White, FS, 5, 2.0);
+        assert!(
+            (w - 20.0 * (1.0 / 3f64.sqrt()).log10()).abs() < 0.2,
+            "white {w:.2}"
+        );
+        // Narrower band = quieter at equal amp; ordering must hold.
+        let low = rms_dbfs(
+            SignalKind::BandNoise {
+                lo_hz: 44.5,
+                hi_hz: 89.1,
+            },
+            FS,
+            5,
+            2.0,
+        );
+        let mid = rms_dbfs(
+            SignalKind::BandNoise {
+                lo_hz: 500.0,
+                hi_hz: 2000.0,
+            },
+            FS,
+            5,
+            2.0,
+        );
+        let high = rms_dbfs(
+            SignalKind::BandNoise {
+                lo_hz: 5656.0,
+                hi_hz: 11314.0,
+            },
+            FS,
+            5,
+            2.0,
+        );
+        assert!(
+            low < mid && mid < high,
+            "low {low:.1} mid {mid:.1} high {high:.1}"
+        );
+        // Deterministic: same seed, bit-identical.
+        assert_eq!(
+            low,
+            rms_dbfs(
+                SignalKind::BandNoise {
+                    lo_hz: 44.5,
+                    hi_hz: 89.1
+                },
+                FS,
+                5,
+                2.0
+            )
+        );
     }
 
     #[test]
