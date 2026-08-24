@@ -494,10 +494,11 @@ function HistoryTree({
   const nodeClick = (e: React.MouseEvent, id: number) => {
     stopPreview();
     // Contender-pick mode (the Lab's A/B picker): a click PICKS the node —
-    // nothing jumps, nothing mutates.
+    // nothing jumps, nothing mutates. Alt+click inspects without picking
+    // (the same Alt = look-don't-touch convention as the EQ history).
     if (onPickNode) {
       setSelId(id);
-      onPickNode(id);
+      if (!e.altKey) onPickNode(id);
       return;
     }
     if (pickMode) {
@@ -5857,7 +5858,7 @@ function MainApp() {
                 <div className="hist-panel">
                   <div className="hist-head">
                     <span className="mono hist-title">{`PICK ${labPick.toUpperCase()} — HISTORY · ${pickTree.preset}`}</span>
-                    <span className="dim-sm">click any node to use its exact sound</span>
+                    <span className="dim-sm">click a node to use its exact sound · Alt+click inspects it first</span>
                     <span className="spacer" />
                     <button
                       onClick={() =>
