@@ -987,6 +987,11 @@ fn library_db() -> Result<rusqlite::Connection, String> {
     .map_err(|e| e.to_string())?;
     // Migration for databases created before lufs_flat existed.
     let _ = conn.execute("ALTER TABLE tracks ADD COLUMN lufs_flat REAL", []);
+    // Migration: battery entries can be whole songs ('track') since ADR-0012+.
+    let _ = conn.execute(
+        "ALTER TABLE battery_clips ADD COLUMN kind TEXT NOT NULL DEFAULT 'clip'",
+        [],
+    );
     Ok(conn)
 }
 
@@ -1192,7 +1197,7 @@ fn clip_delete(id: i64) -> Result<LibraryState, String> {
     )
     .map_err(|e| e.to_string())?;
     conn.execute(
-        "DELETE FROM battery_clips WHERE clip_id = ?1",
+        "DELETE FROM battery_clips WHERE clip_id = ?1 AND kind = 'clip'",
         rusqlite::params![id],
     )
     .map_err(|e| e.to_string())?;
@@ -1201,13 +1206,21 @@ fn clip_delete(id: i64) -> Result<LibraryState, String> {
 
 // ---------------- batteries: the Lab's test material (phase 3) ----------------
 
+/// One battery entry: a clip, or a whole song (kind "track").
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct BatteryItem {
+    kind: String, // "clip" | "track"
+    id: i64,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BatteryRow {
     id: i64,
     name: String,
     note: Option<String>,
-    clip_ids: Vec<i64>,
+    items: Vec<BatteryItem>,
     created_ms: i64,
 }
 
@@ -1228,7 +1241,7 @@ fn battery_state_now() -> Result<BatteryState, String> {
                 id: r.get(0)?,
                 name: r.get(1)?,
                 note: r.get(2)?,
-                clip_ids: Vec::new(),
+                items: Vec::new(),
                 created_ms: r.get(3)?,
             })
         })
@@ -1236,18 +1249,28 @@ fn battery_state_now() -> Result<BatteryState, String> {
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
     let mut stmt = conn
-        .prepare("SELECT battery_id, clip_id FROM battery_clips ORDER BY battery_id, ord")
+        .prepare("SELECT battery_id, clip_id, kind FROM battery_clips ORDER BY battery_id, ord")
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
         .map_err(|e| e.to_string())?;
-    let mut map: std::collections::HashMap<i64, Vec<i64>> = std::collections::HashMap::new();
+    let mut map: std::collections::HashMap<i64, Vec<BatteryItem>> =
+        std::collections::HashMap::new();
     for row in rows.flatten() {
-        map.entry(row.0).or_default().push(row.1);
+        map.entry(row.0).or_default().push(BatteryItem {
+            kind: row.2,
+            id: row.1,
+        });
     }
     for b in &mut batteries {
-        if let Some(ids) = map.remove(&b.id) {
-            b.clip_ids = ids;
+        if let Some(items) = map.remove(&b.id) {
+            b.items = items;
         }
     }
     Ok(BatteryState { batteries })
@@ -1259,7 +1282,7 @@ fn battery_state() -> Result<BatteryState, String> {
 }
 
 #[tauri::command]
-fn battery_create(name: String, clip_ids: Option<Vec<i64>>) -> Result<BatteryState, String> {
+fn battery_create(name: String, items: Option<Vec<BatteryItem>>) -> Result<BatteryState, String> {
     let name = name.trim();
     if name.is_empty() {
         return Err("a battery needs a name".into());
@@ -1272,8 +1295,8 @@ fn battery_create(name: String, clip_ids: Option<Vec<i64>>) -> Result<BatterySta
     .map_err(|e| e.to_string())?;
     let id = conn.last_insert_rowid();
     drop(conn);
-    if let Some(ids) = clip_ids {
-        battery_set_clips_inner(id, ids)?;
+    if let Some(items) = items {
+        battery_set_clips_inner(id, items)?;
     }
     battery_state_now()
 }
@@ -1306,9 +1329,9 @@ fn battery_update(
     battery_state_now()
 }
 
-/// Replace a battery's clip list wholesale; vec order = play order. Missing
-/// clip ids are dropped silently (they may have been deleted since).
-fn battery_set_clips_inner(id: i64, clip_ids: Vec<i64>) -> Result<(), String> {
+/// Replace a battery's item list wholesale; vec order = play order. Items
+/// whose clip/track no longer exists are dropped silently.
+fn battery_set_clips_inner(id: i64, items: Vec<BatteryItem>) -> Result<(), String> {
     let mut conn = library_db()?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     tx.execute(
@@ -1318,14 +1341,20 @@ fn battery_set_clips_inner(id: i64, clip_ids: Vec<i64>) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
     let mut seen = std::collections::HashSet::new();
     let mut ord = 0i64;
-    for cid in clip_ids {
-        if !seen.insert(cid) {
+    for item in items {
+        let kind = if item.kind == "track" {
+            "track"
+        } else {
+            "clip"
+        };
+        if !seen.insert((kind, item.id)) {
             continue;
         }
+        let table = if kind == "track" { "tracks" } else { "clips" };
         let exists: bool = tx
             .query_row(
-                "SELECT 1 FROM clips WHERE id = ?1",
-                rusqlite::params![cid],
+                &format!("SELECT 1 FROM {table} WHERE id = ?1"),
+                rusqlite::params![item.id],
                 |_| Ok(true),
             )
             .unwrap_or(false);
@@ -1333,8 +1362,8 @@ fn battery_set_clips_inner(id: i64, clip_ids: Vec<i64>) -> Result<(), String> {
             continue;
         }
         tx.execute(
-            "INSERT INTO battery_clips (battery_id, clip_id, ord) VALUES (?1, ?2, ?3)",
-            rusqlite::params![id, cid, ord],
+            "INSERT INTO battery_clips (battery_id, clip_id, kind, ord) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![id, item.id, kind, ord],
         )
         .map_err(|e| e.to_string())?;
         ord += 1;
@@ -1343,8 +1372,8 @@ fn battery_set_clips_inner(id: i64, clip_ids: Vec<i64>) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn battery_set_clips(id: i64, clip_ids: Vec<i64>) -> Result<BatteryState, String> {
-    battery_set_clips_inner(id, clip_ids)?;
+fn battery_set_clips(id: i64, items: Vec<BatteryItem>) -> Result<BatteryState, String> {
+    battery_set_clips_inner(id, items)?;
     battery_state_now()
 }
 
@@ -2032,6 +2061,16 @@ fn track_delete(id: i64) -> Result<LibraryState, String> {
         .map_err(|e| e.to_string())?;
     conn.execute(
         "DELETE FROM clip_tags WHERE clip_id IN (SELECT id FROM clips WHERE track_id = ?1)",
+        rusqlite::params![id],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM battery_clips WHERE kind = 'track' AND clip_id = ?1",
+        rusqlite::params![id],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM battery_clips WHERE kind = 'clip' AND clip_id IN (SELECT id FROM clips WHERE track_id = ?1)",
         rusqlite::params![id],
     )
     .map_err(|e| e.to_string())?;
@@ -2811,9 +2850,10 @@ enum Protocol {
 
 /// One planned trial's material + leveling, measured at session start.
 /// Names are denormalized: provenance survives clip/track deletion.
+/// `clip_id: None` = a whole song (the full track is the material).
 #[derive(Clone)]
 struct TrialClip {
-    clip_id: i64,
+    clip_id: Option<i64>,
     track_id: i64,
     clip_name: String,
     track_title: String,
@@ -2976,41 +3016,40 @@ struct TrialState {
 
 fn trial_state_of(session: &TrialSession, revealed: bool) -> TrialState {
     let trial = session.answers.len();
-    let (clip_name, track_title, clip_index, clip_count, battery_name, suspended) = match &session
-        .material
-    {
-        Material::System => (None, None, None, None, None, false),
-        Material::Clips {
-            plan,
-            battery_name,
-            suspended,
-            ..
-        } => {
-            let cur = plan.get(trial.min(plan.len().saturating_sub(1)));
-            let distinct: std::collections::HashSet<i64> = plan.iter().map(|c| c.clip_id).collect();
-            (
-                cur.map(|c| c.clip_name.clone()),
-                cur.map(|c| c.track_title.clone()),
-                cur.map(|c| {
-                    // Position within the distinct battery, 1-based.
-                    let mut seen = std::collections::HashSet::new();
-                    let mut idx = 0;
-                    for p in plan.iter().take(trial + 1) {
-                        if seen.insert(p.clip_id) {
-                            idx += 1;
+    let (clip_name, track_title, clip_index, clip_count, battery_name, suspended) =
+        match &session.material {
+            Material::System => (None, None, None, None, None, false),
+            Material::Clips {
+                plan,
+                battery_name,
+                suspended,
+                ..
+            } => {
+                let cur = plan.get(trial.min(plan.len().saturating_sub(1)));
+                let distinct: std::collections::HashSet<i64> = plan.iter().map(plan_key).collect();
+                (
+                    cur.map(|c| c.clip_name.clone()),
+                    cur.map(|c| c.track_title.clone()),
+                    cur.map(|c| {
+                        // Position within the distinct battery, 1-based.
+                        let mut seen = std::collections::HashSet::new();
+                        let mut idx = 0;
+                        for p in plan.iter().take(trial + 1) {
+                            if seen.insert(plan_key(p)) {
+                                idx += 1;
+                            }
+                            if plan_key(p) == plan_key(c) {
+                                break;
+                            }
                         }
-                        if p.clip_id == c.clip_id {
-                            break;
-                        }
-                    }
-                    idx.max(1)
-                }),
-                Some(distinct.len()),
-                battery_name.clone(),
-                *suspended,
-            )
-        }
-    };
+                        idx.max(1)
+                    }),
+                    Some(distinct.len()),
+                    battery_name.clone(),
+                    *suspended,
+                )
+            }
+        };
     TrialState {
         active: true,
         protocol: match session.protocol {
@@ -3078,7 +3117,13 @@ enum MaterialSpec {
     Clips {
         battery_id: Option<i64>,
         clip_ids: Option<Vec<i64>>,
+        track_ids: Option<Vec<i64>>,
     },
+}
+
+/// Stable identity of a plan entry: clip id, or −track_id for whole songs.
+fn plan_key(c: &TrialClip) -> i64 {
+    c.clip_id.unwrap_or(-c.track_id)
 }
 
 #[derive(Deserialize)]
@@ -3301,7 +3346,10 @@ fn trial_start_inner(app: &tauri::AppHandle, spec: TrialSpec) -> Result<TrialSta
         Some(MaterialSpec::Clips {
             battery_id,
             clip_ids,
-        }) => trial_build_clips_material(&chain_a, &chain_b, battery_id, clip_ids, cap, &mut rng)?,
+            track_ids,
+        }) => trial_build_clips_material(
+            &chain_a, &chain_b, battery_id, clip_ids, track_ids, cap, &mut rng,
+        )?,
     };
 
     let mut session = TrialSession {
@@ -3372,12 +3420,13 @@ fn trial_build_clips_material(
     chain_b: &[ChainFilter],
     battery_id: Option<i64>,
     clip_ids: Option<Vec<i64>>,
+    track_ids: Option<Vec<i64>>,
     cap: usize,
     rng: &mut fletcher_core::stats::Xorshift,
 ) -> Result<Material, String> {
     let conn = library_db()?;
-    let (ids, battery_name) = match (battery_id, clip_ids) {
-        (Some(bid), _) => {
+    let (items, battery_name) = match (battery_id, clip_ids, track_ids) {
+        (Some(bid), _, _) => {
             let name: String = conn
                 .query_row(
                     "SELECT name FROM batteries WHERE id = ?1",
@@ -3386,24 +3435,49 @@ fn trial_build_clips_material(
                 )
                 .map_err(|_| "battery not found".to_string())?;
             let mut stmt = conn
-                .prepare("SELECT clip_id FROM battery_clips WHERE battery_id = ?1 ORDER BY ord")
+                .prepare(
+                    "SELECT clip_id, kind FROM battery_clips WHERE battery_id = ?1 ORDER BY ord",
+                )
                 .map_err(|e| e.to_string())?;
-            let ids: Vec<i64> = stmt
-                .query_map(rusqlite::params![bid], |r| r.get(0))
+            let items: Vec<BatteryItem> = stmt
+                .query_map(rusqlite::params![bid], |r| {
+                    Ok(BatteryItem {
+                        id: r.get(0)?,
+                        kind: r.get(1)?,
+                    })
+                })
                 .map_err(|e| e.to_string())?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| e.to_string())?;
-            (ids, Some(name))
+            (items, Some(name))
         }
-        (None, Some(ids)) => (ids, None),
-        (None, None) => return Err("pick a battery or clips to test on".into()),
+        (None, cids, tids) => {
+            let mut items: Vec<BatteryItem> = Vec::new();
+            for id in cids.unwrap_or_default() {
+                items.push(BatteryItem {
+                    kind: "clip".into(),
+                    id,
+                });
+            }
+            for id in tids.unwrap_or_default() {
+                items.push(BatteryItem {
+                    kind: "track".into(),
+                    id,
+                });
+            }
+            if items.is_empty() {
+                return Err("pick a battery, clips, or songs to test on".into());
+            }
+            (items, None)
+        }
     };
-    if ids.is_empty() {
-        return Err("that battery is empty — add clips to it first".into());
+    if items.is_empty() {
+        return Err("that battery is empty — add clips or songs to it first".into());
     }
-    // Fetch clip + track rows (names denormalized for provenance).
+    // Fetch rows (names denormalized for provenance). Whole songs span
+    // 0 → end (t_out clamps to the real length at measurement).
     struct ClipRef {
-        clip_id: i64,
+        clip_id: Option<i64>,
         track_id: i64,
         name: String,
         title: String,
@@ -3411,7 +3485,26 @@ fn trial_build_clips_material(
         t_out: f64,
     }
     let mut clips: Vec<ClipRef> = Vec::new();
-    for cid in &ids {
+    for item in &items {
+        if item.kind == "track" {
+            let (title, dur): (String, Option<f64>) = conn
+                .query_row(
+                    "SELECT title, duration_s FROM tracks WHERE id = ?1",
+                    rusqlite::params![item.id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .map_err(|_| format!("track #{} no longer exists", item.id))?;
+            clips.push(ClipRef {
+                clip_id: None,
+                track_id: item.id,
+                name: title.clone(),
+                title,
+                t_in: 0.0,
+                t_out: dur.unwrap_or(f64::MAX),
+            });
+            continue;
+        }
+        let cid = item.id;
         let row = conn
             .query_row(
                 "SELECT c.id, c.track_id, c.name, t.title, c.t_in, c.t_out
@@ -3419,7 +3512,7 @@ fn trial_build_clips_material(
                 rusqlite::params![cid],
                 |r| {
                     Ok(ClipRef {
-                        clip_id: r.get(0)?,
+                        clip_id: Some(r.get(0)?),
                         track_id: r.get(1)?,
                         name: r.get(2)?,
                         title: r.get(3)?,
@@ -3468,7 +3561,17 @@ fn trial_build_clips_material(
         let total = (pcm.len() / 2) as u64;
         for c in clips.iter().filter(|c| c.track_id == *tid) {
             let fi = ((c.t_in * rate as f64) as u64).min(total.saturating_sub(1));
-            let fo = ((c.t_out * rate as f64) as u64).clamp(fi + 1, total);
+            let fo = if c.t_out == f64::MAX {
+                total
+            } else {
+                ((c.t_out * rate as f64) as u64).clamp(fi + 1, total)
+            };
+            if fo.saturating_sub(fi) < (rate as u64) / 2 {
+                return Err(format!(
+                    "\"{}\" is under 0.5 s of audio — too short for a blind switch",
+                    c.name
+                ));
+            }
             let mut slice: Vec<f32> = pcm[(fi as usize) * 2..(fo as usize) * 2].to_vec();
             // R128 gating needs runway; tiling matches what looping sounds like.
             let min_len = (rate as usize) * 3 * 2;
@@ -3490,7 +3593,7 @@ fn trial_build_clips_material(
             let e = track_gain.entry(*tid).or_insert(g);
             *e = e.min(g);
             measured.insert(
-                c.clip_id,
+                c.clip_id.unwrap_or(-c.track_id),
                 TrialClip {
                     clip_id: c.clip_id,
                     track_id: c.track_id,
@@ -3522,7 +3625,7 @@ fn trial_build_clips_material(
             let mut group: Vec<i64> = clips
                 .iter()
                 .filter(|c| c.track_id == tid)
-                .map(|c| c.clip_id)
+                .map(|c| c.clip_id.unwrap_or(-c.track_id))
                 .collect();
             shuffle(&mut group, rng);
             for cid in group {
@@ -3672,12 +3775,17 @@ fn trial_result_of(
         } => {
             let mut seen = std::collections::HashSet::new();
             let mut clip_ids = Vec::new();
+            let mut song_track_ids = Vec::new();
             let mut trims = Vec::new();
             for c in plan {
-                if seen.insert(c.clip_id) {
-                    clip_ids.push(c.clip_id);
+                if seen.insert(plan_key(c)) {
+                    match c.clip_id {
+                        Some(id) => clip_ids.push(id),
+                        None => song_track_ids.push(c.track_id),
+                    }
                     trims.push(serde_json::json!({
                         "clipId": c.clip_id,
+                        "trackId": c.track_id,
                         "trimBDb": c.trim_b_db,
                         "trimShortfallDb": c.trim_shortfall_db,
                         "lufsA": c.lufs_a,
@@ -3692,6 +3800,7 @@ fn trial_result_of(
                     "batteryId": battery_id,
                     "batteryName": battery_name,
                     "clipIds": clip_ids,
+                    "trackIds": song_track_ids,
                 }),
                 Some(serde_json::json!({ "mode": "exclusive", "rate": rate })),
                 trims,
@@ -3725,7 +3834,7 @@ fn trial_result_of(
                 x_was_a: *actual,
                 answered_a: *ans,
                 correct: ans == actual,
-                clip_id: clip.map(|c| c.clip_id),
+                clip_id: clip.and_then(|c| c.clip_id),
                 clip_name: clip.map(|c| c.clip_name.clone()),
                 track_id: clip.map(|c| c.track_id),
             }

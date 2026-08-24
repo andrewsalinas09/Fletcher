@@ -2037,7 +2037,13 @@ type AbxResult = {
   preferredA?: number;
   pValueTwoSided?: number;
   protocol?: "abx" | "pref";
-  material?: { kind: string; batteryId?: number | null; batteryName?: string | null; clipIds?: number[] };
+  material?: {
+    kind: string;
+    batteryId?: number | null;
+    batteryName?: string | null;
+    clipIds?: number[];
+    trackIds?: number[];
+  };
   stopRule?: { kind: string; planned?: number; maxTrials?: number };
   sequential?: boolean;
   decision?: "difference" | "noDifference" | "cap";
@@ -2054,11 +2060,12 @@ type Contender =
   | { kind: "preset"; name: string }
   | { kind: "node"; id: number };
 
+type BatteryItem = { kind: "clip" | "track"; id: number };
 type BatteryRow = {
   id: number;
   name: string;
   note: string | null;
-  clipIds: number[];
+  items: BatteryItem[];
   createdMs: number;
 };
 
@@ -3821,9 +3828,10 @@ function MainApp() {
     }
   };
 
-  // ---- the Finder: search clips across every track, assemble batteries ----
+  // ---- the Finder: search clips AND whole songs, assemble batteries ----
   const [finderQ, setFinderQ] = useState("");
-  const [finderSel, setFinderSel] = useState<Set<number>>(new Set());
+  /** Selection keys: `c:{clipId}` | `t:{trackId}` (whole song). */
+  const [finderSel, setFinderSel] = useState<Set<string>>(new Set());
   const [batName, setBatName] = useState("");
   const [batMenu, setBatMenu] = useState(false);
   /** Query operators: `tag:lows genre:electronic note:"sub"` + free text. */
@@ -3849,25 +3857,49 @@ function MainApp() {
       );
     });
   };
-  /** How many recorded sessions exercised this clip (from trial provenance). */
+  /** Whole songs matching the query (free terms + genre:). */
+  const finderSongs = (): TrackRow[] => {
+    const tracks = library?.tracks ?? [];
+    const q = finderQ.toLowerCase();
+    const free = q
+      .replace(/(tag|note):("[^"]*"|\S+)/g, "")
+      .replace(/genre:("[^"]*"|\S+)/g, " $1 ")
+      .replace(/"/g, "")
+      .split(/\s+/)
+      .filter(Boolean);
+    // tag:/note: are clip concepts — a query using only those shows no songs.
+    if (/(^|\s)(tag|note):/.test(q)) return [];
+    return tracks.filter((t) => {
+      const hay = `${t.title} ${t.artist ?? ""} ${t.genre ?? ""}`.toLowerCase();
+      return free.every((w) => hay.includes(w));
+    });
+  };
+  /** Trial provenance: sessions that exercised this clip / whole song. */
   const testedCount = (clipId: number) =>
     sessions.filter((s) => s.log.some((t) => t.clipId === clipId)).length;
-  const toggleFinderSel = (id: number) =>
+  const testedTrackCount = (trackId: number) =>
+    sessions.filter((s) => s.log.some((t) => t.clipId == null && t.trackId === trackId)).length;
+  const toggleFinderSel = (key: string) =>
     setFinderSel((cur) => {
       const next = new Set(cur);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
+  const selItems = (): BatteryItem[] =>
+    [...finderSel].map((k) => ({
+      kind: k.startsWith("t:") ? ("track" as const) : ("clip" as const),
+      id: Number(k.slice(2)),
+    }));
   const saveBattery = () => {
-    const ids = [...finderSel];
-    if (!ids.length) return;
+    const items = selItems();
+    if (!items.length) return;
     const name = batName.trim();
     if (!name) {
       showNotice("give the battery a name first");
       return;
     }
-    invoke<{ batteries: BatteryRow[] }>("battery_create", { name, clipIds: ids })
+    invoke<{ batteries: BatteryRow[] }>("battery_create", { name, items })
       .then((s) => {
         setBatteries(s.batteries);
         setBatName("");
@@ -3879,7 +3911,7 @@ function MainApp() {
       .catch((e) => showNotice(String(e)));
   };
   const overwriteBattery = (id: number) => {
-    invoke<{ batteries: BatteryRow[] }>("battery_set_clips", { id, clipIds: [...finderSel] })
+    invoke<{ batteries: BatteryRow[] }>("battery_set_clips", { id, items: selItems() })
       .then((s) => {
         setBatteries(s.batteries);
         setBatMenu(false);
@@ -3895,9 +3927,9 @@ function MainApp() {
       })
       .catch((e) => showNotice(String(e)));
   };
-  /** Load a battery's clips into the finder selection for editing. */
+  /** Load a battery's items into the finder selection for editing. */
   const editBattery = (b: BatteryRow) => {
-    setFinderSel(new Set(b.clipIds));
+    setFinderSel(new Set(b.items.map((i) => `${i.kind === "track" ? "t" : "c"}:${i.id}`)));
     setBatName(b.name);
   };
 
@@ -3951,8 +3983,9 @@ function MainApp() {
     const spec = {
       protocol: r.protocol ?? "abx",
       material:
-        r.material?.kind === "clips" && r.material.clipIds?.length
-          ? { kind: "clips", clipIds: r.material.clipIds }
+        r.material?.kind === "clips" &&
+        ((r.material.clipIds?.length ?? 0) > 0 || (r.material.trackIds?.length ?? 0) > 0)
+          ? { kind: "clips", clipIds: r.material.clipIds, trackIds: r.material.trackIds }
           : { kind: "system" },
       a: r.aChain,
       b: r.bChain,
@@ -5732,7 +5765,7 @@ function MainApp() {
                   onClick={() => setLabMaterial(b.id)}
                 >
                   {b.name}
-                  <span className="mono dim-sm">{`${b.clipIds.length} clip${b.clipIds.length === 1 ? "" : "s"} · in-engine`}</span>
+                  <span className="mono dim-sm">{`${b.items.length} item${b.items.length === 1 ? "" : "s"} · in-engine`}</span>
                   <span className="spacer" />
                   <span
                     className="row-act"
@@ -5823,7 +5856,7 @@ function MainApp() {
                 onChange={(e) => setFinderQ(e.target.value)}
               />
               <div className="finder-meta mono dim-sm">
-                <span>{`${finderMatches().length} clip${finderMatches().length === 1 ? "" : "s"} match`}</span>
+                <span>{`${finderMatches().length} clip${finderMatches().length === 1 ? "" : "s"} · ${finderSongs().length} song${finderSongs().length === 1 ? "" : "s"}`}</span>
                 <span className="spacer" />
                 {finderSel.size > 0 && (
                   <span className="reveal-link" onClick={() => setFinderSel(new Set())}>
@@ -5833,22 +5866,25 @@ function MainApp() {
               </div>
             </div>
             <div className="finder-list">
-              {finderMatches().length === 0 && (
+              {finderMatches().length === 0 && finderSongs().length === 0 && (
                 <p className="dim-sm finder-pad">
-                  {library?.clips.length
+                  {library?.clips.length || library?.tracks.length
                     ? "nothing matches that query"
-                    : "no clips yet — cut some in Clip Studio first"}
+                    : "no material yet — import tracks and cut clips in Clip Studio first"}
                 </p>
+              )}
+              {finderMatches().length > 0 && (
+                <span className="mono lab-label c-sect">CLIPS</span>
               )}
               {finderMatches().map((c) => {
                 const t = library?.tracks.find((x) => x.id === c.trackId);
                 const n = testedCount(c.id);
-                const sel = finderSel.has(c.id);
+                const sel = finderSel.has(`c:${c.id}`);
                 return (
                   <div
                     key={c.id}
                     className={`finder-row ${sel ? "sel" : ""}`}
-                    onClick={() => toggleFinderSel(c.id)}
+                    onClick={() => toggleFinderSel(`c:${c.id}`)}
                   >
                     <span className={`f-check ${sel ? "on" : ""}`}>{sel ? "✓" : ""}</span>
                     {c.kind === "moment" ? (
@@ -5858,6 +5894,29 @@ function MainApp() {
                     )}
                     <span className={`f-name ${sel ? "b" : ""}`}>{c.name}</span>
                     <span className="dim-sm f-track">{`${t?.title ?? "?"} · ${fmtTime(Math.max(0, c.tOut - c.tIn))}`}</span>
+                    <span className="spacer" />
+                    <span className="mono dim-sm">{n > 0 ? `tested ${n}×` : "new"}</span>
+                  </div>
+                );
+              })}
+              {finderSongs().length > 0 && (
+                <span className="mono lab-label c-sect">SONGS — the whole track</span>
+              )}
+              {finderSongs().map((t) => {
+                const n = testedTrackCount(t.id);
+                const sel = finderSel.has(`t:${t.id}`);
+                return (
+                  <div
+                    key={t.id}
+                    className={`finder-row ${sel ? "sel" : ""}`}
+                    onClick={() => toggleFinderSel(`t:${t.id}`)}
+                  >
+                    <span className={`f-check ${sel ? "on" : ""}`}>{sel ? "✓" : ""}</span>
+                    <span className="mono f-moment">{t.kind === "signal" ? "∿" : "♪"}</span>
+                    <span className={`f-name ${sel ? "b" : ""}`}>{t.title}</span>
+                    <span className="dim-sm f-track">
+                      {`${t.artist ? `${t.artist} · ` : ""}${t.durationS ? fmtTime(t.durationS) : "full track"}`}
+                    </span>
                     <span className="spacer" />
                     <span className="mono dim-sm">{n > 0 ? `tested ${n}×` : "new"}</span>
                   </div>
@@ -5892,7 +5951,7 @@ function MainApp() {
                     )}
                     {batteries.map((b) => (
                       <div key={b.id} className="c-opt" onClick={() => overwriteBattery(b.id)}>
-                        {`${b.name} · ${b.clipIds.length} → ${finderSel.size} clips`}
+                        {`${b.name} · ${b.items.length} → ${finderSel.size} items`}
                       </div>
                     ))}
                   </div>
