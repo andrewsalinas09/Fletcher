@@ -367,6 +367,7 @@ function HistoryTree({
   onPopoutDiff,
   onGraft,
   notify,
+  onPickNode,
 }: {
   data: HistTreeData;
   onJump: (id: number) => void;
@@ -382,6 +383,9 @@ function HistoryTree({
   onCompare?: (spec: { sel: number | null; base: number | null; cmp: number[] }) => void;
   onPopoutDiff?: () => void;
   notify?: (msg: string) => void;
+  /** Contender-pick mode: clicking a node calls this instead of jumping —
+   *  the tree renders read-only-ish for choosing a blind-test side. */
+  onPickNode?: (id: number) => void;
 }) {
   const [zoom, setZoom] = useState(1);
   const [armed, setArmed] = useState<{ id: number; count: number } | null>(null);
@@ -489,6 +493,13 @@ function HistoryTree({
 
   const nodeClick = (e: React.MouseEvent, id: number) => {
     stopPreview();
+    // Contender-pick mode (the Lab's A/B picker): a click PICKS the node —
+    // nothing jumps, nothing mutates.
+    if (onPickNode) {
+      setSelId(id);
+      onPickNode(id);
+      return;
+    }
     if (pickMode) {
       setBaseSel(id === selNodeId ? null : id);
       setPickMode(false);
@@ -2058,7 +2069,9 @@ type Contender =
   | { kind: "active" }
   | { kind: "flat" }
   | { kind: "preset"; name: string }
-  | { kind: "node"; id: number };
+  | { kind: "node"; id: number }
+  /** A node picked from any preset's history — chain captured at pick time. */
+  | { kind: "picked"; name: string; chain: ChainSnap };
 
 type BatteryItem = { kind: "clip" | "track"; id: number };
 type BatteryRow = {
@@ -2976,6 +2989,8 @@ function MainApp() {
   };
   const [presets, setPresets] = useState<PresetsState>({ presets: [], active: null });
   const [menuOpen, setMenuOpen] = useState(false);
+  /** Keyboard cursor inside the preset palette (Q-23: the real search UI). */
+  const [palSel, setPalSel] = useState(0);
   const [eqMenu, setEqMenu] = useState(false);
   const [newName, setNewName] = useState("");
   const [typeMenu, setTypeMenu] = useState<{ i: number; x: number; y: number } | null>(null);
@@ -3809,6 +3824,8 @@ function MainApp() {
         const n = hist.current?.nodes.get(c.id);
         return n ? `node #${n.id} · ${n.label}` : `node #${c.id} (gone)`;
       }
+      case "picked":
+        return c.name;
     }
   };
 
@@ -3825,7 +3842,54 @@ function MainApp() {
         if (!n) throw new Error(`node #${c.id} is gone from the history`);
         return { chain: n.snap, name: `node #${n.id} · ${n.label}` };
       }
+      case "picked":
+        return { chain: c.chain, name: c.name };
     }
+  };
+
+  // ---- the contender palette: search presets, then pick from history ----
+  const [ctQ, setCtQ] = useState("");
+  const [ctSel, setCtSel] = useState(0);
+  const [pickTree, setPickTree] = useState<{ preset: string; data: HistTreeData } | null>(null);
+  const pickContenderDone = (side: "a" | "b", c: Contender) => {
+    (side === "a" ? setLabA : setLabB)(c);
+    setLabPick(null);
+    setPickTree(null);
+    setCtQ("");
+    setCtSel(0);
+  };
+  /** Preset chosen in the palette → its history opens (the exact history
+   *  popover); no saved tree (or just a root) → the saved chain directly. */
+  const openPresetContender = (side: "a" | "b", preset: string) => {
+    const finish = () => pickContenderDone(side, { kind: "preset", name: preset });
+    // The active preset's live tree is fresher than its disk copy.
+    if (preset === presetsRef.current.active && treeDataRef.current) {
+      if (treeDataRef.current.nodes.length > 1) {
+        setPickTree({ preset, data: { ...treeDataRef.current, name: preset } });
+      } else {
+        finish();
+      }
+      return;
+    }
+    invoke<string | null>("history_load", { preset })
+      .then((raw) => {
+        if (raw) {
+          try {
+            const d = JSON.parse(raw);
+            if (d?.version === 1 && Array.isArray(d.nodes) && d.nodes.length > 1) {
+              setPickTree({
+                preset,
+                data: { nodes: d.nodes, current: d.current ?? 0, name: preset },
+              });
+              return;
+            }
+          } catch {
+            /* unreadable tree — fall through to the saved chain */
+          }
+        }
+        finish();
+      })
+      .catch(finish);
   };
 
   // ---- the Finder: search clips AND whole songs, assemble batteries ----
@@ -5673,62 +5737,161 @@ function MainApp() {
             <span className="mono lab-label">NEW TEST</span>
             {(["a", "b"] as const).map((side) => {
               const c = side === "a" ? labA : labB;
-              const pick = (v: Contender) => {
-                (side === "a" ? setLabA : setLabB)(v);
-                setLabPick(null);
-              };
-              const nodes = (() => {
-                const h = hist.current;
-                if (!h) return [] as HistNode[];
-                const all = [...h.nodes.values()];
-                const pinned = all.filter((n) => n.pinned);
-                const recent = all
-                  .filter((n) => !n.pinned)
-                  .sort((x, y) => y.ts - x.ts)
-                  .slice(0, 6);
-                return [...pinned, ...recent];
-              })();
+              const q = ctQ.trim().toLowerCase();
+              const liveLabel = presets.active
+                ? `${presets.active} · the live chain`
+                : "Current chain";
+              const ctRows: { key: string; label: string; sub?: string; run: () => void }[] = [];
+              if (!q || "flat reference".includes(q)) {
+                ctRows.push({
+                  key: "flat",
+                  label: "Flat reference",
+                  sub: "no filters",
+                  run: () => pickContenderDone(side, { kind: "flat" }),
+                });
+              }
+              if (!q || liveLabel.toLowerCase().includes(q)) {
+                ctRows.push({
+                  key: "live",
+                  label: liveLabel,
+                  sub: "exactly as it sounds right now",
+                  run: () => pickContenderDone(side, { kind: "active" }),
+                });
+              }
+              presets.presets
+                .filter((p) => !q || p.toLowerCase().includes(q))
+                .sort((x, y) => {
+                  const sx = x.toLowerCase().startsWith(q) ? 0 : 1;
+                  const sy = y.toLowerCase().startsWith(q) ? 0 : 1;
+                  return sx - sy || x.localeCompare(y);
+                })
+                .forEach((p) =>
+                  ctRows.push({
+                    key: `p:${p}`,
+                    label: p,
+                    sub: "preset — Enter opens its history",
+                    run: () => openPresetContender(side, p),
+                  }),
+                );
+              const cur = Math.min(ctSel, Math.max(0, ctRows.length - 1));
               return (
                 <div key={side} className="lab-cfield">
                   <span className="mono lab-ckey">{side.toUpperCase()}</span>
                   <div
                     className="contender"
-                    onClick={() => setLabPick(labPick === side ? null : side)}
+                    onClick={() => {
+                      setCtQ("");
+                      setCtSel(0);
+                      setLabPick(labPick === side ? null : side);
+                    }}
                   >
                     <span className="contender-name">{contenderName(c)}</span>
                     <span className="spacer" />
                     <span className="dim-sm">▾</span>
                   </div>
-                  {labPick === side && (
-                    <div className="preset-menu contender-menu">
-                      <div className="c-opt" onClick={() => pick({ kind: "flat" })}>
-                        Flat reference
-                      </div>
-                      <div className="c-opt" onClick={() => pick({ kind: "active" })}>
-                        {presets.active
-                          ? `${presets.active} · the live chain`
-                          : "Current chain (no preset active)"}
-                      </div>
-                      {presets.presets.length > 0 && (
-                        <span className="mono lab-label c-sect">PRESETS</span>
-                      )}
-                      {presets.presets.map((p) => (
-                        <div key={p} className="c-opt" onClick={() => pick({ kind: "preset", name: p })}>
-                          {p}
+                  {labPick === side && !pickTree && (
+                    <>
+                      <div
+                        className="hist-backdrop"
+                        onClick={() => {
+                          setLabPick(null);
+                          setCtQ("");
+                        }}
+                      />
+                      <div className="palette">
+                        <input
+                          className="pal-input mono"
+                          autoFocus
+                          placeholder={`search presets for ${side.toUpperCase()}…`}
+                          value={ctQ}
+                          onChange={(e) => {
+                            setCtQ(e.target.value);
+                            setCtSel(0);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === "ArrowDown") {
+                              e.preventDefault();
+                              setCtSel((s) => Math.min(s + 1, ctRows.length - 1));
+                            } else if (e.key === "ArrowUp") {
+                              e.preventDefault();
+                              setCtSel((s) => Math.max(s - 1, 0));
+                            } else if (e.key === "Enter") {
+                              e.preventDefault();
+                              ctRows[cur]?.run();
+                            } else if (e.key === "Escape") {
+                              setLabPick(null);
+                              setCtQ("");
+                            }
+                          }}
+                        />
+                        <div className="pal-list">
+                          {ctRows.length === 0 && (
+                            <p className="dim-sm finder-pad">nothing matches</p>
+                          )}
+                          {ctRows.map((r, i) => (
+                            <div
+                              key={r.key}
+                              className={`preset-row ${i === cur ? "kbd" : ""}`}
+                              onMouseEnter={() => setCtSel(i)}
+                              onClick={r.run}
+                            >
+                              <span>{r.label}</span>
+                              <span className="spacer" />
+                              {r.sub && <span className="dim-sm">{r.sub}</span>}
+                            </div>
+                          ))}
                         </div>
-                      ))}
-                      {nodes.length > 0 && <span className="mono lab-label c-sect">HISTORY</span>}
-                      {nodes.map((n) => (
-                        <div key={n.id} className="c-opt" onClick={() => pick({ kind: "node", id: n.id })}>
-                          {`#${n.id} · ${n.label}`}
-                          {n.pinned ? <span className="dim-sm"> · pinned</span> : null}
+                        <div className="pal-foot mono dim-sm">
+                          ↑↓ navigate · Enter select · Esc close · picking a preset opens its
+                          history to choose any node
                         </div>
-                      ))}
-                    </div>
+                      </div>
+                    </>
                   )}
                 </div>
               );
             })}
+            {pickTree && labPick && (
+              <>
+                <div className="hist-backdrop" onClick={() => setPickTree(null)} />
+                <div className="hist-panel">
+                  <div className="hist-head">
+                    <span className="mono hist-title">{`PICK ${labPick.toUpperCase()} — HISTORY · ${pickTree.preset}`}</span>
+                    <span className="dim-sm">click any node to use its exact sound</span>
+                    <span className="spacer" />
+                    <button
+                      onClick={() =>
+                        pickContenderDone(labPick, { kind: "preset", name: pickTree.preset })
+                      }
+                    >
+                      Use as saved
+                    </button>
+                    <span className="row-act" onClick={() => setPickTree(null)}>
+                      ×
+                    </span>
+                  </div>
+                  <HistoryTree
+                    data={pickTree.data}
+                    onJump={() => {}}
+                    onDelete={() => {}}
+                    onEdit={() => {}}
+                    onPreview={() => {}}
+                    onAbx={() => {}}
+                    onPromote={() => {}}
+                    notify={showNotice}
+                    onPickNode={(id) => {
+                      const n = pickTree.data.nodes.find((x) => x.id === id);
+                      if (!n) return;
+                      pickContenderDone(labPick, {
+                        kind: "picked",
+                        name: `#${n.id} · ${n.label} (${pickTree.preset})`,
+                        chain: n.snap,
+                      });
+                    }}
+                  />
+                </div>
+              </>
+            )}
             <div className="lab-cfield">
               <span className="mono lab-ckey">QUESTION</span>
               <div
@@ -7213,17 +7376,78 @@ function MainApp() {
         <>
           <div className="preset-line">
             <span className="preset-wrap">
-              <span className="preset-chip" onClick={() => setMenuOpen((o) => !o)}>
+              <span
+                className="preset-chip"
+                onClick={() => {
+                  setAeq("");
+                  setPalSel(0);
+                  setMenuOpen((o) => !o);
+                }}
+              >
                 <b>{presets.active ?? "No preset"}</b>
                 <span className="dim-sm">{state.sourceFiles.join(" + ")}</span>
                 <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6">
                   <path d="M4 6l4 4 4-4" />
                 </svg>
               </span>
-              {menuOpen && (
-                <div className="preset-menu">
+              {menuOpen &&
+                (() => {
+                  // One query searches everything: your presets AND AutoEQ.
+                  const eqQ = aeq.trim().toLowerCase();
+                  const eqPresetRows = presets.presets
+                    .filter((p) => !eqQ || p.toLowerCase().includes(eqQ))
+                    .sort((x, y) => {
+                      const sx = x.toLowerCase().startsWith(eqQ) ? 0 : 1;
+                      const sy = y.toLowerCase().startsWith(eqQ) ? 0 : 1;
+                      return sx - sy || x.localeCompare(y);
+                    });
+                  const pickables: { key: string; run: () => void }[] = [
+                    ...(!eqQ || "flat".includes(eqQ)
+                      ? [{ key: "flat", run: () => switchPreset(null) }]
+                      : []),
+                    ...eqPresetRows.map((p) => ({
+                      key: `p:${p}`,
+                      run: () => switchPreset(p),
+                    })),
+                    ...aeqResults.map((r) => ({
+                      key: `aeq:${r.path}/${r.name}`,
+                      run: () => importAeq(r),
+                    })),
+                  ];
+                  const cur = Math.min(palSel, Math.max(0, pickables.length - 1));
+                  const isKbd = (key: string) => pickables[cur]?.key === key;
+                  return (
+                    <>
+                      <div className="hist-backdrop" onClick={() => setMenuOpen(false)} />
+                      <div className="palette">
+                        <input
+                          className="pal-input mono"
+                          autoFocus
+                          placeholder="search your presets and 5,000+ AutoEQ headphones…"
+                          value={aeq}
+                          onChange={(e) => {
+                            setAeq(e.target.value);
+                            setPalSel(0);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === "ArrowDown") {
+                              e.preventDefault();
+                              setPalSel((s) => Math.min(s + 1, pickables.length - 1));
+                            } else if (e.key === "ArrowUp") {
+                              e.preventDefault();
+                              setPalSel((s) => Math.max(s - 1, 0));
+                            } else if (e.key === "Enter") {
+                              e.preventDefault();
+                              pickables[cur]?.run();
+                            } else if (e.key === "Escape") {
+                              setMenuOpen(false);
+                            }
+                          }}
+                        />
+                        <div className="pal-list">
+                  {(!eqQ || "flat".includes(eqQ)) && (
                   <div
-                    className={`preset-row ${presets.active == null ? "current" : ""}`}
+                    className={`preset-row ${presets.active == null ? "current" : ""} ${isKbd("flat") ? "kbd" : ""}`}
                     onClick={() => switchPreset(null)}
                     {...tipProps(
                       <div>
@@ -7238,7 +7462,8 @@ function MainApp() {
                   >
                     <span>Flat — no Fletcher filters</span>
                   </div>
-                  {state.includes
+                  )}
+                  {!eqQ && state.includes
                     .filter((inc) => inc.toLowerCase() !== OWN_FILE)
                     .map((inc) => {
                       const count = state.filters.filter(
@@ -7285,10 +7510,13 @@ function MainApp() {
                         </div>
                       );
                     })}
-                  {presets.presets.map((p) => (
+                  {eqPresetRows.length > 0 && (
+                    <span className="mono lab-label c-sect">YOUR PRESETS</span>
+                  )}
+                  {eqPresetRows.map((p) => (
                     <div
                       key={p}
-                      className={`preset-row ${presets.active === p ? "current" : ""}`}
+                      className={`preset-row ${presets.active === p ? "current" : ""} ${isKbd(`p:${p}`) ? "kbd" : ""}`}
                       onClick={() => switchPreset(p)}
                       {...tipProps(
                         <div>
@@ -7350,25 +7578,26 @@ function MainApp() {
                     </div>
                   ))}
                   <div className="aeq-block">
-                    <span className="mono aeq-label">GET A HEADPHONE PRESET — AUTOEQ</span>
-                    <input
-                      className="aeq-input"
-                      placeholder="search 5,000+ headphones… e.g. HD 650"
-                      value={aeq}
-                      onClick={(e) => e.stopPropagation()}
-                      onChange={(e) => setAeq(e.target.value)}
-                    />
+                    <span className="mono aeq-label">
+                      {eqQ.length >= 2
+                        ? "FROM AUTOEQ — imports as a new preset"
+                        : "AUTOEQ — type 2+ letters above to search 5,000+ headphones"}
+                    </span>
                     {importing && <div className="preset-row"><span className="dim-sm">importing…</span></div>}
                     {!importing &&
                       aeqResults.map((r) => (
-                        <div key={`${r.path}/${r.name}`} className="preset-row" onClick={() => importAeq(r)}>
+                        <div
+                          key={`${r.path}/${r.name}`}
+                          className={`preset-row ${isKbd(`aeq:${r.path}/${r.name}`) ? "kbd" : ""}`}
+                          onClick={() => importAeq(r)}
+                        >
                           <span>{r.name}</span>
                           <span className="spacer" />
                           <span className="dim-sm">{r.note.replace(/^by /, "")}</span>
                         </div>
                       ))}
-                    {!importing && aeq.trim().length >= 2 && aeqResults.length === 0 && (
-                      <div className="preset-row"><span className="dim-sm">no matches</span></div>
+                    {!importing && eqQ.length >= 2 && aeqResults.length === 0 && (
+                      <div className="preset-row"><span className="dim-sm">no AutoEQ matches</span></div>
                     )}
                   </div>
                   <div className="preset-new">
@@ -7383,8 +7612,14 @@ function MainApp() {
                     </button>
                     <button onClick={() => createPreset(false)} title="start from flat — no filters, build your own">From flat</button>
                   </div>
-                </div>
-              )}
+                        </div>
+                        <div className="pal-foot mono dim-sm">
+                          ↑↓ navigate · Enter select · Esc close
+                        </div>
+                      </div>
+                    </>
+                  );
+                })()}
             </span>
             <span className="preset-wrap">
               <span

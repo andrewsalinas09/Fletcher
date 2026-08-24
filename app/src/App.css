@@ -1084,6 +1084,52 @@ button.ghost {
   gap: 10px;
 }
 
+/* The palette: the app's one search surface (Q-23) — presets, contenders. */
+.palette {
+  position: fixed;
+  left: 50%;
+  top: 14vh;
+  transform: translateX(-50%);
+  width: 560px;
+  max-width: 92vw;
+  max-height: 72vh;
+  z-index: 600;
+  background: #fffdf6;
+  border: 2px solid var(--ink);
+  box-shadow: 6px 6px 0 rgb(20 23 26 / 15%);
+  display: flex;
+  flex-direction: column;
+}
+
+.pal-input {
+  border: none;
+  border-bottom: 1px solid var(--ink);
+  background: transparent;
+  color: var(--ink);
+  font-size: 14px;
+  padding: 12px 16px;
+  outline: none;
+}
+
+.pal-list {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  padding: 4px 0;
+}
+
+.pal-foot {
+  border-top: 1px solid var(--line-mid);
+  padding: 7px 16px;
+  font-size: 10px;
+}
+
+/* keyboard cursor — distinct from .current (the active preset) */
+.preset-row.kbd {
+  background: var(--panel-alt, #ece8df);
+  box-shadow: inset 2px 0 0 var(--boost, #c85a13);
+}
+
 .agg-strip {
   border: 1px solid var(--line-mid);
   background: var(--paper);
