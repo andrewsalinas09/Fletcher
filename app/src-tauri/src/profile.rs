@@ -171,7 +171,7 @@ impl Source for ProfileSource {
         }
         let interval = (INTERVAL_S * self.fs) as u64;
         let gap = (GAP_S * self.fs) as u64;
-        for frame in buf.chunks_exact_mut(2) {
+        for frame in buf.as_chunks_mut::<2>().0 {
             let s = match &mut self.state {
                 SrcState::Idle => 0.0,
                 SrcState::Loop(sig) => {

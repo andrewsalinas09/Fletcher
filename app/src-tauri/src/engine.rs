@@ -159,7 +159,7 @@ impl Source for TrackSource {
                 .clamp(SCRUB_MAX_RANGE.0, SCRUB_MAX_RANGE.1);
             let alpha = 1.0 - (-1.0 / (tau * fs)).exp();
             let max_i = total.saturating_sub(2);
-            for frame in buf.chunks_exact_mut(2) {
+            for frame in buf.as_chunks_mut::<2>().0 {
                 let mut diff = target - self.scrub_cursor;
                 if diff.abs() > 2.0 * fs {
                     // A far click teleports rather than screaming across.
@@ -199,7 +199,7 @@ impl Source for TrackSource {
         } else {
             0.0
         };
-        for frame in buf.chunks_exact_mut(2) {
+        for frame in buf.as_chunks_mut::<2>().0 {
             if pos >= total {
                 frame[0] = 0.0;
                 frame[1] = 0.0;
@@ -262,7 +262,7 @@ pub fn lufs_peak_through(
     let mut out = vec![0f64; 19_200];
     for block in pcm.chunks(19_200) {
         out.resize(block.len(), 0.0);
-        for (i, fr) in block.chunks_exact(2).enumerate() {
+        for (i, fr) in block.as_chunks::<2>().0.iter().enumerate() {
             let (l, r) = chain.process_frame(fr[0] as f64, fr[1] as f64);
             peak = peak.max(l.abs()).max(r.abs());
             out[i * 2] = l;

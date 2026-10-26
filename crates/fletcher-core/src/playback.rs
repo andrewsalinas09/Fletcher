@@ -110,7 +110,7 @@ impl Source for SignalSource {
         if self.signals.is_empty() {
             return false;
         }
-        for frame in buf.chunks_exact_mut(2) {
+        for frame in buf.as_chunks_mut::<2>().0 {
             let (done, env) = match self.frames_left.as_mut() {
                 Some(0) => (true, 0.0),
                 Some(n) => {
