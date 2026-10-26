@@ -236,6 +236,27 @@ fn chain_of(filters: &[FilterIn]) -> Result<Vec<ChainFilter>, String> {
         .collect()
 }
 
+/// The single writer of fletcher.txt. Writes the file, then guarantees
+/// config.txt includes it (ADR-0007) — the wiring is lost whenever APO is
+/// reinstalled/reset or another tool rewrites config.txt, and without it every
+/// Fletcher write is silently inaudible and invisible. Only appends the one
+/// line; backs config.txt up once before the first touch.
+fn write_fletcher_file(config_dir: &std::path::Path, text: &str) -> Result<(), String> {
+    fsx::write_atomic(&config_dir.join("fletcher.txt"), text).map_err(|e| e.to_string())?;
+    let root_path = config_dir.join("config.txt");
+    let root_text = std::fs::read_to_string(&root_path).unwrap_or_default();
+    let mut root = ConfigDoc::parse(&root_text);
+    if root.ensure_include("fletcher.txt") {
+        let backup = config_dir.join("config.txt.before-fletcher.bak");
+        if !backup.exists() {
+            fsx::write_atomic(&backup, &root_text).map_err(|e| e.to_string())?;
+        }
+        fsx::write_atomic(&root_path, &root.to_string())
+            .map_err(|e| format!("cannot wire fletcher.txt into config.txt: {e}"))?;
+    }
+    Ok(())
+}
+
 /// Replace Fletcher's own chain (fletcher.txt) with the given filters.
 /// Auto-preamp is computed from the summed response peak (TB-06), the file
 /// is written atomically (TB-11), and APO hot-reloads it. Returns the fresh
@@ -249,8 +270,7 @@ fn set_fletcher_chain(filters: Vec<FilterIn>) -> Result<EqState, String> {
     let preamp = matched_preamp(&specs);
 
     let text = render_fletcher_file(preamp, &chain);
-    fsx::write_atomic(&install.config_path.join("fletcher.txt"), &text)
-        .map_err(|e| e.to_string())?;
+    write_fletcher_file(&install.config_path, &text)?;
     push_chain_to_track(&chain);
 
     // Edits persist into the active preset, so switching away and back keeps them.
@@ -269,11 +289,7 @@ fn activate_chain(chain: &[ChainFilter]) -> Result<(), String> {
     let install = apo::detect().map_err(|e| e.to_string())?;
     let specs = specs_of(chain);
     let preamp = matched_preamp(&specs);
-    fsx::write_atomic(
-        &install.config_path.join("fletcher.txt"),
-        &render_fletcher_file(preamp, chain),
-    )
-    .map_err(|e| e.to_string())?;
+    write_fletcher_file(&install.config_path, &render_fletcher_file(preamp, chain))?;
     push_chain_to_track(chain);
     Ok(())
 }
@@ -491,11 +507,10 @@ fn apply_side(side: &str) -> Result<(), String> {
     match side {
         "b" => {
             let install = apo::detect().map_err(|e| e.to_string())?;
-            fsx::write_atomic(
-                &install.config_path.join("fletcher.txt"),
+            write_fletcher_file(
+                &install.config_path,
                 &render_fletcher_file(matched_preamp(&[]), &[]),
             )
-            .map_err(|e| e.to_string())
         }
         _ => activate_chain(&chain),
     }
