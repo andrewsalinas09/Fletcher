@@ -4,7 +4,7 @@
 use fletcher_core::config::{render_fletcher_file, ChainFilter, ConfigDoc, FilterKind, Parsed};
 use fletcher_core::dsp::{auto_preamp_db, chain_response_db, log_freqs, FilterSpec};
 use fletcher_core::presets::{sanitize_name, PresetStore};
-use fletcher_core::{apo, devices, dsp, fsx};
+use fletcher_core::{apo, devices, dsp, fsx, rew};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -167,7 +167,8 @@ fn eq_state() -> Result<EqState, String> {
     }
 
     let mut preamp_db = 0.0;
-    let mut filters: Vec<(bool, FilterKind, f64, f64, f64, String)> = Vec::new();
+    // q stays an Option: an unwritten Q means something specific to APO (TB-34).
+    let mut filters: Vec<(bool, FilterKind, f64, f64, Option<f64>, String)> = Vec::new();
     let mut source_files = Vec::new();
     for (name, doc) in &docs {
         let mut contributed = false;
@@ -190,7 +191,7 @@ fn eq_state() -> Result<EqState, String> {
                         *kind,
                         fc_hz.unwrap_or(1000.0),
                         gain_db.unwrap_or(0.0),
-                        q.unwrap_or(std::f64::consts::FRAC_1_SQRT_2),
+                        *q,
                         name.clone(),
                     ));
                     contributed = true;
@@ -204,28 +205,33 @@ fn eq_state() -> Result<EqState, String> {
     }
 
     let freqs = log_freqs(20.0, 20000.0, CURVE_POINTS);
+    // Every line is drawn and summed as the filter APO actually plays (TB-34);
+    // one APO rejects (a Q-less PK) contributes nothing, as in APO.
+    let resolved: Vec<Option<FilterSpec>> = filters
+        .iter()
+        .map(|&(_, kind, fc_hz, gain_db, q, _)| dsp::apo_resolve(kind, fc_hz, gain_db, q))
+        .collect();
     let specs: Vec<FilterSpec> = filters
         .iter()
-        .filter(|f| f.0)
-        .map(|&(_, kind, fc_hz, gain_db, q, _)| FilterSpec {
-            kind,
-            fc_hz,
-            gain_db,
-            q,
-        })
+        .zip(&resolved)
+        .filter(|(f, _)| f.0)
+        .filter_map(|(_, r)| *r)
         .collect();
     let sum_db = chain_response_db(&specs, preamp_db, FS, &freqs);
 
     let filter_dtos = filters
         .iter()
-        .map(|(enabled, kind, fc_hz, gain_db, q, source)| {
-            let biquad = dsp::Biquad::rbj(*kind, FS, *fc_hz, *gain_db, *q);
+        .zip(&resolved)
+        .map(|((enabled, kind, fc_hz, gain_db, q, source), r)| {
+            let biquad = r.map_or(dsp::Biquad::IDENTITY, |r| r.biquad(FS));
             EqFilter {
                 enabled: *enabled,
                 kind: kind.code(),
                 fc_hz: *fc_hz,
                 gain_db: *gain_db,
-                q: *q,
+                // An unwritten Q shows the one APO uses (30 for a bare NO).
+                q: q.or(r.map(|r| r.q))
+                    .unwrap_or(std::f64::consts::FRAC_1_SQRT_2),
                 response_db: freqs.iter().map(|&f| biquad.magnitude_db(f, FS)).collect(),
                 source_file: source.clone(),
             }
@@ -434,13 +440,7 @@ fn preset_copy_from_source(source: String, name: String) -> Result<PresetsState,
                 gain_db,
                 q,
                 ..
-            } => chain.push(ChainFilter {
-                enabled: *enabled,
-                kind: *kind,
-                fc_hz: fc_hz.unwrap_or(1000.0),
-                gain_db: gain_db.unwrap_or(0.0),
-                q: q.unwrap_or(std::f64::consts::FRAC_1_SQRT_2),
-            }),
+            } => chain.extend(own_filter(*enabled, *kind, *fc_hz, *gain_db, *q)),
             _ => {}
         }
     }
@@ -713,20 +713,53 @@ fn autoeq_import_sync(name: &str, path: &str) -> Result<(), String> {
                 gain_db,
                 q,
                 ..
-            } => chain.push(ChainFilter {
-                enabled: *enabled,
-                kind: *kind,
-                fc_hz: fc_hz.unwrap_or(1000.0),
-                gain_db: gain_db.unwrap_or(0.0),
-                q: q.unwrap_or(std::f64::consts::FRAC_1_SQRT_2),
-            }),
+            } => chain.extend(own_filter(*enabled, *kind, *fc_hz, *gain_db, *q)),
             _ => {}
         }
     }
     if chain.is_empty() {
         return Err("that AutoEQ entry contained no parametric filters".into());
     }
+    import_as_preset(name, preamp, &chain).map(|_| ())
+}
 
+/// Adopt a filter line from a file Fletcher doesn't own into Fletcher's chain,
+/// keeping its SOUND (TB-34). Fletcher always writes a Q, and APO reads a
+/// written Q differently from an unwritten one (a bare `NO` is Q 30; a bare
+/// `LS` is slope S 0.9 at center, while `LS … Q` is a corner shelf). So a line
+/// without a Q is resolved to the identical fully written filter first. A line
+/// with a Q is kept verbatim, since Fletcher rewrites it the same way. `None` =
+/// APO plays nothing for it (a Q-less PK), so there's nothing to adopt.
+fn own_filter(
+    enabled: bool,
+    kind: FilterKind,
+    fc_hz: Option<f64>,
+    gain_db: Option<f64>,
+    q: Option<f64>,
+) -> Option<ChainFilter> {
+    let fc_hz = fc_hz.unwrap_or(1000.0);
+    let gain_db = gain_db.unwrap_or(0.0);
+    match q {
+        Some(q) => Some(ChainFilter {
+            enabled,
+            kind,
+            fc_hz,
+            gain_db,
+            q,
+        }),
+        None => dsp::apo_resolve(kind, fc_hz, gain_db, None).map(|r| ChainFilter {
+            enabled,
+            kind: r.kind,
+            fc_hz: r.fc_hz,
+            gain_db: r.gain_db,
+            q: r.q,
+        }),
+    }
+}
+
+/// Save an imported chain as a NEW preset (auto-suffixed, never overwriting)
+/// and make it the active, audible one on side A. Returns the preset's name.
+fn import_as_preset(name: &str, preamp: f64, chain: &[ChainFilter]) -> Result<String, String> {
     let st = store()?;
     let base = sanitize_name(name).ok_or("unusable preset name")?;
     let mut preset_name = base.clone();
@@ -735,12 +768,78 @@ fn autoeq_import_sync(name: &str, path: &str) -> Result<(), String> {
         preset_name = format!("{base} {n}");
         n += 1;
     }
-    st.save(&preset_name, preamp, &chain)
+    st.save(&preset_name, preamp, chain)
         .map_err(|e| e.to_string())?;
-    activate_chain(&chain)?;
+    activate_chain(chain)?;
     set_active_preset(Some(&preset_name));
     set_ab_side("a");
-    Ok(())
+    Ok(preset_name)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RewSkippedDto {
+    line: usize,
+    text: String,
+    reason: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RewImportResult {
+    preset: String,
+    imported: usize,
+    /// Lines that couldn't be reproduced exactly — shown to the user, never
+    /// silently dropped (issue #1).
+    skipped: Vec<RewSkippedDto>,
+    state: EqState,
+}
+
+/// Import a REW "Export filter settings as text" file as a new preset
+/// (GitHub issue #1). Interpreted exactly as Equalizer APO would play it.
+#[tauri::command]
+fn rew_import(path: String) -> Result<RewImportResult, String> {
+    let bytes = std::fs::read(&path).map_err(|e| format!("couldn't read {path}: {e}"))?;
+    if bytes.starts_with(&[0xAC, 0xED]) {
+        // Java serialization magic: REW's own .req "Save filter settings" file.
+        return Err("that's REW's own save file (.req), which only REW can read. In REW's EQ window use File › Export › Export filter settings as text, then import that .txt".into());
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    let parsed = rew::parse_rew(&text);
+    if parsed.filters.is_empty() {
+        return Err(if parsed.skipped.is_empty() {
+            "no REW filters found in that file — it needs lines like “Filter 1: ON PK Fc 63 Hz Gain -4 dB Q 2”".into()
+        } else {
+            format!(
+                "none of the {} filter(s) could be imported exactly: {}",
+                parsed.skipped.len(),
+                parsed.skipped[0].reason
+            )
+        });
+    }
+    let stem = std::path::Path::new(&path)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "REW import".into());
+    let preset = import_as_preset(
+        &stem,
+        preset_preamp(&specs_of(&parsed.filters)),
+        &parsed.filters,
+    )?;
+    Ok(RewImportResult {
+        preset,
+        imported: parsed.filters.len(),
+        skipped: parsed
+            .skipped
+            .into_iter()
+            .map(|s| RewSkippedDto {
+                line: s.line,
+                text: s.text,
+                reason: s.reason,
+            })
+            .collect(),
+        state: eq_state()?,
+    })
 }
 
 #[tauri::command]
@@ -762,9 +861,23 @@ struct PastedFilter {
 }
 
 /// Parse clipboard text as APO filter lines (one or many — pasting a whole
-/// preset's worth of lines works). Non-filter lines are ignored.
+/// preset's worth of lines works). Non-filter lines are ignored. A pasted REW
+/// export goes through the REW reader, so it lands exactly as APO would play it.
 #[tauri::command]
 fn parse_filters(text: String) -> Vec<PastedFilter> {
+    if rew::looks_like_rew(&text) {
+        return rew::parse_rew(&text)
+            .filters
+            .into_iter()
+            .map(|f| PastedFilter {
+                enabled: f.enabled,
+                kind: f.kind.code(),
+                fc_hz: f.fc_hz,
+                gain_db: f.gain_db,
+                q: f.q,
+            })
+            .collect();
+    }
     ConfigDoc::parse(&text)
         .directives()
         .filter_map(|d| match d {
@@ -775,12 +888,12 @@ fn parse_filters(text: String) -> Vec<PastedFilter> {
                 gain_db,
                 q,
                 ..
-            } => Some(PastedFilter {
-                enabled: *enabled,
-                kind: kind.code(),
-                fc_hz: fc_hz.unwrap_or(1000.0),
-                gain_db: gain_db.unwrap_or(0.0),
-                q: q.unwrap_or(std::f64::consts::FRAC_1_SQRT_2),
+            } => own_filter(*enabled, *kind, *fc_hz, *gain_db, *q).map(|f| PastedFilter {
+                enabled: f.enabled,
+                kind: f.kind.code(),
+                fc_hz: f.fc_hz,
+                gain_db: f.gain_db,
+                q: f.q,
             }),
             _ => None,
         })
@@ -5147,6 +5260,7 @@ pub fn run() {
             profile_delete,
             autoeq_search,
             autoeq_import,
+            rew_import,
             preset_rename,
             parse_filters,
             chain_curves,

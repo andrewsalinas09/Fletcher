@@ -47,6 +47,8 @@ const fOf = (x: number) =>
 const fmtHz = (hz: number) =>
   hz >= 1000 ? `${+(hz / 1000).toFixed(2)}k` : `${+hz.toFixed(0)}`;
 const fmtGain = (g: number) => `${g > 0 ? "+" : ""}${+g.toFixed(1)}`;
+/** Imports compute exact Qs (a REW shelf's equivalent Q is 0.6708203932…); show three places. */
+const fmtQ = (q: number) => `${+q.toFixed(3)}`;
 
 function pathFrom(freqs: number[], dbs: number[], yOf: (db: number) => number): string {
   return dbs
@@ -328,7 +330,7 @@ function DiffRowView({ row }: { row: DiffRow }) {
       <div className={`diff-row ${row.t}`}>
         <span className="mono d-tag">{row.t === "added" ? "+add" : "−rem"}</span>
         <TypeGlyph kind={f.kind} boost={f.gainDb >= 0} />
-        <span className="mono d-txt">{`${f.kind} ${fmtHz(f.fcHz)} ${fmtGain(f.gainDb)} dB Q ${f.q}`}</span>
+        <span className="mono d-txt">{`${f.kind} ${fmtHz(f.fcHz)} ${fmtGain(f.gainDb)} dB Q ${fmtQ(f.q)}`}</span>
       </div>
     );
   }
@@ -343,7 +345,7 @@ function DiffRowView({ row }: { row: DiffRow }) {
       <span key="g" className={`d-delta ${dg >= 0 ? "boost" : "cut"}`}>{`${fmtGain(dg)} dB`}</span>,
     );
   if (Math.abs(b.q - a.q) >= 0.005)
-    parts.push(<span key="q" className="d-delta">{`Q ${a.q}→${b.q}`}</span>);
+    parts.push(<span key="q" className="d-delta">{`Q ${fmtQ(a.q)}→${fmtQ(b.q)}`}</span>);
   if (b.enabled !== a.enabled)
     parts.push(<span key="e" className="d-delta">{b.enabled ? "enabled" : "bypassed"}</span>);
   return (
@@ -3258,6 +3260,40 @@ function MainApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [aeq]);
 
+  // GitHub issue #1: REW's "Export filter settings as text" → a new preset,
+  // read exactly as Equalizer APO would play it. Skipped lines are named, never hidden.
+  const importRew = async () => {
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const path = await open({
+        multiple: false,
+        filters: [{ name: "REW filter settings", extensions: ["txt"] }],
+      });
+      if (typeof path !== "string") return;
+      setImporting(true);
+      const r = await invoke<{
+        preset: string;
+        imported: number;
+        skipped: { line: number; text: string; reason: string }[];
+        state: EqState;
+      }>("rew_import", { path });
+      setState(r.state);
+      refreshPresets();
+      loadOrInitHistory(r.preset, snapOf(r.state.filters));
+      setMenuOpen(false);
+      const head = `imported ${r.imported} filter${r.imported === 1 ? "" : "s"} from REW as “${r.preset}”`;
+      showNotice(
+        r.skipped.length === 0
+          ? `${head} — it's your active preset now`
+          : `${head}. Skipped ${r.skipped.length}: ${r.skipped.map((s) => `line ${s.line} (${s.reason})`).join("; ")}`,
+      );
+    } catch (e) {
+      showNotice(String(e));
+    } finally {
+      setImporting(false);
+    }
+  };
+
   const importAeq = (entry: AutoeqEntry) => {
     setImporting(true);
     invoke<EqState>("autoeq_import", { name: entry.name, path: entry.path })
@@ -5632,6 +5668,12 @@ function MainApp() {
 
   const dbOfR = (y: number, r: number) => ((GH / 2 - y) / (GH / 2 - 30)) * r;
   const yOf = (db: number) => GH / 2 - (db / dbRange) * (GH / 2 - 30);
+  // Curves beyond the scale ride the plot's edge instead of vanishing: a chain
+  // far below the floor (a REW import stacking LP + HP) stays one continuous,
+  // visibly off-scale line. Handles still use the exact yOf.
+  const plotFloorDb = dbOfR(GH - 26, dbRange);
+  const plotCeilDb = dbOfR(2, dbRange);
+  const yOfPinned = (db: number) => yOf(Math.max(plotFloorDb, Math.min(plotCeilDb, db)));
 
   const gridSteps = useMemo(() => {
     const minor: number[] = [];
@@ -5667,7 +5709,7 @@ function MainApp() {
         <div className="t-title">{`${f.kind} — ${info.name}`}</div>
         <p>{info.desc}</p>
         <p className="t-vals mono">
-          {`Fc ${fmtHz(f.fcHz)} Hz · ${fmtGain(f.gainDb)} dB · Q ${f.q}${f.enabled ? "" : " · bypassed"}`}
+          {`Fc ${fmtHz(f.fcHz)} Hz · ${fmtGain(f.gainDb)} dB · Q ${fmtQ(f.q)}${f.enabled ? "" : " · bypassed"}`}
         </p>
         {editable ? (
           <p className="t-keys">
@@ -8454,6 +8496,13 @@ function MainApp() {
                       From live
                     </button>
                     <button onClick={() => createPreset(false)} title="start from flat — no filters, build your own">From flat</button>
+                    <button
+                      onClick={importRew}
+                      disabled={importing}
+                      title="import a Room EQ Wizard filter export (EQ window › File › Export › Export filter settings as text) — read exactly as Equalizer APO would play it"
+                    >
+                      From REW file…
+                    </button>
                   </div>
                         </div>
                         <div className="pal-foot mono dim-sm">
@@ -8615,6 +8664,13 @@ function MainApp() {
               ))}
             </div>
             <svg viewBox={`0 0 ${GW} ${GH}`} className="graph" ref={svgRef}>
+              {/* Curves stay inside the plot: a deep chain (a REW import stacking LP + HP)
+                  must not paint over the frequency labels below it. */}
+              <defs>
+                <clipPath id="eq-plot-area">
+                  <rect x={0} y={0} width={GW} height={GH - 24} />
+                </clipPath>
+              </defs>
               {gridSteps.minor.map((db) => (
                 <line key={`n${db}`} x1={0} x2={GW} y1={yOf(db)} y2={yOf(db)} className="grid-minor" />
               ))}
@@ -8631,12 +8687,17 @@ function MainApp() {
                 return sf?.enabled && sf.responseDb.length ? (
                   <path
                     key={`sc${si}`}
-                    d={pathFrom(state.freqs, sf.responseDb, yOf)}
+                    d={pathFrom(state.freqs, sf.responseDb, yOfPinned)}
                     className={`sel-curve ${sf.gainDb >= 0 ? "boost" : "cut"}`}
+                    clipPath="url(#eq-plot-area)"
                   />
                 ) : null;
               })}
-              <path d={pathFrom(state.freqs, state.sumDb.map((db) => db - state.preampDb), yOf)} className="sum-curve" />
+              <path
+                d={pathFrom(state.freqs, state.sumDb.map((db) => db - state.preampDb), yOfPinned)}
+                className="sum-curve"
+                clipPath="url(#eq-plot-area)"
+              />
 
               {state.filters.map((f, i) => (
                 <circle
@@ -8662,7 +8723,7 @@ function MainApp() {
                 >
                   <rect width="212" height="24" />
                   <text x="9" y="16">
-                    {`${sel.kind} ${fmtHz(sel.fcHz)} Hz ${fmtGain(sel.gainDb)} dB Q ${sel.q}${sel.enabled ? "" : " · off"}`}
+                    {`${sel.kind} ${fmtHz(sel.fcHz)} Hz ${fmtGain(sel.gainDb)} dB Q ${fmtQ(sel.q)}${sel.enabled ? "" : " · off"}`}
                   </text>
                 </g>
               )}
@@ -8752,7 +8813,7 @@ function MainApp() {
                   />
                   <ValueEdit
                     className="cell-q"
-                    display={`Q ${f.q}`}
+                    display={`Q ${fmtQ(f.q)}`}
                     value={f.q}
                     disabled={!editable}
                     onCommit={(v) => {

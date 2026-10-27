@@ -188,9 +188,108 @@ pub struct FilterSpec {
 }
 
 impl FilterSpec {
+    /// The biquad Equalizer APO plays for `Filter: ON <kind> Fc … Gain … Q <q>`
+    /// (TB-34). Not plain RBJ-by-name: APO honours a written Q on LP/HP, and
+    /// reads an `LS`/`HS` line *with a Q* as a corner-frequency shelf.
     pub fn biquad(&self, fs: f64) -> Biquad {
-        Biquad::rbj(self.kind, fs, self.fc_hz, self.gain_db, self.q)
+        match apo_resolve(self.kind, self.fc_hz, self.gain_db, Some(self.q)) {
+            Some(r) => Biquad::rbj(r.kind, fs, r.fc_hz, r.gain_db, r.q),
+            None => Biquad::IDENTITY,
+        }
     }
+}
+
+impl Biquad {
+    /// Passes everything unchanged: what APO plays for a line it rejects.
+    pub const IDENTITY: Biquad = Biquad {
+        b0: 1.0,
+        b1: 0.0,
+        b2: 0.0,
+        a1: 0.0,
+        a2: 0.0,
+    };
+}
+
+/// Resolve a filter line the way Equalizer APO does
+/// (docs/research/apo-filter-semantics.md) into the identical filter in a form
+/// whose `Biquad::rbj` is exact: PK / LPQ / HPQ / BP / NO / AP / LSC / HSC with
+/// the effective center frequency and Q. `q: None` means no Q was written,
+/// which APO reads differently from any default Fletcher could write (a bare
+/// NO is Q 30, a bare shelf is slope S 0.9). `None` = APO plays nothing (a PK
+/// or AP without a Q).
+pub fn apo_resolve(
+    kind: FilterKind,
+    fc_hz: f64,
+    gain_db: f64,
+    q: Option<f64>,
+) -> Option<FilterSpec> {
+    use FilterKind::*;
+    let q = q.filter(|q| *q != 0.0); // APO: Q 0 = not given
+    let spec = |kind, gain_db, q| FilterSpec {
+        kind,
+        fc_hz,
+        gain_db,
+        q,
+    };
+    Some(match kind {
+        Peaking => spec(Peaking, gain_db, q?),
+        AllPass => spec(AllPass, 0.0, q?),
+        LowPass | LowPassQ => spec(LowPassQ, 0.0, q.unwrap_or(DEFAULT_Q)),
+        HighPass | HighPassQ => spec(HighPassQ, 0.0, q.unwrap_or(DEFAULT_Q)),
+        BandPass => spec(BandPass, 0.0, q.unwrap_or(DEFAULT_Q)),
+        Notch => spec(Notch, 0.0, q.unwrap_or(30.0)),
+        LowShelf | LowShelfC | HighShelf | HighShelfC => {
+            let low = matches!(kind, LowShelf | LowShelfC);
+            let center = matches!(kind, LowShelfC | HighShelfC);
+            let (fc, q) = shelf_center_q(low, center, fc_hz, gain_db, q, None)?;
+            FilterSpec {
+                kind: if low { LowShelfC } else { HighShelfC },
+                fc_hz: fc,
+                gain_db,
+                q,
+            }
+        }
+    })
+}
+
+/// Any APO shelf spelling → the (center frequency, Q) of the identical RBJ
+/// shelf. Mirrors BiQuadFilterFactory + BiQuadFilter: a slope (`LS 12dB`) wins
+/// over a Q and gives S = slope/12; with neither, S = 0.9 at the center. A Q or
+/// slope on a type without the trailing C (`LS`, `HS`) means a CORNER
+/// frequency, moved to center by 10^(|gain|/80/S).
+pub fn shelf_center_q(
+    low: bool,
+    center_suffix: bool,
+    fc: f64,
+    gain_db: f64,
+    q: Option<f64>,
+    slope_db: Option<f64>,
+) -> Option<(f64, f64)> {
+    let a = 10f64.powf(gain_db / 40.0);
+    let a_sum = a + 1.0 / a;
+    let (s, explicit_q, corner) = match (slope_db, q) {
+        (Some(sl), _) => (sl / 12.0, None, !center_suffix),
+        (None, Some(q)) => (
+            1.0 / ((1.0 / (q * q) - 2.0) / a_sum + 1.0),
+            Some(q),
+            !center_suffix,
+        ),
+        (None, None) => (0.9, None, false),
+    };
+    let mut f = fc;
+    if corner {
+        let factor = 10f64.powf(gain_db.abs() / 80.0 / s);
+        if low {
+            f *= factor;
+        } else {
+            f /= factor;
+        }
+    }
+    let q = match explicit_q {
+        Some(q) => q,
+        None => 1.0 / (a_sum * (1.0 / s - 1.0) + 2.0).sqrt(),
+    };
+    (f.is_finite() && f > 0.0 && q.is_finite() && q > 0.0).then_some((f, q))
 }
 
 /// Log-spaced frequency grid from `lo` to `hi` Hz.
@@ -235,6 +334,94 @@ mod tests {
 
     fn close(a: f64, b: f64, tol: f64) -> bool {
         (a - b).abs() < tol
+    }
+
+    fn spec(kind: FilterKind, fc_hz: f64, gain_db: f64, q: f64) -> FilterSpec {
+        FilterSpec {
+            kind,
+            fc_hz,
+            gain_db,
+            q,
+        }
+    }
+
+    #[test]
+    fn tb34_ls_with_q_is_drawn_where_apo_plays_it() {
+        // Fletcher writes "LS Fc 100 Hz Gain 6 dB Q 0.7071…". APO: corner shelf,
+        // S from Q (exactly 1 at Q = 1/√2), center = 100 · 10^(6/80).
+        let drawn = spec(LowShelf, 100.0, 6.0, DEFAULT_Q).biquad(FS);
+        let played = Biquad::rbj(
+            LowShelfC,
+            FS,
+            100.0 * 10f64.powf(6.0 / 80.0),
+            6.0,
+            DEFAULT_Q,
+        );
+        let hs_drawn = spec(HighShelf, 8000.0, -4.0, DEFAULT_Q).biquad(FS);
+        let hs_played = Biquad::rbj(
+            HighShelfC,
+            FS,
+            8000.0 / 10f64.powf(4.0 / 80.0),
+            -4.0,
+            DEFAULT_Q,
+        );
+        for f in log_freqs(20.0, 20000.0, 200) {
+            assert!(close(
+                drawn.magnitude_db(f, FS),
+                played.magnitude_db(f, FS),
+                1e-9
+            ));
+            assert!(close(
+                hs_drawn.magnitude_db(f, FS),
+                hs_played.magnitude_db(f, FS),
+                1e-9
+            ));
+        }
+        // The old drawing (center-frequency at 100 Hz) was visibly off.
+        let old = Biquad::rbj(LowShelfC, FS, 100.0, 6.0, DEFAULT_Q);
+        let worst = log_freqs(20.0, 20000.0, 400)
+            .into_iter()
+            .map(|f| (old.magnitude_db(f, FS) - drawn.magnitude_db(f, FS)).abs())
+            .fold(0.0, f64::max);
+        eprintln!("TB-34: old LS drawing off by up to {worst:.2} dB (+6 dB shelf)");
+        assert!(worst > 0.5);
+    }
+
+    #[test]
+    fn tb34_written_q_is_honoured_on_lp_hp() {
+        // rbj(LowPass) forces 1/√2; APO plays the written Q.
+        let lp = spec(LowPass, 1000.0, 0.0, 2.0).biquad(FS);
+        assert!(close(
+            lp.magnitude_db(1000.0, FS),
+            20.0 * 2f64.log10(),
+            1e-6
+        ));
+    }
+
+    #[test]
+    fn tb34_unwritten_q_resolves_like_apo() {
+        assert_eq!(apo_resolve(Notch, 800.0, 0.0, None).unwrap().q, 30.0);
+        assert!(
+            apo_resolve(Peaking, 800.0, 3.0, None).is_none(),
+            "APO drops a Q-less PK"
+        );
+        // Bare shelf: slope S 0.9 at the center frequency, no corner shift.
+        let ls = apo_resolve(LowShelf, 300.0, 5.0, None).unwrap();
+        assert_eq!((ls.kind, ls.fc_hz), (LowShelfC, 300.0));
+        let a = 10f64.powf(5.0 / 40.0);
+        assert!(close(
+            ls.q,
+            1.0 / ((a + 1.0 / a) * (1.0 / 0.9 - 1.0) + 2.0).sqrt(),
+            1e-12
+        ));
+        // Resolving is idempotent: a resolved spec biquads to itself.
+        let again = ls.biquad(FS);
+        let direct = Biquad::rbj(LowShelfC, FS, ls.fc_hz, 5.0, ls.q);
+        assert!(close(
+            again.magnitude_db(300.0, FS),
+            direct.magnitude_db(300.0, FS),
+            1e-12
+        ));
     }
 
     #[test]

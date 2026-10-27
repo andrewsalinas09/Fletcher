@@ -13,5 +13,6 @@ pub mod fsx;
 pub mod peace;
 pub mod playback;
 pub mod presets;
+pub mod rew;
 pub mod signal;
 pub mod stats;

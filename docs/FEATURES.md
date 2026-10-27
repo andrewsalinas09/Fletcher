@@ -54,7 +54,7 @@ Nothing on the market does this. Its own tab, visibly its own setup:
 
 ## Scope note
 
-**Headphones first.** Speaker/room correction (REW import, measured room EQ) is deferred — the config engine still round-trips `Convolution` and other directives losslessly (Q-09), so nothing is foreclosed.
+**Headphones first.** Speaker/room correction (measured room EQ) is deferred. **REW filter import shipped 2026-10-26** (GitHub issue #1): a REW text export becomes a preset, read exactly as APO plays it (`rew.rs`, docs/research/apo-filter-semantics.md) — the config engine still round-trips `Convolution` and other directives losslessly (Q-09), so nothing is foreclosed.
 
 ## Visualization
 
