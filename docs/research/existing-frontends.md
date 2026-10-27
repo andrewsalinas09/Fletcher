@@ -14,7 +14,7 @@
 
 | Project | Stack | State | Notes |
 |---|---|---|---|
-| [Peace](https://sourceforge.net/projects/peace-equalizer-apo-extension/) | Closed-ish, dated toolkit | Active, de facto standard | Feature-rich, UI widely disliked; no blind testing. Its configs are what Fletcher must coexist with (TB-02). |
+| [Peace](https://sourceforge.net/projects/peace-equalizer-apo-extension/) | Closed-ish, dated toolkit | Active, de facto standard | Feature-rich, dense older UI; no blind testing. Its configs are what Fletcher must coexist with (TB-02). |
 | [AQUA](https://github.com/h39s/AQUA) | Electron + React + TS (+ C++ glue) | **Abandoned** ("no longer under development") | The one prior modern attempt. AutoEQ integration, auto-preamp, response graph. Caps: 20 filters, single device, no A/B/ABX. Worth mining for config-writing and AutoEQ plumbing (open source). |
 | [equalizer-apo-editor](https://github.com/Eustakius/equalizer-apo-editor) | — | Niche | Stock-Editor.exe replacement; claims full config grammar + live response graph. Reference for grammar coverage (Q-09). |
 | [DynamiQ](https://github.com/Brad331/DynamiQ) | — | Niche | Dynamic EQ via custom text files. |

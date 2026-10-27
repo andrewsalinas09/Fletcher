@@ -5,7 +5,7 @@
 - **Source:** Design session, five iterations on the canvas (claude.ai/code/artifact/759d400e-…); user approved v5 EQ tab, Settings, Clip Studio v2 ("this is an excellent start. We can do this for now").
 
 ## Context
-Two quick CSS passes read as generic AI slop. A real design exploration (three directions, real HD650 data) plus five reaction-driven iterations converged on a direction the user approves. Without locking it, every future screen re-litigates taste.
+Two quick CSS passes read as generic and undirected. A real design exploration (three directions, real HD650 data) plus five reaction-driven iterations converged on a direction the user approves. Without locking it, every future screen re-litigates taste.
 
 ## Decision
 Fletcher's UI speaks **Console**: light instrument aesthetic, lab-equipment-on-paper.
@@ -17,7 +17,7 @@ Fletcher's UI speaks **Console**: light instrument aesthetic, lab-equipment-on-p
 - **Contracts:** bidirectional editing (graph ⇄ strip, one model); grey-don't-hide (ADR-0002) rendered as reduced opacity + hover explainer; every label traces to FEATURES.md vocabulary.
 
 ## Why
-Chosen by the user across five iterations against real alternatives. Rejected: **Notebook** and **Swiss** directions (unchosen/killed on the canvas), dark-mode default, needle knobs (unglanceable), vertical filter rails and card grids (redundant with the graph, "messy"), floating action buttons (testing lives in the A/B bar), invented UI vocabulary (reads as hallucination).
+Chosen by the user across five iterations against real alternatives. Rejected: **Notebook** and **Swiss** directions (unchosen/killed on the canvas), dark-mode default, needle knobs (unglanceable), vertical filter rails and card grids (redundant with the graph, "messy"), floating action buttons (testing lives in the A/B bar), invented UI vocabulary (reads as unexplained jargon).
 
 ## Consequences
 - The app implements these as CSS tokens; `design/*.dc.html` artboards are the visual reference.

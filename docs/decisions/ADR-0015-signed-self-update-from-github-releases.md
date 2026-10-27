@@ -21,5 +21,5 @@ Fletcher updates itself with Tauri's updater plugin from `releases/latest/downlo
 ## Consequences
 - **Losing the private key means installed copies can never update again; leaking it lets someone ship code to every user.** Back up both files outside the machine.
 - Local `npm run tauri build` now needs `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` in the environment (`createUpdaterArtifacts`); `tauri dev` doesn't.
-- v0.1.0 has no updater: its users must install the first updater-capable release by hand. Every release after that arrives in-app.
+- v0.1.0 has no updater: its users must install the first updater-capable release (0.2.0) by hand. Every release after that arrives in-app, verified live 0.2.0 → 0.2.1 on 2026-10-26.
 - The updater never downgrades. A bad published release is pulled by deleting it (or marking it pre-release), and fixed by shipping a newer version.

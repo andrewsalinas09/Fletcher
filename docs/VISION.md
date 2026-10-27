@@ -2,7 +2,7 @@
 
 > **Status: DRAFT** — captures the founding conversation (2026-08-22). To be rewritten after the idea-mapping sessions; until then treat it as directionally right, not normative.
 
-Equalizer APO is a superb DSP engine whose entire control surface is a text file — and every existing frontend for it is either abandoned (AQUA), niche, or actively hostile to use (Peace). Fletcher is the modern frontend: all the power, none of the 2009 UI, plus a category of feature no consumer EQ tool has ever shipped — **honest listening tests**.
+Equalizer APO is a superb DSP engine whose entire control surface is a text file — and every existing frontend for it is either abandoned (AQUA), niche, or showing its age (Peace). Fletcher is the modern frontend: all the power in a modern interface, plus a category of feature no consumer EQ tool has ever shipped — **honest listening tests**.
 
 ## North-star goals
 

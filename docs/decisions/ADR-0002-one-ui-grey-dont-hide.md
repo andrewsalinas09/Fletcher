@@ -5,7 +5,7 @@
 - **Source:** Idea-mapping session (user: "standard is _identical_ but just slightly greyed and if you hover over it says why it's advanced and what it does"; confirmed "adr-0002")
 
 ## Context
-Fletcher is "for everyone" — from laptop-speaker users to people measuring headphone transfer functions — but a single audience-neutral UI risks either overwhelming beginners or ghettoizing them in a dumbed-down mode with a cliff to expert mode.
+Fletcher is "for everyone" — from laptop-speaker users to people measuring headphone transfer functions — but a single audience-neutral UI risks either overwhelming beginners or segregating them in a simplified mode with a cliff to expert mode.
 
 ## Decision
 There is one layout. In standard mode it is *pixel-identical* to advanced mode, with advanced features slightly greyed out; hovering a greyed feature explains what it does and why it's advanced. Mode switching changes availability, never arrangement.
