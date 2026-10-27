@@ -105,8 +105,10 @@ fn render_endpoint_guid(endpoint_id: &str) -> Option<&str> {
 fn names_apo<'a>(raw_values: impl IntoIterator<Item = &'a [u8]>) -> bool {
     raw_values.into_iter().any(|bytes| {
         let wide: Vec<u16> = bytes
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&c| u16::from_le_bytes(c))
             .collect();
         let text = String::from_utf16_lossy(&wide).to_ascii_uppercase();
         APO_CLSIDS.iter().any(|clsid| text.contains(clsid))
