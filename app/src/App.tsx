@@ -2002,6 +2002,12 @@ function PopoutDiff() {
 type PresetsState = { presets: string[]; active: string | null };
 type AbInfo = { side: string; matchDb: number; shortfallDb: number };
 type Device = { id: string; name: string; isDefault: boolean; apo: ApoOnDevice };
+type UpdateStatus = {
+  current: string;
+  available: { version: string; notes: string | null; date: string | null } | null;
+  /** False in dev builds, which an installer can't replace. */
+  canInstall: boolean;
+};
 type AutoeqEntry = { name: string; path: string; note: string };
 
 type AbxState = {
@@ -3882,6 +3888,48 @@ function MainApp() {
       .finally(() => setTestingTone(false));
   };
   const loadSettings = () => invoke<SettingsState>("settings_state").then(setSettings).catch(() => {});
+  // Self-update (ADR-0015). One shared result for the tab dot and Settings.
+  const [update, setUpdate] = useState<UpdateStatus | null>(null);
+  const [updateNote, setUpdateNote] = useState("");
+  const [updateBusy, setUpdateBusy] = useState<"checking" | "installing" | null>(null);
+  const [updateProg, setUpdateProg] = useState<[number, number | null] | null>(null);
+  const checkUpdates = (quiet: boolean) => {
+    if (!quiet) {
+      setUpdateBusy("checking");
+      setUpdateNote("");
+    }
+    invoke<UpdateStatus>("update_check")
+      .then((s) => {
+        setUpdate(s);
+        if (!quiet && !s.available) setUpdateNote("You have the latest version.");
+      })
+      // Offline is normal; only say so when the user asked.
+      .catch(() => !quiet && setUpdateNote("Couldn't check for updates — this computer may be offline."))
+      .finally(() => !quiet && setUpdateBusy(null));
+  };
+  useEffect(() => {
+    const first = setTimeout(() => checkUpdates(true), 8_000);
+    const daily = setInterval(() => checkUpdates(true), 24 * 60 * 60 * 1000);
+    const off = listen<[number, number | null]>("update-progress", (e) => setUpdateProg(e.payload));
+    return () => {
+      clearTimeout(first);
+      clearInterval(daily);
+      off.then((f) => f());
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const installUpdate = () => {
+    setUpdateBusy("installing");
+    setUpdateNote("");
+    setUpdateProg(null);
+    // On success the installer closes Fletcher and reopens the new version; this never resolves.
+    invoke("update_install").catch((e) => {
+      setUpdateNote(String(e));
+      setUpdateBusy(null);
+    });
+  };
+  const updatePct = updateProg?.[1] ? Math.min(100, Math.round((updateProg[0] / updateProg[1]) * 100)) : null;
+
   const loadAutostart = () =>
     import("@tauri-apps/plugin-autostart")
       .then((m) => m.isEnabled())
@@ -5782,8 +5830,10 @@ function MainApp() {
               loadAutostart();
               loadTools();
             }}
+            title={update?.available ? `Fletcher ${update.available.version} is available` : undefined}
           >
             SETTINGS
+            {update?.available && <span className="tab-dot" />}
           </span>
         </nav>
         <span className="spacer" />
@@ -8005,6 +8055,43 @@ function MainApp() {
                 volume are bypassed, so the tone starts silent and ramps in. Other apps' audio stops and
                 may need a manual restart afterwards.
               </span>
+            </div>
+            <div className="set-sect">
+              <span className="mono set-head">UPDATES</span>
+              <div className="set-row">
+                <span className="set-key">Version</span>
+                <span className="mono">{update?.current ?? "—"}</span>
+                <button onClick={() => checkUpdates(false)} disabled={updateBusy !== null}>
+                  {updateBusy === "checking" ? "checking…" : "check for updates"}
+                </button>
+              </div>
+              {update?.available && (
+                <>
+                  <div className="set-row">
+                    <span className="set-key">
+                      {`${update.available.version} available`}
+                      {update.available.date ? ` · ${update.available.date}` : ""}
+                    </span>
+                    <button
+                      onClick={installUpdate}
+                      disabled={updateBusy !== null || !update.canInstall}
+                      title={update.canInstall ? undefined : "Development builds aren't replaced by the installer."}
+                    >
+                      {updateBusy === "installing"
+                        ? updatePct === null
+                          ? "downloading…"
+                          : `downloading ${updatePct}%`
+                        : `install ${update.available.version}`}
+                    </button>
+                  </div>
+                  <pre className="update-notes">{update.available.notes ?? "No release notes for this version."}</pre>
+                  <span className="set-note">
+                    Installing closes Fletcher for a few seconds and reopens it. Your EQ, presets, history and
+                    results are kept. Not possible during a blind test or hearing-profile session.
+                  </span>
+                </>
+              )}
+              {updateNote && <span className="set-note">{updateNote}</span>}
             </div>
           </div>
 

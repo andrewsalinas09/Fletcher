@@ -1,0 +1,71 @@
+# Build, sign and publish an update when a version tag is pushed (git tag v0.2.0).
+# See docs/RELEASING.md and ADR-0015.
+#
+# The release is created as a DRAFT on this repository. The in-app updater reads
+# releases/latest/download/latest.json, and a draft is never "latest" — so nothing
+# reaches users until someone presses Publish on GitHub.
+#
+# Repository secrets (Settings -> Secrets and variables -> Actions):
+#   TAURI_SIGNING_PRIVATE_KEY           contents of ~/.tauri/fletcher-updater.key
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  contents of ~/.tauri/fletcher-updater.password.txt
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Frontend deps
+        working-directory: app
+        run: npm ci
+
+      - name: Check the tag matches the app version, and read the release notes
+        id: meta
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          configured="$(node -p "require('./app/src-tauri/tauri.conf.json').version")"
+          if [ "$version" != "$configured" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match tauri.conf.json version $configured. Run scripts/bump-version.mjs first." >&2
+            exit 1
+          fi
+          {
+            echo "notes<<RELEASE_NOTES_END"
+            node scripts/release-notes.mjs "$version"
+            echo "RELEASE_NOTES_END"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Tests
+        run: cargo test --workspace
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: app
+          tagName: v__VERSION__
+          releaseName: Fletcher v__VERSION__
+          releaseBody: ${{ steps.meta.outputs.notes }}
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: true

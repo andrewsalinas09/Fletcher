@@ -15,7 +15,7 @@ A modern, open-source frontend for Equalizer APO on Windows — parametric EQ th
 | `design/` | The design canvas working files (.dc.html artboards; published at claude.ai/code/artifact/759d400e-2583-45f9-bbd0-3008d41f8cc8). Reference, not runtime. |
 | `docs/` | The knowledge system — see map below. |
 
-**Run:** `cd app && npm run tauri dev`. **Verify:** `cargo test --workspace`, `cargo clippy --workspace --all-targets` (CI enforces `-D warnings`), `npx tsc --noEmit` in `app/`. Data dir: `%APPDATA%\Fletcher\` (layout documented in ARCHITECTURE).
+**Run:** `cd app && npm run tauri dev`. **Verify:** `cargo test --workspace`, `cargo clippy --workspace --all-targets` (CI enforces `-D warnings`), `npx tsc --noEmit` in `app/`, `cargo fmt --check` (CI enforces it too). **Release:** `docs/RELEASING.md` (bump script → tag → draft release → Publish; ADR-0015). Data dir: `%APPDATA%\Fletcher\` (layout documented in ARCHITECTURE).
 
 ## Doc map
 

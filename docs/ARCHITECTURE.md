@@ -31,6 +31,7 @@ The engine (fletcher-core `playback.rs`/`signal.rs`/`dsp.rs` realtime layer + ap
 | Measurement engine | Synchronized sweep playback + mic capture, impulse-response extraction, reseating statistics, fingerprint store, bridging | Fingerprint Lab (Q-12, Q-15); later phase but influences audio-engine design |
 | UI shell | Tauri 2 + TypeScript/React; draws only — receives compact Rust-computed binary frames over Tauri channels for live visuals | ADR-0005 |
 | Tray/hotkeys | Background presence, global A/B toggle | |
+| Updater | Signed self-update from this repo's GitHub releases (`updates.rs`: `update_check`/`update_install`, `update-progress` event); install refused mid-trial/profile, audio released first | ADR-0015, TB-33; process in `docs/RELEASING.md` |
 
 ## On-disk layout (v1, settled 2026-08-23)
 

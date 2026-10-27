@@ -12,6 +12,7 @@ mod analysis;
 mod engine;
 mod profile;
 mod tools;
+mod updates;
 
 fn data_dir() -> PathBuf {
     std::env::var_os("APPDATA")
@@ -5045,6 +5046,7 @@ fn setup_hotkey(app: &tauri::App) {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(
@@ -5119,6 +5121,8 @@ pub fn run() {
             devices_list,
             device_set_default,
             apo_open_device_selector,
+            updates::update_check,
+            updates::update_install,
             abx_start,
             abx_audition,
             abx_vote,

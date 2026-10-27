@@ -2694,6 +2694,25 @@ button.ghost {
   font-size: 12px;
 }
 
+/* ADR-0015: an update is waiting — a quiet mark on the SETTINGS tab, never a popup. */
+.tab-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--boost);
+  vertical-align: middle;
+}
+
+.update-notes {
+  margin: 0 0 0 166px;
+  font-family: inherit;
+  font-size: 11.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
 .set-val {
   font-size: 13px;
 }
