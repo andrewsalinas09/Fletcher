@@ -1,6 +1,6 @@
 [package]
 name = "fletcher-app"
-version = "0.2.0"
+version = "0.2.1"
 description = "Fletcher - honest system EQ for Windows"
 authors = ["Andrew Salinas"]
 edition = "2021"

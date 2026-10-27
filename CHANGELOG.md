@@ -2,6 +2,13 @@
 
 Each version's section becomes its GitHub release notes and the "what's new" text in Settings › UPDATES. Write for listeners, not developers.
 
+## 0.2.1
+
+- **Import your Room EQ Wizard filters.** In REW's EQ window choose File › Export › Export filter settings as text, then in Fletcher's preset menu click **From REW file…**. The filters arrive as a new preset, read exactly the way Equalizer APO would play them: European number formats, Modal filters, and every shelf type included. Anything Fletcher can't reproduce exactly (first-order or Linkwitz filters) is listed by name, never dropped silently. Pasting a REW export with Ctrl+V works too. Thanks for the request (#1)!
+- **Shelf filters now draw where you hear them.** Equalizer APO reads Fletcher's low- and high-shelf filters as corner-frequency shelves, so their curves were drawn up to about 1 dB off. Level matching in A/B tests was computed from that slightly wrong curve, and clip-based blind tests played the shelf at the wrong frequency. All three now match what APO plays. Your presets sound exactly as before; only the curve and the auto preamp move a little.
+- **Copying filters from Peace or other tools keeps their sound.** Filters without a written Q (a bare notch or shelf) used to change slightly when Fletcher took them over. Now they don't.
+- Q values show three decimals, and very deep EQ curves stay inside the graph instead of drawing over the axis labels.
+
 ## 0.2.0
 
 - **Fletcher now updates itself.** It checks quietly in the background. When a new version is out, a dot appears on the SETTINGS tab, and Settings › Updates shows what's new and installs it in one click. Updates are cryptographically signed, and they never install during a blind test or a hearing-profile session.
