@@ -2,6 +2,11 @@
 
 Each version's section becomes its GitHub release notes and the "what's new" text in Settings › UPDATES. Write for listeners, not developers.
 
+## 0.2.2
+
+- Clearer wording throughout. Tooltips, Settings notes and messages now speak plain language instead of referring to internal design notes, and show tool names (Fletcher, Peace, Equalizer APO) instead of config file names.
+- Release notes in Settings › Updates are now formatted properly, starting with the next update.
+
 ## 0.2.1
 
 - **Import your Room EQ Wizard filters.** In REW's EQ window choose File › Export › Export filter settings as text, then in Fletcher's preset menu click **From REW file…**. The filters arrive as a new preset, read exactly the way Equalizer APO would play them: European number formats, Modal filters, and every shelf type included. Anything Fletcher can't reproduce exactly (first-order or Linkwitz filters) is listed by name, never dropped silently. Pasting a REW export with Ctrl+V works too. Thanks for the request (#1)!
