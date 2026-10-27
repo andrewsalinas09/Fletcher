@@ -3307,7 +3307,10 @@ fn default_device_apo() -> (&'static str, bool) {
 fn apo_open_device_selector(app: tauri::AppHandle) -> Result<(), String> {
     let install = apo::detect().map_err(|e| e.to_string())?;
     apo::device_selector_path(&install).ok_or_else(|| {
-        format!("couldn't find APO's device selector in {}", install.install_path.display())
+        format!(
+            "couldn't find APO's device selector in {}",
+            install.install_path.display()
+        )
     })?;
     std::thread::spawn(move || {
         use tauri::Emitter;

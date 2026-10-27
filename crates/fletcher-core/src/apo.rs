@@ -121,7 +121,8 @@ pub fn device_apo_status(endpoint_id: &str) -> DeviceApo {
     let Some(guid) = render_endpoint_guid(endpoint_id) else {
         return DeviceApo::Unknown;
     };
-    let path = format!("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\MMDevices\\Audio\\Render\\{guid}");
+    let path =
+        format!("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\MMDevices\\Audio\\Render\\{guid}");
     let Ok(dev) = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey_with_flags(&path, KEY_READ) else {
         return DeviceApo::Unknown;
     };
@@ -129,7 +130,11 @@ pub fn device_apo_status(endpoint_id: &str) -> DeviceApo {
     let registered = dev
         .open_subkey_with_flags("FxProperties", KEY_READ)
         .map(|fx| {
-            let raws: Vec<Vec<u8>> = fx.enum_values().filter_map(|v| v.ok()).map(|(_, v)| v.bytes.to_vec()).collect();
+            let raws: Vec<Vec<u8>> = fx
+                .enum_values()
+                .filter_map(|v| v.ok())
+                .map(|(_, v)| v.bytes.to_vec())
+                .collect();
             names_apo(raws.iter().map(|b| b.as_slice()))
         })
         .unwrap_or(false);
@@ -140,7 +145,11 @@ pub fn device_apo_status(endpoint_id: &str) -> DeviceApo {
         .open_subkey_with_flags("Properties", KEY_READ)
         .and_then(|p| p.get_value::<u32, _>(DISABLE_SYSFX))
         .is_ok_and(|v| v == 1);
-    if sysfx_off { DeviceApo::SysFxDisabled } else { DeviceApo::Active }
+    if sysfx_off {
+        DeviceApo::SysFxDisabled
+    } else {
+        DeviceApo::Active
+    }
 }
 
 /// APO's per-device installer: `DeviceSelector.exe` since 1.4, `Configurator.exe`
@@ -158,7 +167,9 @@ pub fn device_selector_path(install: &ApoInstall) -> Option<PathBuf> {
 pub fn run_device_selector(install: &ApoInstall) -> Result<(), String> {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Threading::{INFINITE, WaitForSingleObject};
-    use windows::Win32::UI::Shell::{SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW};
+    use windows::Win32::UI::Shell::{
+        SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW,
+    };
     use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
     use windows::core::PCWSTR;
 
@@ -217,7 +228,10 @@ mod tests {
             render_endpoint_guid("{0.0.0.00000000}.{e411be18-23e9-460d-9df3-bb467280999e}"),
             Some("{e411be18-23e9-460d-9df3-bb467280999e}")
         );
-        assert_eq!(render_endpoint_guid("{0.0.1.00000000}.{e411be18-23e9-460d-9df3-bb467280999e}"), None);
+        assert_eq!(
+            render_endpoint_guid("{0.0.1.00000000}.{e411be18-23e9-460d-9df3-bb467280999e}"),
+            None
+        );
         assert_eq!(render_endpoint_guid("garbage"), None);
     }
 
@@ -228,7 +242,9 @@ mod tests {
         assert!(!names_apo([stock.as_slice()]));
         let sz = utf16("{eacd2258-fcac-4ff4-b36d-419e924a6d79}\0");
         assert!(names_apo([stock.as_slice(), sz.as_slice()]));
-        let multi = utf16("{C18E2F7E-933D-4965-B7D1-1EEF228D2AF3}\0{EC1CC9CE-FAED-4822-828A-82A81A6F018F}\0\0");
+        let multi = utf16(
+            "{C18E2F7E-933D-4965-B7D1-1EEF228D2AF3}\0{EC1CC9CE-FAED-4822-828A-82A81A6F018F}\0\0",
+        );
         assert!(names_apo([multi.as_slice()]));
     }
 
