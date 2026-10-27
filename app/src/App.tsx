@@ -14,8 +14,14 @@ type EqFilter = {
   sourceFile: string;
 };
 
+/** Whether Equalizer APO processes a device at all (TB-32). */
+type ApoOnDevice = "active" | "missing" | "disabled" | "unknown";
+
 type EqState = {
   deviceName: string | null;
+  apoOnDevice: ApoOnDevice;
+  /** APO was registered on this device during this run — usually live at once; older APO may need a restart. */
+  apoRebootPending: boolean;
   preampDb: number;
   freqs: number[];
   sumDb: number[];
@@ -1995,7 +2001,7 @@ function PopoutDiff() {
 
 type PresetsState = { presets: string[]; active: string | null };
 type AbInfo = { side: string; matchDb: number; shortfallDb: number };
-type Device = { id: string; name: string; isDefault: boolean };
+type Device = { id: string; name: string; isDefault: boolean; apo: ApoOnDevice };
 type AutoeqEntry = { name: string; path: string; note: string };
 
 type AbxState = {
@@ -2021,6 +2027,11 @@ type AbxState = {
 
 type SettingsState = {
   referenceDb: number;
+  preampTrimDb: number;
+  /** Attenuation from lines Fletcher doesn't own — explainable, not editable. */
+  foreignPreampDb: number;
+  trimMinDb: number;
+  trimMaxDb: number;
   levelMatching: boolean;
   apoInstallPath: string | null;
   apoConfigPath: string | null;
@@ -3894,6 +3905,19 @@ function MainApp() {
         refreshPresets();
       })
       .catch((e) => showNotice(String(e)));
+  /** Output trim (TB-31). Steps only — never a jump, per TB-20. */
+  const setTrim = (db: number) => {
+    if (!settings) return;
+    const clamped = Math.max(settings.trimMinDb, Math.min(settings.trimMaxDb, Math.round(db * 10) / 10));
+    if (clamped === settings.preampTrimDb) return;
+    invoke<EqState>("set_preamp_trim", { db: clamped })
+      .then((s) => {
+        setState(s);
+        loadSettings();
+        refreshPresets();
+      })
+      .catch((e) => showNotice(String(e)));
+  };
   const toggleLevelMatching = () => {
     if (!settings) return;
     invoke<EqState>("set_level_matching", { on: !settings.levelMatching })
@@ -4453,6 +4477,22 @@ function MainApp() {
     setDeviceMenu((o) => !o);
   };
 
+  // TB-32: when the EQ can't be heard on this device, the banner needs to know
+  // whether some OTHER device would hear it — so load the list unprompted.
+  const apoBroken = !!state && state.apoOnDevice !== "active" && state.apoOnDevice !== "unknown";
+  useEffect(() => {
+    if (apoBroken) invoke<Device[]>("devices_list").then(setDevices).catch(() => {});
+  }, [apoBroken, state?.deviceName]);
+
+  const [apoSelectorOpen, setApoSelectorOpen] = useState(false);
+  const openApoSelector = () => {
+    setApoSelectorOpen(true);
+    invoke("apo_open_device_selector")
+      .catch((e) => showNotice(String(e)))
+      // the backend re-pushes state when the selector closes; clear the hint after a beat either way
+      .finally(() => setTimeout(() => setApoSelectorOpen(false), 4000));
+  };
+
   const chooseDevice = (id: string) => {
     invoke<EqState>("device_set_default", { id })
       .then((s) => {
@@ -4597,7 +4637,8 @@ function MainApp() {
     loadSettings(); // the A/B bar's matched/unmatched state needs it
     loadAutostart();
     const unlisten = listen("apo-config-changed", () => pushRef.current.config());
-    const unlistenAb = listen<string>("ab-changed", (e) => pushRef.current.ab(e.payload));
+    const unlistenApoSel = listen<string>("apo-selector-error", (e) => showNotice(e.payload));
+    const unlistenAb =listen<string>("ab-changed", (e) => pushRef.current.ab(e.payload));
     const unlistenAbx = listen<string>("abx-audition", (e) => pushRef.current.abx(e.payload));
     const unlistenCal = listen<string | null>("cal-noise-ended", (e) => pushRef.current.calEnded(e.payload));
     const unlistenTools = listen<{ which: string; pct: number | null }>("tools-progress", (e) =>
@@ -4620,6 +4661,7 @@ function MainApp() {
       pushRef.current.roomCmd(e.payload),
     );
     return () => {
+      unlistenApoSel.then((f) => f());
       unlistenRoomCmd.then((f) => f());
       unlistenScopeHello.then((f) => f());
       unlistenScopeClosed.then((f) => f());
@@ -5778,6 +5820,16 @@ function MainApp() {
                   onClick={() => chooseDevice(d.id)}
                 >
                   <span>{d.name}</span>
+                  {d.apo === "missing" && (
+                    <span className="dim-sm warn-text" title="Equalizer APO isn't installed on this device — EQ won't apply here">
+                      no APO
+                    </span>
+                  )}
+                  {d.apo === "disabled" && (
+                    <span className="dim-sm warn-text" title="Windows' “Disable all enhancements” is on for this device — EQ won't apply here">
+                      enhancements off
+                    </span>
+                  )}
                   {d.isDefault && <span className="dim-sm">current</span>}
                 </div>
               ))}
@@ -7876,6 +7928,59 @@ function MainApp() {
             </div>
 
             <div className="set-sect">
+              <span className="mono set-head">OUTPUT</span>
+              <div className="set-row">
+                <span className="set-key">Output trim</span>
+                <button
+                  title="quieter by 1 dB"
+                  disabled={settings.preampTrimDb <= settings.trimMinDb}
+                  onClick={() => setTrim(settings.preampTrimDb - 1)}
+                >
+                  −
+                </button>
+                <ValueEdit
+                  className="set-val mono"
+                  display={`${fmtGain(settings.preampTrimDb)} dB`}
+                  value={settings.preampTrimDb}
+                  onCommit={setTrim}
+                />
+                <button
+                  title="louder by 1 dB"
+                  disabled={settings.preampTrimDb >= settings.trimMaxDb}
+                  onClick={() => setTrim(settings.preampTrimDb + 1)}
+                >
+                  +
+                </button>
+                {settings.preampTrimDb !== 0 && (
+                  <button onClick={() => setTrim(0)}>reset</button>
+                )}
+                <span className="set-live dim-sm">
+                  {settings.preampTrimDb === 0
+                    ? "no trim — the matched preamp plays as computed"
+                    : `${fmtGain(settings.preampTrimDb)} dB on top of the matched preamp, on every side`}
+                </span>
+              </div>
+              {settings.foreignPreampDb !== 0 && (
+                <div className="set-row">
+                  <span className="set-key">Outside attenuation</span>
+                  <span className="set-val mono warn-text">{fmtGain(settings.foreignPreampDb)} dB</span>
+                  <span className="set-live warn-text">
+                    from Preamp lines Fletcher doesn't own — it can't edit them (ADR-0007), only offset them
+                  </span>
+                </div>
+              )}
+              <span className="set-note">
+                Moves absolute loudness without touching what makes comparisons honest. Reference loudness is
+                capped at 0 dB, so when attenuation lives somewhere Fletcher may not edit — a hand-added
+                Preamp in config.txt, another tool's file — the app has no way to answer "it's too quiet".
+                This is that lever, and the only one that can push the written preamp above 0 dB. It is added
+                equally to A and to B, so it cancels in every comparison: level matching survives it intact
+                (ADR-0003). 1 dB steps by design — level never jumps (TB-20). Above 0 dB total, a boosted
+                chain can clip; back it off if you hear it.
+              </span>
+            </div>
+
+            <div className="set-sect">
               <span className="mono set-head">SYSTEM</span>
               <div className="set-row">
                 <span className="set-key">Start with Windows</span>
@@ -7985,6 +8090,46 @@ function MainApp() {
 
       {state && view === "eq" && (
         <>
+          {apoBroken && (
+            <div className="tool-banner apo-banner">
+              <p>
+                <b>
+                  {state.apoOnDevice === "disabled"
+                    ? `Windows has “Disable all enhancements” turned on for ${state.deviceName ?? "this device"}.`
+                    : `Equalizer APO isn't installed on ${state.deviceName ?? "this device"}.`}
+                </b>{" "}
+                Nothing you change here is audible until that's fixed — Fletcher is still saving your EQ, it just
+                isn't reaching your ears. Windows updates and driver reinstalls cause this.
+              </p>
+              <p>
+                {state.apoOnDevice === "disabled"
+                  ? "Turn audio enhancements back on for this device in Windows Sound settings (device properties), or re-run APO's device selector for it."
+                  : "Open APO's device selector, tick this device, press OK, then restart Windows."}{" "}
+                Windows will ask for admin permission — APO needs it to register itself on the device.
+              </p>
+              <div className="apo-banner-actions">
+                <button onClick={openApoSelector} disabled={apoSelectorOpen}>
+                  {apoSelectorOpen ? "waiting for APO's device selector…" : `Enable EQ on ${state.deviceName ?? "this device"}`}
+                </button>
+                {devices
+                  .filter((d) => !d.isDefault && d.apo === "active")
+                  .slice(0, 2)
+                  .map((d) => (
+                    <button key={d.id} onClick={() => chooseDevice(d.id)} title="make this the Windows default playback device">
+                      or switch to {d.name}
+                    </button>
+                  ))}
+              </div>
+            </div>
+          )}
+          {state.apoRebootPending && (
+            <div className="tool-banner apo-banner">
+              <p>
+                <b>APO is now registered on {state.deviceName ?? "this device"}.</b> The EQ should be audible right away — if
+                it isn't, restart Windows (older APO versions need it).
+              </p>
+            </div>
+          )}
           <div className="preset-line">
             <span className="preset-wrap">
               <span
@@ -8299,6 +8444,19 @@ function MainApp() {
                   ⚠ another EQ is also active
                 </span>
               )}
+            {!!settings?.foreignPreampDb && (
+              <span
+                className="warn-chip"
+                title={`${fmtGain(settings.foreignPreampDb)} dB of Preamp comes from lines Fletcher doesn't own (ADR-0007) — it can't remove them. Settings › OUTPUT › Output trim offsets it.`}
+              >
+                ⚠ {fmtGain(settings.foreignPreampDb)} dB from outside Fletcher
+              </span>
+            )}
+            {!!settings?.preampTrimDb && (
+              <span className="mono dim-sm" title="Settings › OUTPUT › Output trim">
+                trim {fmtGain(settings.preampTrimDb)} dB
+              </span>
+            )}
             <span className="mono dim-sm">auto preamp</span>
             <span className="mono preamp-val">{fmtGain(state.preampDb)} dB</span>
             <span className="preset-wrap">

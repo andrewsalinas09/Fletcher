@@ -26,3 +26,15 @@ Protocol: `Filter: ON LP Fc 500 Hz` active in `fletcher.txt`; 3 kHz tone at −2
 - Format negotiation worked on the first candidate list (32f/24i/16i @ 48k, 16i @ 44.1k) with the aligned-period retry path untested (default period succeeded).
 
 Candidate decision (→ ADR once confirmed): exclusive mode is the primary track-mode bypass — zero config mutation (no TB-11 crash-restore hazard, no races with Peace's file watcher), naturally silences competing audio during a listening test — with a config-blank fallback only for devices where exclusive init fails.
+
+## Verified 2026-10-26 (per-device registration, `examples/apo_devices.rs`)
+
+Symptom: every Fletcher edit inaudible although `config.txt` included `fletcher.txt` and the file was being written. Cause: **APO was registered on no playback device at all.**
+
+- APO is per-device. Its installer/`DeviceSelector.exe` writes one of APO's COM classes into the endpoint's effect slots at `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render\{endpoint-guid}\FxProperties`. The classes, as registered under `HKLM\SOFTWARE\Classes\CLSID` on this machine: `{EACD2258-FCAC-4FF4-B36D-419E924A6D79}` "EqualizerAPO Pre-Mix Class", `{EC1CC9CE-FAED-4822-828A-82A81A6F018F}` "EqualizerAPO Post-Mix Class".
+- The Modi 3+'s FxProperties held only Microsoft's defaults (`{C18E2F7E-933D-4965-B7D1-1EEF228D2AF3}` in slots `{d3993a3f-…},5/6`). None of the five active render endpoints named an APO class. The APO install itself (`HKLM\SOFTWARE\EqualizerAPO`, the DLL, the CLSIDs) was intact, so "APO is installed" was true and told us nothing.
+- The endpoint registry key is the GUID after the last `.` of the MMDevice id (`{0.0.0.00000000}.{guid}`; `0.0.0` = render).
+- APO 1.4.2's per-device tool is **`DeviceSelector.exe`** (older releases: `Configurator.exe`). It also leaves `backup_<device>.reg` files of the slots it replaces in the install dir.
+- Likely trigger: a Windows feature update or audio-driver reinstall rewrites FxProperties (not reproduced here; inferred from the slot contents being stock).
+- `PKEY_AudioEndpoint_Disable_SysFx` (`{1da5d803-d492-4edd-8c23-e0c0ffee7f0e},5`, mmdeviceapi.h) is the documented per-device "disable all enhancements" switch. It's read from the endpoint's `Properties` key. When it's 1, no effects load. Not observed set on this machine.
+- **No reboot needed (1.4.2).** Ticking the Modi in DeviceSelector made the EQ audible immediately, without restarting Windows (user-verified live 2026-10-26).

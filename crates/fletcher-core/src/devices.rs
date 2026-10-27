@@ -25,6 +25,16 @@ pub fn default_render_device_name() -> Option<String> {
     device.get_friendlyname().ok()
 }
 
+/// MMDevice id of the default render device — the key `apo::device_apo_status` takes.
+pub fn default_render_device_id() -> Option<String> {
+    ensure_com();
+    let enumerator = wasapi::DeviceEnumerator::new().ok()?;
+    let device = enumerator
+        .get_default_device(&wasapi::Direction::Render)
+        .ok()?;
+    device.get_id().ok()
+}
+
 #[derive(Debug, Clone)]
 pub struct RenderDevice {
     pub id: String,

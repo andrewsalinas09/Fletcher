@@ -55,6 +55,34 @@ fn reference_db() -> f64 {
         .unwrap_or(-8.0)
 }
 
+/// Output trim bounds. The trim is the ONE lever that can push Fletcher's
+/// written preamp above 0 dB — `reference_db` is capped at 0 by design, so
+/// before this existed there was no way to answer "it's too quiet" from
+/// inside the app when attenuation lived in a line Fletcher doesn't own
+/// (ADR-0007) — e.g. a hand-added `Preamp:` in config.txt. Hit live
+/// 2026-08-29, TB-31.
+const TRIM_MIN_DB: f64 = -20.0;
+const TRIM_MAX_DB: f64 = 12.0;
+/// Total written preamp is still bounded; the ceiling is the trim's, so a
+/// user compensating external attenuation can reach it, and no further.
+const PREAMP_MIN_DB: f64 = -30.0;
+const PREAMP_MAX_DB: f64 = TRIM_MAX_DB;
+
+/// A user-set output trim added to every matched preamp, on every side.
+///
+/// Deliberately an OFFSET, not an override: `matched_preamp` is what makes
+/// ADR-0003's level matching true, so replacing it would make every A/B a
+/// louder-vs-quieter comparison. A constant added to both sides cancels in
+/// any comparison — the trim moves absolute loudness and leaves every
+/// *relative* guarantee (and `shortfall`) exactly as it was.
+fn preamp_trim_db() -> f64 {
+    read_state()
+        .get("preampTrimDb")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0)
+        .clamp(TRIM_MIN_DB, TRIM_MAX_DB)
+}
+
 /// The honesty switch (ADR-0003): level matching is ON unless deliberately
 /// disabled in Settings; off means comparisons are marked unmatched in the UI.
 fn level_matching() -> bool {
@@ -83,6 +111,13 @@ const CURVE_POINTS: usize = 200;
 #[serde(rename_all = "camelCase")]
 struct EqState {
     device_name: Option<String>,
+    /// Whether APO processes the default device at all: "active" | "missing" |
+    /// "disabled" | "unknown" (TB-32). Anything but "active" means every edit
+    /// below is inaudible, and the UI must say so.
+    apo_on_device: &'static str,
+    /// APO was registered on this device during this run. APO 1.4.2 takes effect
+    /// immediately (verified 2026-10-26); older versions may need a restart.
+    apo_reboot_pending: bool,
     preamp_db: f64,
     freqs: Vec<f64>,
     sum_db: Vec<f64>,
@@ -197,8 +232,11 @@ fn eq_state() -> Result<EqState, String> {
         .collect();
 
     let includes = docs.iter().skip(1).map(|(n, _)| n.clone()).collect();
+    let (apo_on_device, apo_reboot_pending) = default_device_apo();
     Ok(EqState {
         device_name: devices::default_render_device_name(),
+        apo_on_device,
+        apo_reboot_pending,
         preamp_db,
         freqs,
         sum_db,
@@ -275,7 +313,7 @@ fn set_fletcher_chain(filters: Vec<FilterIn>) -> Result<EqState, String> {
 
     // Edits persist into the active preset, so switching away and back keeps them.
     if let Some(name) = active_preset() {
-        let _ = store()?.save(&name, preamp, &chain);
+        let _ = store()?.save(&name, preset_preamp(&specs), &chain);
     }
     // Editing implies listening to the chain: land on A.
     set_ab_side("a");
@@ -364,7 +402,7 @@ fn preset_create(name: String, from_live: bool) -> Result<EqState, String> {
     }
     let chain = if from_live { live_chain()? } else { Vec::new() };
     let specs = specs_of(&chain);
-    st.save(&name, matched_preamp(&specs), &chain)
+    st.save(&name, preset_preamp(&specs), &chain)
         .map_err(|e| e.to_string())?;
     activate_chain(&chain)?;
     set_active_preset(Some(&name));
@@ -475,10 +513,31 @@ fn matched_preamp(specs: &[FilterSpec]) -> f64 {
     matched_preamp_full(specs).0
 }
 
+/// The preamp a PRESET stores. Deliberately untrimmed (ADR-0014): the trim is
+/// a property of this machine's playback, not of the tuning. Baking it in
+/// would make an exported preset arrive at someone else's ears offset by a
+/// number that only ever meant something here.
+fn preset_preamp(specs: &[FilterSpec]) -> f64 {
+    matched_preamp_untrimmed(specs).0
+}
+
 /// (preamp, shortfall): shortfall > 0 means the clip-safe cap won the fight
 /// and the chain sits that many dB ABOVE the reference — the comparison is
 /// then only imperfectly matched, and the UI must say so (TB-08 v1).
 fn matched_preamp_full(specs: &[FilterSpec]) -> (f64, f64) {
+    let (matched, shortfall) = matched_preamp_untrimmed(specs);
+    // The trim lands here and nowhere else: every write path (set_fletcher_chain,
+    // activate_chain, apply_side for BOTH sides, preset save, the trial engine)
+    // reaches the file through this one function, so one addition moves them all
+    // by the same amount — which is exactly why matching survives it.
+    let trimmed = ((matched + preamp_trim_db()) * 10.0).round() / 10.0;
+    (trimmed.clamp(PREAMP_MIN_DB, PREAMP_MAX_DB), shortfall)
+}
+
+/// The level-matched preamp before the user's output trim — the ADR-0003
+/// number. `shortfall` is a *relative* mismatch (chain vs reference), so the
+/// trim never touches it.
+fn matched_preamp_untrimmed(specs: &[FilterSpec]) -> (f64, f64) {
     let clip_safe = auto_preamp_db(specs, FS);
     if !level_matching() {
         // Honesty switch off: clip safety only, no reference normalization —
@@ -793,7 +852,7 @@ fn preset_create_from_chain(name: String, filters: Vec<FilterIn>) -> Result<Stri
         name = format!("{base} {n}");
         n += 1;
     }
-    st.save(&name, matched_preamp(&specs_of(&chain)), &chain)
+    st.save(&name, preset_preamp(&specs_of(&chain)), &chain)
         .map_err(|e| e.to_string())?;
     Ok(name)
 }
@@ -3025,9 +3084,53 @@ async fn track_samples(id: i64, start_s: f64, span_s: f64) -> Result<SampleWindo
 #[serde(rename_all = "camelCase")]
 struct SettingsState {
     reference_db: f64,
+    preamp_trim_db: f64,
+    /// Attenuation reachable from config.txt that Fletcher does NOT own
+    /// (ADR-0007) — hand-added `Preamp:` lines, other tools' files. The app
+    /// cannot edit it, so it must at least NAME it: this is the number that
+    /// makes "why is it quiet and why can't I fix it" answerable (TB-31).
+    foreign_preamp_db: f64,
+    trim_min_db: f64,
+    trim_max_db: f64,
     level_matching: bool,
     apo_install_path: Option<String>,
     apo_config_path: Option<String>,
+}
+
+/// Sum of every `Preamp:` reachable from config.txt that isn't ours. Fletcher
+/// may not edit these (ADR-0007) but it must be able to explain them.
+fn foreign_preamp_db() -> f64 {
+    let Ok(install) = apo::detect() else {
+        return 0.0;
+    };
+    let root_path = install.config_path.join("config.txt");
+    let Ok(root_text) = std::fs::read_to_string(&root_path) else {
+        return 0.0;
+    };
+    let root = ConfigDoc::parse(&root_text);
+    let includes: Vec<String> = root
+        .directives()
+        .filter_map(|d| match d {
+            Parsed::Include { path } => Some(path.clone()),
+            _ => None,
+        })
+        .collect();
+    let mut docs = vec![root];
+    for inc in includes {
+        if inc.eq_ignore_ascii_case("fletcher.txt") {
+            continue;
+        }
+        if let Ok(text) = std::fs::read_to_string(install.config_path.join(&inc)) {
+            docs.push(ConfigDoc::parse(&text));
+        }
+    }
+    docs.iter()
+        .flat_map(|d| d.directives())
+        .filter_map(|d| match d {
+            Parsed::Preamp { db } => Some(*db),
+            _ => None,
+        })
+        .sum()
 }
 
 #[tauri::command]
@@ -3035,10 +3138,34 @@ fn settings_state() -> SettingsState {
     let apo = apo::detect().ok();
     SettingsState {
         reference_db: reference_db(),
+        preamp_trim_db: preamp_trim_db(),
+        foreign_preamp_db: foreign_preamp_db(),
+        trim_min_db: TRIM_MIN_DB,
+        trim_max_db: TRIM_MAX_DB,
         level_matching: level_matching(),
         apo_install_path: apo.as_ref().map(|i| i.install_path.display().to_string()),
         apo_config_path: apo.as_ref().map(|i| i.config_path.display().to_string()),
     }
+}
+
+/// Set the output trim. Mirrors `set_reference_db`'s guards: changing absolute
+/// loudness mid-session would desynchronize what's playing from what the trial
+/// believes is playing (TB-26), and mid-profile it invalidates the level the
+/// whole measurement is pinned to (TB-29).
+#[tauri::command]
+fn set_preamp_trim(db: f64) -> Result<EqState, String> {
+    if TRIAL.lock().unwrap().is_some() {
+        return Err("a blind test is running — finish or cancel it first".into());
+    }
+    if profile_running() {
+        return Err("a hearing-profile session is running — finish or cancel it first".into());
+    }
+    write_state_field(
+        "preampTrimDb",
+        serde_json::json!(db.clamp(TRIM_MIN_DB, TRIM_MAX_DB)),
+    );
+    apply_side(&ab_side())?;
+    eq_state()
 }
 
 /// Set the global reference loudness (Q-06/Q-16 placeholder — the noise
@@ -3128,6 +3255,9 @@ struct DeviceDto {
     id: String,
     name: String,
     is_default: bool,
+    /// `apo::DeviceApo` for this device — lets the picker steer toward a
+    /// device where the EQ is actually audible.
+    apo: &'static str,
 }
 
 #[tauri::command]
@@ -3135,11 +3265,58 @@ fn devices_list() -> Vec<DeviceDto> {
     devices::list_render_devices()
         .into_iter()
         .map(|d| DeviceDto {
+            apo: device_apo(&d.id).as_str(),
             id: d.id,
             name: d.name,
             is_default: d.is_default,
         })
         .collect()
+}
+
+/// Devices this process has seen WITHOUT APO. A device that was Missing and is
+/// now Active was just registered: APO 1.4.2 went live at once (observed
+/// 2026-10-26), older versions may need a reboot, so the UI says
+/// both (TB-32). Process-lifetime only: after an app restart the evidence is gone
+/// and we just say "active".
+static APO_SEEN_MISSING: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+fn device_apo(id: &str) -> apo::DeviceApo {
+    let s = apo::device_apo_status(id);
+    if s == apo::DeviceApo::Missing {
+        let mut seen = APO_SEEN_MISSING.lock().unwrap();
+        if !seen.iter().any(|x| x == id) {
+            seen.push(id.to_string());
+        }
+    }
+    s
+}
+
+fn default_device_apo() -> (&'static str, bool) {
+    let Some(id) = devices::default_render_device_id() else {
+        return (apo::DeviceApo::Unknown.as_str(), false);
+    };
+    let s = device_apo(&id);
+    let pending = s == apo::DeviceApo::Active && APO_SEEN_MISSING.lock().unwrap().contains(&id);
+    (s.as_str(), pending)
+}
+
+/// Open APO's own device selector (elevated) so the user can tick the device.
+/// Returns immediately; when the selector closes we re-push state so the
+/// banner updates without the user doing anything (TB-32).
+#[tauri::command]
+fn apo_open_device_selector(app: tauri::AppHandle) -> Result<(), String> {
+    let install = apo::detect().map_err(|e| e.to_string())?;
+    apo::device_selector_path(&install).ok_or_else(|| {
+        format!("couldn't find APO's device selector in {}", install.install_path.display())
+    })?;
+    std::thread::spawn(move || {
+        use tauri::Emitter;
+        if let Err(e) = apo::run_device_selector(&install) {
+            let _ = app.emit("apo-selector-error", e);
+        }
+        let _ = app.emit("apo-config-changed", ());
+    });
+    Ok(())
 }
 
 #[tauri::command]
@@ -4938,6 +5115,7 @@ pub fn run() {
             ab_set,
             devices_list,
             device_set_default,
+            apo_open_device_selector,
             abx_start,
             abx_audition,
             abx_vote,
@@ -4969,6 +5147,7 @@ pub fn run() {
             preset_create_from_chain,
             settings_state,
             set_reference_db,
+            set_preamp_trim,
             set_level_matching,
             engine_test_tone,
             calibration_noise,

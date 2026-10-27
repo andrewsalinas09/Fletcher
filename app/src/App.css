@@ -2114,6 +2114,13 @@ button.ghost {
   color: #55503f;
 }
 
+/* TB-32: the EQ room's "APO isn't on this device" banner — same paper card, one row of actions. */
+.apo-banner-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .clips-tracks {
   flex: 1;
   overflow-y: auto;
