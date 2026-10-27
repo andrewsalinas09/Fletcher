@@ -49,6 +49,30 @@ const fmtHz = (hz: number) =>
 const fmtGain = (g: number) => `${g > 0 ? "+" : ""}${+g.toFixed(1)}`;
 /** Imports compute exact Qs (a REW shelf's equivalent Q is 0.6708203932…); show three places. */
 const fmtQ = (q: number) => `${+q.toFixed(3)}`;
+/** The tool behind an APO config file, in words a user knows; unknown files keep their name. */
+const toolOfFile = (file: string) => {
+  const f = file.toLowerCase();
+  if (f === "fletcher.txt") return "Fletcher";
+  if (f === "peace.txt") return "Peace";
+  if (f === "config.txt") return "Equalizer APO";
+  return file;
+};
+
+/** Release notes come from CHANGELOG.md: render its "- " bullets and **bold**, nothing more. */
+function ReleaseNotes({ text }: { text: string }) {
+  const inline = (s: string) =>
+    s.split(/(\*\*[^*]+\*\*)/).map((part, i) =>
+      part.startsWith("**") && part.endsWith("**") ? <b key={i}>{part.slice(2, -2)}</b> : part,
+    );
+  const lines = text.split(/\r?\n/).filter((l) => l.trim());
+  return (
+    <ul className="update-notes">
+      {lines.map((l, i) => (
+        <li key={i}>{inline(l.replace(/^\s*-\s+/, ""))}</li>
+      ))}
+    </ul>
+  );
+}
 
 function pathFrom(freqs: number[], dbs: number[], yOf: (db: number) => number): string {
   return dbs
@@ -975,7 +999,7 @@ function HistoryTree({
           )}
           <span
             className="row-act"
-            title="rename — gesture labels become intentions"
+            title="rename this step"
             onClick={() => setEditingLabel(selNode?.label ?? "")}
           >
             ✎
@@ -1117,7 +1141,7 @@ function HistoryTree({
             className="primary"
             disabled={!baseNode}
             onClick={() => baseNode && selNode && onAbx(selNode.id, baseNode.id)}
-            title="blind ABX these two — Fletcher claims nothing; the test is the only arbiter"
+            title="blind ABX test these two — find out if you can really hear the difference"
           >
             {baseNode ? `⚖ blind test #${selNodeId} vs #${baseId}` : "⚖ blind test"}
           </button>
@@ -3069,9 +3093,9 @@ const verdictOf = (r: AbxResult): { text: string; good: boolean } => {
   if (r.sequential) {
     const base = `${correct}/${r.trials} · p ${fmtP(p)} at stop`;
     if (r.decision === "difference")
-      return { text: `you heard it — sequential verdict (α=β=0.05) · ${base}`, good: true };
+      return { text: `you heard it — adaptive test, stopped early · ${base}`, good: true };
     if (r.decision === "noDifference")
-      return { text: `no difference at this sensitivity — sequential verdict · ${base}`, good: false };
+      return { text: `no difference at this sensitivity — adaptive test, stopped early · ${base}`, good: false };
     return { text: `undecided at the ${r.trials}-trial cap — ${base}`, good: false };
   }
   return p <= 0.05
@@ -3919,7 +3943,7 @@ function MainApp() {
   const testTone = (mode: "exclusive" | "shared") => {
     setTestingTone(true);
     invoke<string>("engine_test_tone", { mode })
-      .then((info) => showNotice(`track engine OK — ${info}`))
+      .then((info) => showNotice(`Clip Studio playback OK — ${info}`))
       .catch((e) => showNotice(String(e)))
       .finally(() => setTestingTone(false));
   };
@@ -5718,8 +5742,7 @@ function MainApp() {
           </p>
         ) : (
           <p className="t-keys">
-            {`Read-only: this filter lives in ${f.sourceFile}, which belongs to another
-            tool. Fletcher never edits files it doesn't own — duplicate From live
+            {`Read-only: this filter belongs to another tool (${toolOfFile(f.sourceFile)}). Fletcher never edits files it doesn't own — duplicate From live
             (or copy the external entry in the preset menu) to make an editable version.`}
           </p>
         )}
@@ -6589,7 +6612,7 @@ function MainApp() {
                   title={
                     labProto === "pref"
                       ? "preference runs a fixed count — sequential stopping would inflate the preference score"
-                      : "sequential (SPRT): the test ends the moment the answer is statistically settled — usually ~10–20 trials, capped at 40. The stop rule is declared up front and recorded."
+                      : "adaptive: the test ends the moment the answer is statistically settled — usually ~10–20 trials, capped at 40. The stop rule is declared up front and recorded."
                   }
                   onClick={() => {
                     if (labProto === "pref") return;
@@ -7038,8 +7061,8 @@ function MainApp() {
             {tools && !tools.ffmpeg && (
               <div className="tool-banner">
                 <p>
-                  The track engine decodes with <b>ffmpeg</b> — fetched on demand into Fletcher's own
-                  tools folder (~180 MB, BtbN's official build), never installed system-wide.
+                  Clip Studio plays files using <b>ffmpeg</b> — a ~180 MB download into Fletcher's own
+                  tools folder, never installed system-wide.
                 </p>
                 {toolsProg?.which === "ffmpeg" ? (
                   <span className="mono dim-sm">{`downloading… ${toolsProg.pct ?? 0}%`}</span>
@@ -7070,7 +7093,7 @@ function MainApp() {
                       onClick={() =>
                         playing ? invoke("track_toggle").catch(() => {}) : playTrack(t)
                       }
-                      title={playing ? "click = play/pause" : "play through the track engine"}
+                      title={playing ? "click = play/pause" : "play in Clip Studio"}
                     >
                       <div className="ct-main">
                         <div className="ct-line">
@@ -7169,7 +7192,7 @@ function MainApp() {
                     <span className="spacer" />
                     <span
                       className={`scale-opt mono ${genText != null ? "on" : ""}`}
-                      title="the recipe itself, as JSON — everything the engine can do, validated on apply (this format becomes the API later)"
+                      title="the recipe itself, as JSON — everything the generator can do, checked when you apply it"
                       onClick={() => {
                         setGenErr(null);
                         setGenText(genText != null ? null : JSON.stringify(genSpec, null, 2));
@@ -7580,7 +7603,7 @@ function MainApp() {
               <span className="preset-wrap">
                 <span
                   className="hist-chip mono"
-                  title="Clip Studio view settings — this room's own options"
+                  title="Clip Studio display options"
                   onClick={() => setClipsMenu((o) => !o)}
                 >
                   ⚙
@@ -7837,8 +7860,7 @@ function MainApp() {
                 </>
               ) : (
                 <p className="dim-sm clips-empty">
-                  Play a track to see its waveform. Timeline, in/out clips and markers come next —
-                  then the spectrogram, FFT and moments.
+                  Play a track to see its waveform, spectrogram and FFT, and to cut clips.
                 </p>
               )}
             </div>
@@ -8015,7 +8037,7 @@ function MainApp() {
                 pink noise and set your physical volume so it sits where you like listening: that knob
                 position is your reference, and it absorbs the digital number entirely. −8 dB is a headroom
                 budget, not a taste choice: a boosted chain can only be level-matched if its peaks fit under
-                0 dBFS, so raising this toward 0 breaks matching. Volume anchoring comes later (Q-16).
+                0 dBFS, so raising this toward 0 breaks matching.
               </span>
             </div>
 
@@ -8048,8 +8070,8 @@ function MainApp() {
                 )}
                 <span className="set-live dim-sm">
                   {settings.preampTrimDb === 0
-                    ? "no trim — the matched preamp plays as computed"
-                    : `${fmtGain(settings.preampTrimDb)} dB on top of the matched preamp, on every side`}
+                    ? "no trim — levels play as matched"
+                    : `${fmtGain(settings.preampTrimDb)} dB added to everything Fletcher plays, A and B alike`}
                 </span>
               </div>
               {settings.foreignPreampDb !== 0 && (
@@ -8057,18 +8079,18 @@ function MainApp() {
                   <span className="set-key">Outside attenuation</span>
                   <span className="set-val mono warn-text">{fmtGain(settings.foreignPreampDb)} dB</span>
                   <span className="set-live warn-text">
-                    from Preamp lines Fletcher doesn't own — it can't edit them (ADR-0007), only offset them
+                    from Preamp lines you or another tool added — Fletcher can't edit them, only offset them
                   </span>
                 </div>
               )}
               <span className="set-note">
                 Moves absolute loudness without touching what makes comparisons honest. Reference loudness is
-                capped at 0 dB, so when attenuation lives somewhere Fletcher may not edit — a hand-added
-                Preamp in config.txt, another tool's file — the app has no way to answer "it's too quiet".
-                This is that lever, and the only one that can push the written preamp above 0 dB. It is added
-                equally to A and to B, so it cancels in every comparison: level matching survives it intact
-                (ADR-0003). 1 dB steps by design — level never jumps (TB-20). Above 0 dB total, a boosted
-                chain can clip; back it off if you hear it.
+                capped at 0 dB, so when attenuation lives somewhere Fletcher may not edit — a Preamp line
+                you or another tool added to Equalizer APO's config — the app has no other way to answer
+                "it's too quiet". This is that control, and the only one that can raise Fletcher's output
+                above 0 dB. It is added equally to A and to B, so it cancels in every comparison: level
+                matching still works. It moves in 1 dB steps so the level never jumps. Above 0 dB total, a
+                boosted preset can clip; back it off if you hear it.
               </span>
             </div>
 
@@ -8079,21 +8101,21 @@ function MainApp() {
                 <div className={`switch ${autostart ? "on" : ""}`} onClick={toggleAutostart}>
                   <div className="knob" />
                 </div>
-                <span className="set-live dim-sm">runs in the tray for hotkeys and profiles</span>
+                <span className="set-live dim-sm">runs in the tray so the A/B hotkey works</span>
               </div>
               <div className="set-row">
                 <span className="set-key">A/B hotkey</span>
                 <span className="mono set-kbd">Ctrl + Shift + A</span>
               </div>
               <div className="set-row">
-                <span className="set-key">Track engine</span>
+                <span className="set-key">Clip Studio playback</span>
                 <button onClick={() => testTone("exclusive")} disabled={testingTone}>
                   {testingTone ? "playing…" : "play test tone"}
                 </button>
                 <span className="set-live dim-sm">quiet 2 s tone, exclusive path — other audio pauses</span>
               </div>
               <span className="set-note">
-                Proves the direct device path Clip Studio's track engine uses: Equalizer APO and Windows
+                Checks the direct-to-device path Clip Studio uses: Equalizer APO and Windows
                 volume are bypassed, so the tone starts silent and ramps in. Other apps' audio stops and
                 may need a manual restart afterwards.
               </span>
@@ -8126,7 +8148,7 @@ function MainApp() {
                         : `install ${update.available.version}`}
                     </button>
                   </div>
-                  <pre className="update-notes">{update.available.notes ?? "No release notes for this version."}</pre>
+                  <ReleaseNotes text={update.available.notes ?? "No release notes for this version."} />
                   <span className="set-note">
                     Installing closes Fletcher for a few seconds and reopens it. Your EQ, presets, history and
                     results are kept. Not possible during a blind test or hearing-profile session.
@@ -8207,8 +8229,9 @@ function MainApp() {
                 )}
               </div>
               <span className="set-note">
-                Equalizer APO: Fletcher writes only fletcher.txt and one Include line — Peace and hand-written
-                configs are never touched. ffmpeg decodes everything the track engine plays; yt-dlp imports
+                Equalizer APO: Fletcher writes only its own file (fletcher.txt) and adds one line to APO's
+                config — Peace and hand-written configs are never touched. ffmpeg decodes everything Clip
+                Studio plays; yt-dlp imports
                 audio from URLs. Managed tools are fetched on demand into Fletcher's own tools folder, never
                 installed system-wide.
               </span>
@@ -8270,7 +8293,7 @@ function MainApp() {
                 }}
               >
                 <b>{presets.active ?? "No preset"}</b>
-                <span className="dim-sm">{state.sourceFiles.join(" + ")}</span>
+                <span className="dim-sm">{state.sourceFiles.map(toolOfFile).join(" + ")}</span>
                 <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6">
                   <path d="M4 6l4 4 4-4" />
                 </svg>
@@ -8338,7 +8361,7 @@ function MainApp() {
                       <div>
                         <div className="t-title">Flat</div>
                         <p>
-                          Empties Fletcher's chain (fletcher.txt) so Fletcher adds nothing to the
+                          Turns off all of Fletcher's filters so Fletcher adds nothing to the
                           signal. External EQs like Peace are unaffected — if their filters are on,
                           you'll still hear those.
                         </p>
@@ -8362,8 +8385,8 @@ function MainApp() {
                             <div>
                               <div className="t-title">{`${inc} — external EQ`}</div>
                               <p>
-                                {`config.txt includes ${inc}, but it belongs to another tool
-                                (Peace). Fletcher never edits or toggles files it doesn't own,
+                                {`${inc} belongs to ${toolOfFile(inc) === inc ? "another tool" : toolOfFile(inc)}.
+                                Fletcher never edits or toggles files it doesn't own,
                                 so it can't switch this on or off — do that in the other tool.`}
                               </p>
                               <p>
@@ -8407,8 +8430,8 @@ function MainApp() {
                         <div>
                           <div className="t-title">{p}</div>
                           <p>
-                            Click to activate: this chain is written to fletcher.txt with a freshly
-                            computed auto-preamp, and APO applies it instantly. While active, every
+                            Click to activate: this preset goes live with a freshly computed
+                            auto-preamp, and APO applies it instantly. While active, every
                             edit you make saves back into the preset automatically.
                           </p>
                           <p className="t-keys">⧉ duplicate · × delete (permanent — no undo)</p>
@@ -8583,7 +8606,7 @@ function MainApp() {
             {!!settings?.foreignPreampDb && (
               <span
                 className="warn-chip"
-                title={`${fmtGain(settings.foreignPreampDb)} dB of Preamp comes from lines Fletcher doesn't own (ADR-0007) — it can't remove them. Settings › OUTPUT › Output trim offsets it.`}
+                title={`${fmtGain(settings.foreignPreampDb)} dB of Preamp comes from lines you or another tool added — Fletcher can't remove them. Settings › OUTPUT › Output trim offsets it.`}
               >
                 ⚠ {fmtGain(settings.foreignPreampDb)} dB from outside Fletcher
               </span>
@@ -8598,7 +8621,7 @@ function MainApp() {
             <span className="preset-wrap">
               <span
                 className="hist-chip mono"
-                title="EQ view settings — this room's own options (the Settings tab is system-level)"
+                title="EQ display options (app-wide settings are in the Settings tab)"
                 onClick={() => setEqMenu((o) => !o)}
               >
                 ⚙
@@ -8836,7 +8859,7 @@ function MainApp() {
                 </div>
               );
             })}
-            <div className="cell add" title="add a filter to fletcher.txt" onClick={addFilter}>
+            <div className="cell add" title="add a filter" onClick={addFilter}>
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
                 <path d="M8 3v10M3 8h10" />
               </svg>
@@ -8873,8 +8896,8 @@ function MainApp() {
                   No filters — but not naive bypass: everything in Fletcher (flat, every
                   preset, your chain mid-edit) is normalized to one global reference
                   loudness, so flipping compares tone, not volume. Louder always sounds
-                  better; matched is honest. The reference will be calibratable in
-                  Settings.
+                  better; matched is honest. You can set the reference level in
+                  Settings › Reference.
                 </p>
                 <p className="t-vals mono">{`reference ${fmtGain(ab.matchDb)} dB`}</p>
               </div>,
@@ -8947,7 +8970,7 @@ function MainApp() {
         ) : ab.shortfallDb > 0.05 ? (
           <span
             className="matched mono unmatched"
-            title={`This chain needs more headroom than clip safety allows: it sits ${ab.shortfallDb.toFixed(1)} dB above the reference, so the comparison is only imperfectly matched (TB-08). Lower the reference in Settings or trim boosts to fully match.`}
+            title={`This preset needs more headroom than clip safety allows: it sits ${ab.shortfallDb.toFixed(1)} dB above the reference, so the comparison is only imperfectly matched. Lower the reference in Settings or trim boosts to fully match.`}
           >
             <span className="dot bad" />
             {`matched — short ${ab.shortfallDb.toFixed(1)} dB (clip cap)`}

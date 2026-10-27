@@ -2707,10 +2707,13 @@ button.ghost {
 
 .update-notes {
   margin: 0 0 0 166px;
-  font-family: inherit;
+  padding-left: 16px;
   font-size: 11.5px;
   line-height: 1.45;
-  white-space: pre-wrap;
+}
+
+.update-notes li + li {
+  margin-top: 4px;
 }
 
 .set-val {
