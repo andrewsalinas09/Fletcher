@@ -3903,8 +3903,8 @@ function MainApp() {
         setUpdate(s);
         if (!quiet && !s.available) setUpdateNote("You have the latest version.");
       })
-      // Offline is normal; only say so when the user asked.
-      .catch(() => !quiet && setUpdateNote("Couldn't check for updates — this computer may be offline."))
+      // Offline is normal; only say so when the user asked — and say what actually happened.
+      .catch((e) => !quiet && setUpdateNote(String(e)))
       .finally(() => !quiet && setUpdateBusy(null));
   };
   useEffect(() => {

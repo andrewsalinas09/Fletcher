@@ -44,13 +44,21 @@ pub async fn update_check(app: tauri::AppHandle) -> Result<UpdateStatus, String>
     let current = app.package_info().version.to_string();
     let found = match app.updater().map_err(|e| e.to_string())?.check().await {
         Ok(found) => found,
-        // The latest release has no build for this platform: nothing to
-        // install, not a failure.
+        // Reached GitHub, but there's nothing to install: the latest release
+        // has no build for this platform, or no latest.json at all (any
+        // release published without the Release workflow, e.g. v0.1.0 — the
+        // server answers 404). Not a failure, and certainly not "offline".
         Err(
             tauri_plugin_updater::Error::TargetNotFound(_)
-            | tauri_plugin_updater::Error::TargetsNotFound(_),
+            | tauri_plugin_updater::Error::TargetsNotFound(_)
+            | tauri_plugin_updater::Error::ReleaseNotFound,
         ) => None,
-        Err(e) => return Err(format!("Couldn't reach the update server: {e}")),
+        Err(e @ tauri_plugin_updater::Error::Reqwest(_)) => {
+            return Err(format!(
+                "Couldn't reach the update server — this computer may be offline ({e})"
+            ));
+        }
+        Err(e) => return Err(format!("The update check failed: {e}")),
     };
     let available = found.map(|update| Available {
         version: update.version.clone(),
