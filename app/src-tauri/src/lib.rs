@@ -331,9 +331,13 @@ fn set_fletcher_chain(filters: Vec<FilterIn>) -> Result<EqState, String> {
 /// Rewrite fletcher.txt from a chain (with fresh auto-preamp). Also feeds a
 /// running track session — the tuning loop and the engine share one truth.
 fn activate_chain(chain: &[ChainFilter]) -> Result<(), String> {
+    activate_chain_at(chain, matched_preamp(&specs_of(chain)))
+}
+
+/// `activate_chain` at an explicit preamp: comparisons pass the PAIRED level
+/// from `matched_pair`, so both sides of an A/B or a blind test match (TB-08).
+fn activate_chain_at(chain: &[ChainFilter], preamp: f64) -> Result<(), String> {
     let install = apo::detect().map_err(|e| e.to_string())?;
-    let specs = specs_of(chain);
-    let preamp = matched_preamp(&specs);
     write_fletcher_file(&install.config_path, &render_fletcher_file(preamp, chain))?;
     push_chain_to_track(chain);
     Ok(())
@@ -514,6 +518,22 @@ fn matched_preamp(specs: &[FilterSpec]) -> f64 {
     matched_preamp_full(specs).0
 }
 
+/// Preamps for two chains that will be COMPARED (TB-08 v2). Each side is first
+/// matched to the reference on its own; if the clip-safe cap stops either one
+/// short, BOTH come down by the larger shortfall, so they always play at the
+/// same loudness, just below the reference. Matching the pair to each other is
+/// the guarantee that matters (ADR-0003); landing exactly on the reference is
+/// secondary. Returns (preamp_a, preamp_b, dB below reference; 0 = on it).
+fn matched_pair(a: &[FilterSpec], b: &[FilterSpec]) -> (f64, f64, f64) {
+    let (pa, sa) = matched_preamp_full(a);
+    let (pb, sb) = matched_preamp_full(b);
+    let below = sa.max(sb);
+    let lower = |p: f64, own: f64| {
+        (((p - (below - own)) * 10.0).round() / 10.0).clamp(PREAMP_MIN_DB, PREAMP_MAX_DB)
+    };
+    (lower(pa, sa), lower(pb, sb), below)
+}
+
 /// The preamp a PRESET stores. Deliberately untrimmed (ADR-0014): the trim is
 /// a property of this machine's playback, not of the tuning. Baking it in
 /// would make an exported preset arrive at someone else's ears offset by a
@@ -561,18 +581,19 @@ fn matched_preamp_untrimmed(specs: &[FilterSpec]) -> (f64, f64) {
 }
 
 /// Write fletcher.txt for the given side: A = the active chain; B = flat,
-/// level-matched to the chain's average loudness.
+/// level-matched to the chain's average loudness. Both sides use the PAIRED
+/// levels, so a boost that hits the clip cap brings Flat down with it instead
+/// of leaving it louder (TB-08 v2).
 fn apply_side(side: &str) -> Result<(), String> {
     let chain = active_chain();
+    let (pa, pb, _) = matched_pair(&specs_of(&chain), &[]);
     match side {
+        // Flat goes to the file only; a running track keeps the active chain.
         "b" => {
             let install = apo::detect().map_err(|e| e.to_string())?;
-            write_fletcher_file(
-                &install.config_path,
-                &render_fletcher_file(matched_preamp(&[]), &[]),
-            )
+            write_fletcher_file(&install.config_path, &render_fletcher_file(pb, &[]))
         }
-        _ => activate_chain(&chain),
+        _ => activate_chain_at(&chain, pa),
     }
 }
 
@@ -3447,17 +3468,18 @@ fn device_set_default(id: String) -> Result<EqState, String> {
 struct AbInfo {
     side: String,
     match_db: f64,
-    /// TB-08: dB by which the active chain sits ABOVE the reference because
-    /// the clip-safe cap won. 0 = fully matched.
+    /// TB-08: dB by which BOTH sides sit below the reference because the
+    /// active chain's clip-safe cap won. They still match each other
+    /// (`matched_pair`); 0 = both exactly on the reference.
     shortfall_db: f64,
 }
 
 #[tauri::command]
 fn ab_info() -> AbInfo {
-    let (_, shortfall_db) = matched_preamp_full(&specs_of(&active_chain()));
+    let (_, match_db, shortfall_db) = matched_pair(&specs_of(&active_chain()), &[]);
     AbInfo {
         side: ab_side(),
-        match_db: matched_preamp(&[]),
+        match_db,
         shortfall_db,
     }
 }
@@ -3639,7 +3661,12 @@ fn trial_apply_audition(session: &mut TrialSession, target: &str) -> Result<(), 
     let hear_a = trial_hear_a(session, target);
     match &session.material {
         Material::System => {
-            activate_chain(if hear_a { &session.a } else { &session.b })?;
+            let (pa, pb, _) = matched_pair(&specs_of(&session.a), &specs_of(&session.b));
+            if hear_a {
+                activate_chain_at(&session.a, pa)?;
+            } else {
+                activate_chain_at(&session.b, pb)?;
+            }
         }
         Material::Clips { suspended, .. } => {
             if *suspended {
@@ -3888,7 +3915,7 @@ fn spawn_trial_clip(
     session.shared.loop_on.store(true, Relaxed);
     session.shared.side_b.store(!hear_a, Relaxed);
     let (sa, sb) = (specs_of(chains.a), specs_of(chains.b));
-    let (pa, pb) = (matched_preamp(&sa), matched_preamp(&sb));
+    let (pa, pb, _) = matched_pair(&sa, &sb);
     {
         let mut bus = session.shared.bus.lock().unwrap();
         *bus = engine::BusConfig {
@@ -3980,8 +4007,9 @@ fn trial_start_inner(app: &tauri::AppHandle, spec: TrialSpec) -> Result<TrialSta
     {
         let freqs = log_freqs(20.0, 20000.0, CURVE_POINTS);
         let (sa, sb) = (specs_of(&chain_a), specs_of(&chain_b));
-        let ra = chain_response_db(&sa, matched_preamp(&sa), FS, &freqs);
-        let rb = chain_response_db(&sb, matched_preamp(&sb), FS, &freqs);
+        let (pa, pb, _) = matched_pair(&sa, &sb);
+        let ra = chain_response_db(&sa, pa, FS, &freqs);
+        let rb = chain_response_db(&sb, pb, FS, &freqs);
         if ra.iter().zip(&rb).all(|(x, y)| (x - y).abs() < 0.05) {
             return Err(
                 "A and B level-match to the same response — there is no difference to test".into(),
@@ -4225,7 +4253,7 @@ fn trial_build_clips_material(
     // the loudest clip so nothing exceeds the reference target and clips keep
     // their natural relative loudness.
     let (sa, sb) = (specs_of(chain_a), specs_of(chain_b));
-    let (pa, pb) = (matched_preamp(&sa), matched_preamp(&sb));
+    let (pa, pb, _) = matched_pair(&sa, &sb);
     let target = -16.0 + (reference_db() + 8.0);
     let mut measured: std::collections::HashMap<i64, TrialClip> = std::collections::HashMap::new();
     let mut track_gain: std::collections::HashMap<i64, f64> = std::collections::HashMap::new();
@@ -5037,10 +5065,20 @@ fn spawn_config_watcher(handle: tauri::AppHandle) {
     });
 }
 
+/// Bring the main window back from the tray, unminimized and focused. Used by
+/// the tray's "Show Fletcher" and by a second launch (single instance).
+fn show_main_window(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.show();
+        let _ = win.unminimize();
+        let _ = win.set_focus();
+    }
+}
+
 fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::menu::{Menu, MenuItem};
     use tauri::tray::TrayIconBuilder;
-    use tauri::Manager;
 
     let show = MenuItem::with_id(app, "show", "Show Fletcher", true, None::<&str>)?;
     let flip = MenuItem::with_id(app, "flip", "Flip A/B\tCtrl+Shift+A", true, None::<&str>)?;
@@ -5051,13 +5089,7 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
         .menu(&menu)
         .tooltip("Fletcher — honest EQ")
         .on_menu_event(|app, event| match event.id.as_ref() {
-            "show" => {
-                if let Some(win) = app.get_webview_window("main") {
-                    let _ = win.show();
-                    let _ = win.unminimize();
-                    let _ = win.set_focus();
-                }
-            }
+            "show" => show_main_window(app),
             "flip" => ab_flip(app),
             "quit" => app.exit(0),
             _ => {}
@@ -5158,6 +5190,13 @@ fn setup_hotkey(app: &tauri::App) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Must be the first plugin. A second launch (Start menu, autostart, a
+        // double-click while it's in the tray) brings this window forward and
+        // exits, instead of starting a second copy that fights over fletcher.txt
+        // and the A/B hotkey.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_main_window(app)
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())

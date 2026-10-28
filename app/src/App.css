@@ -576,6 +576,16 @@ button.ghost {
   height: 100%;
 }
 
+/* The plot sits in a frame inside the panel; labels live in the gutters around it. */
+.plot-bg {
+  fill: var(--panel);
+}
+
+.plot-frame {
+  fill: none;
+  stroke: var(--line-mid);
+}
+
 .grid-minor {
   stroke: #eee9dd;
 }
@@ -586,6 +596,11 @@ button.ghost {
 
 .grid-vert {
   stroke: var(--line);
+}
+
+/* The unlabelled log steps between the labelled lines (issue #4): visible, never competing. */
+.grid-vert-minor {
+  stroke: #eee9dd;
 }
 
 .grid-zero {

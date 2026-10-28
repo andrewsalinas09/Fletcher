@@ -34,15 +34,20 @@ const OWN_FILE = "fletcher.txt";
 const KINDS = ["PK", "LSC", "LS", "HSC", "HS", "LP", "LPQ", "HP", "HPQ", "NO", "BP", "AP"];
 
 // ---- graph geometry (design/Main.dc.html v5) ----
+// The EQ graph is drawn at its panel's real pixel size (measured), so it never
+// letterboxes; these are only the size before the first measurement.
 const GW = 1090;
 const GH = 330;
+/** Gutters around the plot: dB labels left, Hz labels below, the scale control above. */
+const PLOT_PAD = { l: 48, r: 18, t: 30, b: 26 };
 const FMIN = 20;
 const FMAX = 20000;
-
-const xOf = (f: number) =>
-  ((Math.log10(f) - Math.log10(FMIN)) / (Math.log10(FMAX) - Math.log10(FMIN))) * GW;
-const fOf = (x: number) =>
-  Math.pow(10, Math.log10(FMIN) + (x / GW) * (Math.log10(FMAX) - Math.log10(FMIN)));
+/** Every 1–9 step of each decade in range: the faint log grid (GitHub issue #4). */
+const FREQ_GRID = [10, 100, 1000, 10000]
+  .flatMap((decade) => [1, 2, 3, 4, 5, 6, 7, 8, 9].map((m) => m * decade))
+  .filter((f) => f >= FMIN && f <= FMAX);
+/** The labelled lines: 2-5-10 in every decade, edge to edge. */
+const FREQ_LABELS = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
 
 const fmtHz = (hz: number) =>
   hz >= 1000 ? `${+(hz / 1000).toFixed(2)}k` : `${+hz.toFixed(0)}`;
@@ -74,7 +79,12 @@ function ReleaseNotes({ text }: { text: string }) {
   );
 }
 
-function pathFrom(freqs: number[], dbs: number[], yOf: (db: number) => number): string {
+function pathFrom(
+  freqs: number[],
+  dbs: number[],
+  xOf: (f: number) => number,
+  yOf: (db: number) => number,
+): string {
   return dbs
     .map((db, i) => `${i === 0 ? "M" : "L"}${xOf(freqs[i]).toFixed(1)} ${yOf(db).toFixed(1)}`)
     .join(" ");
@@ -3233,6 +3243,8 @@ function MainApp() {
     noticeTimer.current = window.setTimeout(() => setNotice(null), 6000);
   };
   const svgRef = useRef<SVGSVGElement>(null);
+  // The EQ graph's real pixel size: the SVG draws 1:1 at whatever size its panel is.
+  const [gsize, setGsize] = useState({ w: GW, h: GH });
   const stateRef = useRef<EqState | null>(null);
   stateRef.current = state;
   const dragging = useRef(false);
@@ -3338,6 +3350,21 @@ function MainApp() {
 
   // ---- Clip Studio (M2: library + track engine transport) ----
   const [view, setView] = useState<"eq" | "lab" | "settings" | "clips" | "prints">("eq");
+  // Measure the EQ graph's panel whenever it's on screen (it mounts with the EQ view).
+  useLayoutEffect(() => {
+    const panel = svgRef.current?.parentElement;
+    if (!panel) return;
+    const measure = () => {
+      // Inner size (no border), so the drawing maps 1:1 onto screen pixels.
+      const w = panel.clientWidth;
+      const h = panel.clientHeight;
+      if (w > 0 && h > 0) setGsize((g) => (g.w === w && g.h === h ? g : { w, h }));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(panel);
+    return () => ro.disconnect();
+  }, [view, state != null]);
   const viewModeRef = useRef(view);
   viewModeRef.current = view;
   const [library, setLibrary] = useState<LibraryState | null>(null);
@@ -5690,13 +5717,23 @@ function MainApp() {
   if (!dragging.current) frozenRange.current = yScale === "auto" ? autoFit : yScale;
   const dbRange = frozenRange.current;
 
-  const dbOfR = (y: number, r: number) => ((GH / 2 - y) / (GH / 2 - 30)) * r;
-  const yOf = (db: number) => GH / 2 - (db / dbRange) * (GH / 2 - 30);
+  // The plot rectangle inside the measured SVG: ±dbRange spans it exactly, so
+  // the grid fills the frame edge to edge and labels live in the gutters.
+  const px0 = PLOT_PAD.l;
+  const px1 = Math.max(px0 + 120, gsize.w - PLOT_PAD.r);
+  const py0 = PLOT_PAD.t;
+  const py1 = Math.max(py0 + 80, gsize.h - PLOT_PAD.b);
+  const lf0 = Math.log10(FMIN);
+  const lf1 = Math.log10(FMAX);
+  const xOf = (f: number) => px0 + ((Math.log10(f) - lf0) / (lf1 - lf0)) * (px1 - px0);
+  const fOf = (x: number) => Math.pow(10, lf0 + ((x - px0) / (px1 - px0)) * (lf1 - lf0));
+  const dbOfR = (y: number, r: number) => r - ((y - py0) / (py1 - py0)) * 2 * r;
+  const yOf = (db: number) => py0 + ((dbRange - db) / (2 * dbRange)) * (py1 - py0);
   // Curves beyond the scale ride the plot's edge instead of vanishing: a chain
   // far below the floor (a REW import stacking LP + HP) stays one continuous,
   // visibly off-scale line. Handles still use the exact yOf.
-  const plotFloorDb = dbOfR(GH - 26, dbRange);
-  const plotCeilDb = dbOfR(2, dbRange);
+  const plotFloorDb = dbOfR(py1, dbRange);
+  const plotCeilDb = dbOfR(py0, dbRange);
   const yOfPinned = (db: number) => yOf(Math.max(plotFloorDb, Math.min(plotCeilDb, db)));
 
   const gridSteps = useMemo(() => {
@@ -5720,10 +5757,10 @@ function MainApp() {
       ...state.sumDb.map((db) => yOf(db - state.preampDb)),
       ...state.filters.map((f) => yOf(f.gainDb)),
     ];
-    const top = ys.length ? Math.min(...ys) : GH / 2;
-    return Math.max(4, top - 34);
+    const top = ys.length ? Math.min(...ys) : (py0 + py1) / 2;
+    return Math.max(py0 + 4, top - 34);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, dbRange]);
+  }, [state, dbRange, gsize]);
 
   const filterTip = (f: EqFilter) => {
     const info = TYPE_INFO[f.kind] ?? { name: f.kind, desc: "" };
@@ -5800,7 +5837,7 @@ function MainApp() {
     const o = dragOrig.current.get(i);
     if (!o) return;
     const p = svgPoint(e);
-    const x = Math.max(0, Math.min(GW, p.x + grabOffset.current.dx));
+    const x = Math.max(px0, Math.min(px1, p.x + grabOffset.current.dx));
     const f = fOf(x);
     const db = dbOfR(p.y + grabOffset.current.dy, dbRange);
     const clamped = Math.max(-dbRange, Math.min(dbRange, db));
@@ -8033,11 +8070,12 @@ function MainApp() {
                 </span>
               </div>
               <span className="set-note">
-                Everything — flat, every preset, chains mid-edit — is normalized to this loudness. Play the
-                pink noise and set your physical volume so it sits where you like listening: that knob
-                position is your reference, and it absorbs the digital number entirely. −8 dB is a headroom
-                budget, not a taste choice: a boosted chain can only be level-matched if its peaks fit under
-                0 dBFS, so raising this toward 0 breaks matching.
+                Everything — flat, every preset, even one you're still editing — plays at this loudness, so
+                comparisons are about tone, not volume. Play the pink noise and set your volume knob where
+                you like listening: that knob position becomes your reference, whatever the number here.
+                −8 dB leaves room for boosts. A preset can only reach this level if its boosts fit without
+                clipping; raise it toward 0 and boosted presets can't, so both sides of a comparison play a
+                little quieter instead — still matched, just below the reference.
               </span>
             </div>
 
@@ -8686,38 +8724,47 @@ function MainApp() {
                 </span>
               ))}
             </div>
-            <svg viewBox={`0 0 ${GW} ${GH}`} className="graph" ref={svgRef}>
+            <svg viewBox={`0 0 ${gsize.w} ${gsize.h}`} className="graph" ref={svgRef}>
               {/* Curves stay inside the plot: a deep chain (a REW import stacking LP + HP)
-                  must not paint over the frequency labels below it. */}
+                  must not paint over the labels in the gutters. */}
               <defs>
                 <clipPath id="eq-plot-area">
-                  <rect x={0} y={0} width={GW} height={GH - 24} />
+                  <rect x={px0} y={py0} width={px1 - px0} height={py1 - py0} />
                 </clipPath>
               </defs>
+              <rect x={px0} y={py0} width={px1 - px0} height={py1 - py0} className="plot-bg" />
               {gridSteps.minor.map((db) => (
-                <line key={`n${db}`} x1={0} x2={GW} y1={yOf(db)} y2={yOf(db)} className="grid-minor" />
+                <line key={`n${db}`} x1={px0} x2={px1} y1={yOf(db)} y2={yOf(db)} className="grid-minor" />
               ))}
               {gridSteps.major.map((db) => (
-                <line key={`j${db}`} x1={0} x2={GW} y1={yOf(db)} y2={yOf(db)} className="grid-major" />
+                <line key={`j${db}`} x1={px0} x2={px1} y1={yOf(db)} y2={yOf(db)} className="grid-major" />
               ))}
-              {[30, 50, 100, 200, 500, 1000, 2000, 5000, 10000].map((f) => (
-                <line key={f} x1={xOf(f)} x2={xOf(f)} y1={0} y2={GH - 24} className="grid-vert" />
+              {FREQ_GRID.map((f) => (
+                <line
+                  key={f}
+                  x1={xOf(f)}
+                  x2={xOf(f)}
+                  y1={py0}
+                  y2={py1}
+                  className={FREQ_LABELS.includes(f) ? "grid-vert" : "grid-vert-minor"}
+                />
               ))}
-              <line x1={0} x2={GW} y1={yOf(0)} y2={yOf(0)} className="grid-zero" />
+              <line x1={px0} x2={px1} y1={yOf(0)} y2={yOf(0)} className="grid-zero" />
+              <rect x={px0} y={py0} width={px1 - px0} height={py1 - py0} className="plot-frame" />
 
               {[...multiSel].map((si) => {
                 const sf = state.filters[si];
                 return sf?.enabled && sf.responseDb.length ? (
                   <path
                     key={`sc${si}`}
-                    d={pathFrom(state.freqs, sf.responseDb, yOfPinned)}
+                    d={pathFrom(state.freqs, sf.responseDb, xOf, yOfPinned)}
                     className={`sel-curve ${sf.gainDb >= 0 ? "boost" : "cut"}`}
                     clipPath="url(#eq-plot-area)"
                   />
                 ) : null;
               })}
               <path
-                d={pathFrom(state.freqs, state.sumDb.map((db) => db - state.preampDb), yOfPinned)}
+                d={pathFrom(state.freqs, state.sumDb.map((db) => db - state.preampDb), xOf, yOfPinned)}
                 className="sum-curve"
                 clipPath="url(#eq-plot-area)"
               />
@@ -8742,7 +8789,7 @@ function MainApp() {
               {sel && (
                 <g
                   className="flag"
-                  transform={`translate(${Math.max(4, Math.min(xOf(sel.fcHz) - 94, GW - 216))}, ${flagY})`}
+                  transform={`translate(${Math.max(px0 + 4, Math.min(xOf(sel.fcHz) - 94, px1 - 216))}, ${flagY})`}
                 >
                   <rect width="212" height="24" />
                   <text x="9" y="16">
@@ -8752,11 +8799,16 @@ function MainApp() {
               )}
 
               <g className="axis">
-                {[30, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000].map((f) => (
-                  <text key={f} x={xOf(f) - 8} y={GH - 8}>{fmtHz(f)}</text>
+                {/* Gutter labels: Hz centred under their lines, dB right-aligned to the frame. */}
+                {FREQ_LABELS.map((f) => (
+                  <text key={f} x={xOf(f)} y={py1 + 16} textAnchor="middle">
+                    {fmtHz(f)}
+                  </text>
                 ))}
                 {labelSteps.map((db) => (
-                  <text key={db} x={6} y={yOf(db) + 4}>{db === 0 ? "0 dB" : fmtGain(db)}</text>
+                  <text key={db} x={px0 - 7} y={yOf(db) + 3.5} textAnchor="end">
+                    {db === 0 ? "0 dB" : fmtGain(db)}
+                  </text>
                 ))}
               </g>
             </svg>
@@ -8969,11 +9021,11 @@ function MainApp() {
           </span>
         ) : ab.shortfallDb > 0.05 ? (
           <span
-            className="matched mono unmatched"
-            title={`This preset needs more headroom than clip safety allows: it sits ${ab.shortfallDb.toFixed(1)} dB above the reference, so the comparison is only imperfectly matched. Lower the reference in Settings or trim boosts to fully match.`}
+            className="matched mono"
+            title={`This preset's boosts can't reach your reference loudness without clipping, so both sides play ${ab.shortfallDb.toFixed(1)} dB quieter than the reference. They're still matched to each other, so the comparison is fair. To compare at the reference level, lower Reference loudness in Settings — −8 dB suits most presets.`}
           >
-            <span className="dot bad" />
-            {`matched — short ${ab.shortfallDb.toFixed(1)} dB (clip cap)`}
+            <span className="dot" />
+            {`matched · ${ab.shortfallDb.toFixed(1)} dB below reference`}
           </span>
         ) : (
           <span className="matched mono">
