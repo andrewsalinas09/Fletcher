@@ -113,6 +113,9 @@ fn set_ab_side(side: &str) {
 
 const FS: f64 = 48000.0;
 const CURVE_POINTS: usize = 200;
+/// Where every EQ curve starts: 10 Hz, the lowest Fc a filter can have, so
+/// nothing a filter does is off the left edge of a graph.
+const CURVE_FMIN: f64 = 10.0;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -218,7 +221,7 @@ fn eq_state() -> Result<EqState, String> {
         }
     }
 
-    let freqs = log_freqs(20.0, 20000.0, CURVE_POINTS);
+    let freqs = log_freqs(CURVE_FMIN, 20000.0, CURVE_POINTS);
     // Every line is drawn and summed as the filter APO actually plays (TB-34);
     // one APO rejects (a Q-less PK) contributes nothing, as in APO.
     let resolved: Vec<Option<FilterSpec>> = filters
@@ -1236,7 +1239,7 @@ struct ChainCurves {
 /// and j is (responseDb_i + matchedPreampDb_i) − (responseDb_j + matchedPreampDb_j).
 #[tauri::command]
 fn chain_curves(chains: Vec<Vec<FilterIn>>) -> Result<ChainCurves, String> {
-    let freqs = log_freqs(20.0, 20000.0, CURVE_POINTS);
+    let freqs = log_freqs(CURVE_FMIN, 20000.0, CURVE_POINTS);
     let curves = chains
         .iter()
         .map(|filters| {
@@ -1264,7 +1267,7 @@ struct FilterCurves {
 /// editor's live plot and type thumbnails, Q-27). Same math as the graph.
 #[tauri::command]
 fn filter_responses(filters: Vec<FilterIn>) -> Result<FilterCurves, String> {
-    let freqs = log_freqs(20.0, 20000.0, CURVE_POINTS);
+    let freqs = log_freqs(CURVE_FMIN, 20000.0, CURVE_POINTS);
     let curves = specs_of(&chain_of(&filters)?)
         .iter()
         .map(|spec| chain_response_db(std::slice::from_ref(spec), 0.0, FS, &freqs))
@@ -4345,7 +4348,7 @@ fn trial_start_inner(app: &tauri::AppHandle, spec: TrialSpec) -> Result<TrialSta
     // Comparing responses, not filter lists, catches differently-written but
     // audibly identical chains.
     {
-        let freqs = log_freqs(20.0, 20000.0, CURVE_POINTS);
+        let freqs = log_freqs(CURVE_FMIN, 20000.0, CURVE_POINTS);
         let (sa, sb) = (specs_of(&chain_a), specs_of(&chain_b));
         let (pa, pb, _, _) = matched_pair(&sa, &sb);
         let ra = chain_response_db(&sa, pa, FS, &freqs);

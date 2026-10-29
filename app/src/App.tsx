@@ -43,14 +43,15 @@ const GW = 1090;
 const GH = 330;
 /** Gutters around the plot: dB labels left, Hz labels below, the scale control above. */
 const PLOT_PAD = { l: 48, r: 18, t: 30, b: 26 };
-const FMIN = 20;
+/** EQ graphs start at 10 Hz, the lowest Fc a filter can have. */
+const FMIN = 10;
 const FMAX = 20000;
 /** Every 1–9 step of each decade in range: the faint log grid (GitHub issue #4). */
 const FREQ_GRID = [10, 100, 1000, 10000]
   .flatMap((decade) => [1, 2, 3, 4, 5, 6, 7, 8, 9].map((m) => m * decade))
   .filter((f) => f >= FMIN && f <= FMAX);
 /** The labeled lines: 2-5-10 in every decade, edge to edge. */
-const FREQ_LABELS = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
+const FREQ_LABELS = [10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
 
 const fmtHz = (hz: number) =>
   hz >= 1000 ? `${+(hz / 1000).toFixed(2)}k` : `${+hz.toFixed(0)}`;
@@ -3311,7 +3312,7 @@ function FilterEditor({
   const W = 576;
   const H = 180;
   const pad = { l: 34, r: 8, t: 8, b: 18 };
-  const lf0 = Math.log10(20);
+  const lf0 = Math.log10(FMIN);
   const lf1 = Math.log10(20000);
   const xOf = (f: number) => pad.l + ((Math.log10(f) - lf0) / (lf1 - lf0)) * (W - pad.l - pad.r);
   const ownFreqs = curves?.freqs ?? freqs;
