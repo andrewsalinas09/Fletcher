@@ -3215,6 +3215,155 @@ const TYPE_INFO: Record<string, { name: string; desc: string }> = {
 /** The filter types whose Gain is used; the rest ignore it. */
 const GAIN_KINDS = new Set(["PK", "LSC", "LS", "HSC", "HS"]);
 
+/** One global hotkey action (GitHub issue #5). `combo` uses KeyboardEvent.code
+ *  names ("ctrl+shift+KeyA") and is kept while the hotkey is switched off. */
+type HotkeyInfo = { id: string; label: string; combo: string; enabled: boolean; default: string };
+
+const MOD_CODES = new Set([
+  "ControlLeft",
+  "ControlRight",
+  "ShiftLeft",
+  "ShiftRight",
+  "AltLeft",
+  "AltRight",
+  "MetaLeft",
+  "MetaRight",
+]);
+
+const KEY_NAMES: Record<string, string> = {
+  Backquote: "`",
+  Minus: "-",
+  Equal: "=",
+  BracketLeft: "[",
+  BracketRight: "]",
+  Backslash: "\\",
+  Semicolon: ";",
+  Quote: "'",
+  Comma: ",",
+  Period: ".",
+  Slash: "/",
+  ArrowUp: "↑",
+  ArrowDown: "↓",
+  ArrowLeft: "←",
+  ArrowRight: "→",
+  Space: "Space",
+  Escape: "Esc",
+  PageUp: "PgUp",
+  PageDown: "PgDn",
+};
+
+/** "ctrl+shift+KeyA" → ["Ctrl", "Shift", "A"]: keycap labels. */
+function comboParts(combo: string): string[] {
+  return combo.split("+").map((p) => {
+    const l = p.toLowerCase();
+    if (l === "ctrl" || l === "control") return "Ctrl";
+    if (l === "shift") return "Shift";
+    if (l === "alt") return "Alt";
+    if (l === "super" || l === "meta") return "Win";
+    if (/^Key[A-Z]$/.test(p)) return p.slice(3);
+    if (/^Digit\d$/.test(p)) return p.slice(5);
+    if (/^Numpad\d$/.test(p)) return `Num ${p.slice(6)}`;
+    return KEY_NAMES[p] ?? p;
+  });
+}
+
+/** Compact one-line form for hints: "Ctrl·Shift·A". */
+const fmtCombo = (combo: string) => comboParts(combo).join("·");
+
+/** A remappable hotkey: click to listen, press a combination, done. Esc
+ *  cancels. While listening, Fletcher's hotkeys are paused so pressing the old
+ *  one doesn't fire it, and no other shortcut in the app sees the keys. */
+function HotkeyField({ info, onChange }: { info: HotkeyInfo; onChange: (list: HotkeyInfo[]) => void }) {
+  const [listening, setListening] = useState(false);
+  const [held, setHeld] = useState<string[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  const set = (patch: { combo?: string; enabled?: boolean }) =>
+    invoke<HotkeyInfo[]>("hotkey_set", { id: info.id, combo: patch.combo ?? null, enabled: patch.enabled ?? null })
+      .then((list) => {
+        setError(null);
+        onChange(list);
+      })
+      .catch((e) => setError(String(e)));
+
+  useEffect(() => {
+    if (!listening) return;
+    invoke("hotkeys_pause", { paused: true }).catch(() => {});
+    const mods = (e: KeyboardEvent) =>
+      [e.ctrlKey && "ctrl", e.altKey && "alt", e.shiftKey && "shift", e.metaKey && "super"].filter(
+        Boolean,
+      ) as string[];
+    const stop = () => setListening(false);
+    const down = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const m = mods(e);
+      if (e.code === "Escape" && m.length === 0) return stop();
+      if (MOD_CODES.has(e.code)) return setHeld(m);
+      stop();
+      set({ combo: [...m, e.code].join("+") });
+    };
+    const up = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setHeld(mods(e));
+    };
+    window.addEventListener("keydown", down, true);
+    window.addEventListener("keyup", up, true);
+    window.addEventListener("blur", stop);
+    return () => {
+      window.removeEventListener("keydown", down, true);
+      window.removeEventListener("keyup", up, true);
+      window.removeEventListener("blur", stop);
+      setHeld([]);
+      invoke("hotkeys_pause", { paused: false }).catch(() => {});
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [listening]);
+
+  const caps = (parts: string[]) =>
+    parts.map((p, n) => (
+      <span key={n} className="kbd-cap mono">
+        {p}
+      </span>
+    ));
+  return (
+    <div className="hk-row">
+      <span className="set-key">{info.label}</span>
+      <div
+        className={`switch ${info.enabled ? "on" : ""}`}
+        title={info.enabled ? "On: works from any app" : "Off: your combination is kept for when you switch it back on"}
+        onClick={() => set({ enabled: !info.enabled })}
+      >
+        <div className="knob" />
+      </div>
+      <button
+        className={`hk-field ${listening ? "listening" : ""} ${info.enabled ? "" : "off"}`}
+        onClick={() => {
+          setError(null);
+          setListening((l) => !l);
+        }}
+        title={listening ? "Press a key combination (Esc to cancel)" : "Click, then press a new combination"}
+      >
+        {listening ? (
+          <>
+            {caps(held.map((m) => comboParts(m)[0]))}
+            <span className="hk-prompt">{held.length ? "+ a key…" : "press a combination…"}</span>
+          </>
+        ) : (
+          caps(comboParts(info.combo))
+        )}
+      </button>
+      {info.combo !== info.default && (
+        <span className="fe-btn mono" onClick={() => set({ combo: info.default })}>
+          reset
+        </span>
+      )}
+      {error && <span className="hk-error">{error}</span>}
+    </div>
+  );
+}
+
 const FC_RANGE: [number, number] = [10, 23500];
 const Q_RANGE: [number, number] = [0.05, 50];
 
@@ -4393,6 +4542,13 @@ function MainApp() {
 
   // ---- Settings (v1: the approved artboard) ----
   const [settings, setSettings] = useState<SettingsState | null>(null);
+  /** The global hotkeys and what they're mapped to (issue #5). */
+  const [hotkeyList, setHotkeyList] = useState<HotkeyInfo[]>([]);
+  useEffect(() => {
+    invoke<HotkeyInfo[]>("hotkeys").then(setHotkeyList).catch(() => {});
+  }, []);
+  const abInfo = hotkeyList.find((h) => h.id === "ab_flip");
+  const abHotkey = abInfo?.enabled ? abInfo.combo : null;
   const [autostart, setAutostart] = useState<boolean | null>(null);
   const [calNoise, setCalNoise] = useState(false);
   const toggleCalNoise = () => {
@@ -6766,7 +6922,7 @@ function MainApp() {
                 ))}
               </div>
               <span className="mono dim-sm">
-                {`press A · B · X to switch — ${abx.material === "clips" ? "sample-accurate, in-engine" : "seamless, level-matched"} · Ctrl·Shift·A cycles`}
+                {`press A · B · X to switch — ${abx.material === "clips" ? "sample-accurate, in-engine" : "seamless, level-matched"}${abHotkey ? ` · ${fmtCombo(abHotkey)} cycles` : ""}`}
               </span>
               <div className="trial-vote">
                 <button className="vote-btn" onClick={() => abxVote(true)}>X is A <span className="mono dim-sm">←</span></button>
@@ -8740,17 +8896,12 @@ function MainApp() {
                 </div>
                 {settings.levelMatching ? (
                   <span className="set-live ok-text" title={LEVEL_ESTIMATE_NOTE}>
-                    on — both sides of every comparison are loudness-matched (estimated system-wide, measured in clip trials)
+                    on — comparisons are loudness-matched
                   </span>
                 ) : (
-                  <span className="set-live warn-text">off — every comparison is marked unmatched</span>
+                  <span className="set-live warn-text">off — comparisons are marked unmatched</span>
                 )}
               </div>
-              <span className="set-note">
-                Louder reliably sounds better; matched is honest. Off, Flat stays at your reference level and
-                each preset keeps its own loudness relative to it, with clip protection still on — the A/B bar,
-                trial room, and session records all mark comparisons as unmatched.
-              </span>
             </div>
 
             <div className="set-sect">
@@ -8773,15 +8924,7 @@ function MainApp() {
                     : "plays Flat at exactly your reference level"}
                 </span>
               </div>
-              <span className="set-note">
-                Flat and every preset — even one you're still editing — play at this loudness, so comparisons
-                are about tone, not volume. Play the pink noise and set your volume knob where you like
-                listening: that knob position becomes your reference, whatever the number here. −8 dB leaves
-                room for boosts. A preset whose boosts don't fit at this level without clipping plays below
-                it, and whatever you compare it with comes down by the same amount — so comparisons stay
-                matched; the A/B bar shows how far below. The higher you set this, the more presets that
-                affects.
-              </span>
+              <span className="set-note">Set your volume knob while the pink noise plays. Everything then plays at that level.</span>
             </div>
 
             <div className="set-sect">
@@ -8822,19 +8965,11 @@ function MainApp() {
                   <span className="set-key">Outside attenuation</span>
                   <span className="set-val mono warn-text">{fmtGain(settings.foreignPreampDb)} dB</span>
                   <span className="set-live warn-text">
-                    from Preamp lines you or another tool added — Fletcher can't edit them, only offset them
+                    from Preamp lines outside Fletcher
                   </span>
                 </div>
               )}
-              <span className="set-note">
-                Moves absolute loudness without touching what makes comparisons honest. Reference loudness is
-                capped at 0 dB, so when attenuation lives somewhere Fletcher may not edit — a Preamp line
-                you or another tool added to Equalizer APO's config — this is how you answer "it's too quiet".
-                It is added equally to A and to B, so it cancels in every comparison: level matching still
-                works. It never makes anything clip: it can raise Fletcher's output only as far as outside
-                Preamp lines leave room for, and if one of those is removed, Fletcher lowers itself to match.
-                Any increase Fletcher makes of more than 3 dB fades in 1 dB at a time instead of jumping.
-              </span>
+              <span className="set-note">For when outside Preamp lines leave everything too quiet. A and B move together, so matching holds.</span>
             </div>
 
             <div className="set-sect">
@@ -8847,21 +8982,18 @@ function MainApp() {
                 <span className="set-live dim-sm">runs in the tray so the A/B hotkey works</span>
               </div>
               <div className="set-row">
-                <span className="set-key">A/B hotkey</span>
-                <span className="mono set-kbd">Ctrl + Shift + A</span>
-              </div>
-              <div className="set-row">
                 <span className="set-key">Clip Studio playback</span>
                 <button onClick={() => testTone("exclusive")} disabled={testingTone}>
                   {testingTone ? "playing…" : "play test tone"}
                 </button>
                 <span className="set-live dim-sm">quiet 2 s tone, exclusive path — other audio pauses</span>
               </div>
-              <span className="set-note">
-                Checks the direct-to-device path Clip Studio uses: Equalizer APO and Windows
-                volume are bypassed, so the tone starts silent and ramps in. Other apps' audio stops and
-                may need a manual restart afterwards.
-              </span>
+            </div>
+            <div className="set-sect">
+              <span className="mono set-head">HOTKEYS</span>
+              {hotkeyList.map((h) => (
+                <HotkeyField key={h.id} info={h} onChange={setHotkeyList} />
+              ))}
             </div>
             <div className="set-sect">
               <span className="mono set-head">UPDATES</span>
@@ -8892,10 +9024,7 @@ function MainApp() {
                     </button>
                   </div>
                   <ReleaseNotes text={update.available.notes ?? "No release notes for this version."} />
-                  <span className="set-note">
-                    Installing closes Fletcher for a few seconds and reopens it. Your EQ, presets, history and
-                    results are kept. Not possible during a blind test or hearing-profile session.
-                  </span>
+                  <span className="set-note">Fletcher restarts to install; your presets and history are kept.</span>
                 </>
               )}
               {updateNote && <span className="set-note">{updateNote}</span>}
@@ -8916,27 +9045,9 @@ function MainApp() {
                   </span>
                 </div>
               </div>
-              <span className="set-note">
-                Same layout in both. Standard grays out advanced tools instead of hiding them — hover any grayed
-                control to learn what it does.
-              </span>
+              <span className="set-note">Standard grays out advanced tools; hover one to see what it does.</span>
             </div>
 
-            <div className="set-demo">
-              <span className="mono set-head no-line">HOW GRAYED CONTROLS BEHAVE</span>
-              <div className="set-demo-row">
-                <span className="mono">FINGERPRINTS</span>
-                <span>Fingerprint Lab — measure and match headphones</span>
-              </div>
-              <div className="set-demo-tip">
-                <div className="t-title">Fingerprint Lab</div>
-                <p>
-                  Measures how a headphone actually sounds at your ears using sweeps, so two headphones can be
-                  matched or auditioned virtually. Advanced because it needs a measurement microphone and a quiet
-                  room. Switch to Advanced mode to enable it when it ships (Phase 4).
-                </p>
-              </div>
-            </div>
 
             <div className="set-sect">
               <span className="mono set-head">TOOL PATHS</span>
@@ -8971,13 +9082,7 @@ function MainApp() {
                   <button onClick={() => installTool("yt-dlp")}>Install</button>
                 )}
               </div>
-              <span className="set-note">
-                Equalizer APO: Fletcher writes only its own file (fletcher.txt) and adds one line to APO's
-                config — Peace and hand-written configs are never touched. ffmpeg decodes everything Clip
-                Studio plays; yt-dlp imports
-                audio from URLs. Managed tools are fetched on demand into Fletcher's own tools folder, never
-                installed system-wide.
-              </span>
+              <span className="set-note">Fletcher only writes its own fletcher.txt. ffmpeg plays Clip Studio audio and yt-dlp imports from links; both live in Fletcher's folder.</span>
             </div>
           </div>
         </div>
@@ -9736,9 +9841,10 @@ function MainApp() {
               <div>
                 <div className="t-title">A — your chain</div>
                 <p>
-                  {`The active preset (${presets.active ?? "none — Fletcher adds nothing"}).
-                  Flip with Ctrl+Shift+A from anywhere — Fletcher listens even while hidden
-                  in the tray.`}
+                  {`The active preset (${presets.active ?? "none — Fletcher adds nothing"}). `}
+                  {abHotkey
+                    ? `Flip with ${fmtCombo(abHotkey)} from anywhere — Fletcher listens even while hidden in the tray.`
+                    : "The A/B hotkey is off (Settings › Hotkeys); click A or B to flip."}
                 </p>
               </div>,
             )}
@@ -9816,7 +9922,7 @@ function MainApp() {
             )}
           </div>
         )}
-        <span className="mono dim-sm">Ctrl·Shift·A</span>
+        {abHotkey && <span className="mono dim-sm">{fmtCombo(abHotkey)}</span>}
         {settings?.levelMatching === false ? (
           <span
             className="matched mono unmatched"

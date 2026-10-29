@@ -3056,6 +3056,63 @@ button.ghost {
   background: var(--panel);
 }
 
+/* Remappable hotkeys (issue #5): keycaps at rest, a dashed field while listening. */
+.hk-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.hk-row .set-key {
+  margin-right: 6px;
+}
+
+.hk-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 190px;
+  min-height: 30px;
+  padding: 3px 8px;
+  border: 1px solid var(--line-mid);
+  background: var(--panel);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.hk-field:hover {
+  border-color: var(--line-strong);
+}
+
+.hk-field.off:not(.listening) {
+  opacity: 0.45;
+}
+
+.hk-field.listening {
+  border: 1px dashed var(--ink);
+  background: #fffdf6;
+}
+
+.kbd-cap {
+  font-size: 11px;
+  padding: 2px 7px;
+  background: #fffdf6;
+  border: 1px solid var(--line-mid);
+  border-bottom-width: 2px;
+  border-radius: 3px;
+}
+
+.hk-prompt {
+  font-size: 11.5px;
+  color: var(--dim);
+}
+
+.hk-error {
+  font-size: 11.5px;
+  color: var(--boost);
+}
+
 .set-text {
   font-size: 12px;
 }

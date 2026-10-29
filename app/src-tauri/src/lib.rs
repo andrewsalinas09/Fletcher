@@ -5483,7 +5483,8 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::tray::TrayIconBuilder;
 
     let show = MenuItem::with_id(app, "show", "Show Fletcher", true, None::<&str>)?;
-    let flip = MenuItem::with_id(app, "flip", "Flip A/B\tCtrl+Shift+A", true, None::<&str>)?;
+    let flip = MenuItem::with_id(app, "flip", tray_flip_text(), true, None::<&str>)?;
+    *TRAY_FLIP.lock().unwrap() = Some(flip.clone());
     let quit = MenuItem::with_id(app, "quit", "Quit Fletcher", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show, &flip, &quit])?;
 
@@ -5598,17 +5599,298 @@ fn set_scope_shortcuts(app: &tauri::AppHandle, label: &str, enable: bool) {
     }
 }
 
-fn setup_hotkey(app: &tauri::App) {
+// ---------------- Global hotkeys (remappable; GitHub issue #5) ----------------
+//
+// Every global hotkey is an ACTION with a default combination. state.json's
+// "hotkeys" object maps action id → combination (missing = the default), and
+// "hotkeysOff" lists the actions switched off. Off keeps the combination, so
+// switching back on restores it. Combinations use the browser's KeyboardEvent.code
+// names (ctrl+shift+KeyA), which the shortcut plugin parses directly, so the
+// remapping UI can store exactly what it captured. Add a row to HOTKEYS (and
+// a case in `run_hotkey`) for each new action.
+
+struct HotkeyAction {
+    id: &'static str,
+    label: &'static str,
+    default: &'static str,
+}
+
+const HOTKEYS: &[HotkeyAction] = &[HotkeyAction {
+    id: "ab_flip",
+    label: "Flip A/B",
+    default: "ctrl+shift+KeyA",
+}];
+
+/// System-wide editing shortcuts a global hotkey would steal from every app.
+const RESERVED_COMBOS: &[&str] = &[
+    "ctrl+KeyZ",
+    "ctrl+KeyY",
+    "ctrl+shift+KeyZ",
+    "ctrl+KeyC",
+    "ctrl+KeyV",
+    "ctrl+KeyX",
+    "ctrl+KeyA",
+    "ctrl+KeyS",
+];
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HotkeyInfo {
+    id: &'static str,
+    label: &'static str,
+    /// The chosen combination (kept while switched off).
+    combo: String,
+    enabled: bool,
+    default: &'static str,
+}
+
+/// The chosen combination for an action: stored, else the default.
+fn hotkey_choice(id: &str) -> String {
+    let default = HOTKEYS
+        .iter()
+        .find(|a| a.id == id)
+        .map_or("", |a| a.default);
+    read_state()
+        .get("hotkeys")
+        .and_then(|h| h.get(id))
+        .and_then(|v| v.as_str())
+        .unwrap_or(default)
+        .to_string()
+}
+
+fn hotkey_enabled(id: &str) -> bool {
+    let state = read_state();
+    // A stored null came from an earlier build's "off" (before the switch).
+    let legacy_off = state
+        .get("hotkeys")
+        .and_then(|h| h.get(id))
+        .is_some_and(|v| v.is_null());
+    let off = state
+        .get("hotkeysOff")
+        .and_then(|v| v.as_array())
+        .is_some_and(|ids| ids.iter().any(|v| v.as_str() == Some(id)));
+    !(off || legacy_off)
+}
+
+/// The combination actually registered: the choice, if switched on.
+fn hotkey_combo(id: &str) -> Option<String> {
+    hotkey_enabled(id).then(|| hotkey_choice(id))
+}
+
+fn hotkey_infos() -> Vec<HotkeyInfo> {
+    HOTKEYS
+        .iter()
+        .map(|a| HotkeyInfo {
+            id: a.id,
+            label: a.label,
+            combo: hotkey_choice(a.id),
+            enabled: hotkey_enabled(a.id),
+            default: a.default,
+        })
+        .collect()
+}
+
+fn run_hotkey(app: &tauri::AppHandle, id: &str) {
+    if id == "ab_flip" {
+        ab_flip(app)
+    }
+}
+
+/// Parse a combination, normalized for comparison. Errors are user-facing.
+fn parse_combo(combo: &str) -> Result<tauri_plugin_global_shortcut::Shortcut, String> {
+    combo
+        .parse::<tauri_plugin_global_shortcut::Shortcut>()
+        .map_err(|_| {
+            format!(
+                "{} isn't a key combination Windows can register",
+                pretty_combo(combo)
+            )
+        })
+}
+
+/// "ctrl+shift+KeyA" → "Ctrl+Shift+A", for the tray menu and messages.
+fn pretty_combo(combo: &str) -> String {
+    combo
+        .split('+')
+        .map(|part| match part.to_ascii_lowercase().as_str() {
+            "ctrl" | "control" => "Ctrl".to_string(),
+            "shift" => "Shift".to_string(),
+            "alt" => "Alt".to_string(),
+            "super" | "meta" | "cmd" => "Win".to_string(),
+            _ => part
+                .strip_prefix("Key")
+                .or_else(|| part.strip_prefix("Digit"))
+                .unwrap_or(part)
+                .to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("+")
+}
+
+/// Register one action's combination. Fails when another app holds it.
+fn register_hotkey(app: &tauri::AppHandle, id: &'static str, combo: &str) -> Result<(), String> {
     use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
-    let result = app
-        .global_shortcut()
-        .on_shortcut("ctrl+shift+a", |app, _shortcut, event| {
+    let shortcut = parse_combo(combo)?;
+    app.global_shortcut()
+        .on_shortcut(shortcut, move |app, _shortcut, event| {
             if event.state == ShortcutState::Pressed {
-                ab_flip(app);
+                run_hotkey(app, id);
             }
-        });
-    if result.is_err() {
-        eprintln!("fletcher: could not register Ctrl+Shift+A (in use by another app?)");
+        })
+        .map_err(|_| format!("{} is already used by another app", pretty_combo(combo)))
+}
+
+fn unregister_hotkey(app: &tauri::AppHandle, combo: &str) {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+    if let Ok(shortcut) = parse_combo(combo) {
+        let _ = app.global_shortcut().unregister(shortcut);
+    }
+}
+
+/// The tray's "Flip A/B" item, kept so its shortcut label can follow a remap.
+static TRAY_FLIP: std::sync::Mutex<Option<tauri::menu::MenuItem<tauri::Wry>>> =
+    std::sync::Mutex::new(None);
+
+fn tray_flip_text() -> String {
+    match hotkey_combo("ab_flip") {
+        Some(c) => format!("Flip A/B\t{}", pretty_combo(&c)),
+        None => "Flip A/B".to_string(),
+    }
+}
+
+/// While the remapping UI listens for keys, the current hotkeys are released,
+/// so pressing the old combination to try it doesn't fire it.
+static HOTKEYS_PAUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn register_all_hotkeys(app: &tauri::AppHandle) {
+    for a in HOTKEYS {
+        if let Some(combo) = hotkey_combo(a.id) {
+            if let Err(e) = register_hotkey(app, a.id, &combo) {
+                eprintln!("fletcher: hotkey {}: {e}", a.id);
+            }
+        }
+    }
+}
+
+fn setup_hotkey(app: &tauri::App) {
+    register_all_hotkeys(app.handle());
+}
+
+#[tauri::command]
+fn hotkeys() -> Vec<HotkeyInfo> {
+    hotkey_infos()
+}
+
+/// Remap one action and/or switch it on or off. Validated, registered live,
+/// saved; on any failure the previous setup stays in force. The combination is
+/// remembered while off.
+#[tauri::command]
+fn hotkey_set(
+    app: tauri::AppHandle,
+    id: String,
+    combo: Option<String>,
+    enabled: Option<bool>,
+) -> Result<Vec<HotkeyInfo>, String> {
+    let action = HOTKEYS
+        .iter()
+        .find(|a| a.id == id)
+        .ok_or_else(|| format!("unknown hotkey {id}"))?;
+    let old = hotkey_combo(action.id);
+    let picked = combo.is_some();
+    let choice = combo.unwrap_or_else(|| hotkey_choice(action.id));
+    let on = enabled.unwrap_or_else(|| hotkey_enabled(action.id));
+    // Check a newly picked combination even while switched off, so an invalid
+    // one is refused when chosen, not later when switching back on.
+    let check = (on || picked).then(|| choice.clone());
+    let combo = on.then(|| choice.clone());
+    if let Some(c) = &check {
+        let wanted = parse_combo(c)?;
+        let mods: Vec<String> = c.split('+').map(|p| p.to_ascii_lowercase()).collect();
+        if !mods
+            .iter()
+            .any(|m| matches!(m.as_str(), "ctrl" | "control" | "alt" | "super" | "meta"))
+        {
+            return Err(
+                "Use Ctrl, Alt or Win in the combination, so it can't take over normal typing"
+                    .into(),
+            );
+        }
+        if RESERVED_COMBOS
+            .iter()
+            .any(|r| parse_combo(r).map(|s| s == wanted).unwrap_or(false))
+        {
+            return Err(format!(
+                "{} is a standard editing shortcut in every app; pick another",
+                pretty_combo(c)
+            ));
+        }
+        for other in HOTKEYS.iter().filter(|a| a.id != action.id) {
+            if hotkey_combo(other.id)
+                .is_some_and(|o| parse_combo(&o).map(|s| s == wanted).unwrap_or(false))
+            {
+                return Err(format!("{} is already {}", pretty_combo(c), other.label));
+            }
+        }
+    }
+    let live = !HOTKEYS_PAUSED.load(std::sync::atomic::Ordering::Relaxed);
+    if live {
+        if let Some(o) = &old {
+            unregister_hotkey(&app, o);
+        }
+        if let Some(c) = &combo {
+            if let Err(e) = register_hotkey(&app, action.id, c) {
+                if let Some(o) = &old {
+                    let _ = register_hotkey(&app, action.id, o);
+                }
+                return Err(e);
+            }
+        }
+    }
+    let state = read_state();
+    let mut map = state
+        .get("hotkeys")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    map[action.id] = serde_json::Value::from(choice);
+    write_state_field("hotkeys", map);
+    let mut off: Vec<String> = state
+        .get("hotkeysOff")
+        .and_then(|v| v.as_array())
+        .map(|ids| {
+            ids.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    off.retain(|x| x != action.id);
+    if !on {
+        off.push(action.id.to_string());
+    }
+    write_state_field("hotkeysOff", serde_json::json!(off));
+    if action.id == "ab_flip" {
+        if let Some(item) = TRAY_FLIP.lock().unwrap().as_ref() {
+            let _ = item.set_text(tray_flip_text());
+        }
+    }
+    Ok(hotkey_infos())
+}
+
+/// Release (true) or restore (false) every hotkey while the remapping UI
+/// captures keys. Restoring re-registers whatever is configured by then.
+#[tauri::command]
+fn hotkeys_pause(app: tauri::AppHandle, paused: bool) {
+    use std::sync::atomic::Ordering::Relaxed;
+    if HOTKEYS_PAUSED.swap(paused, Relaxed) == paused {
+        return;
+    }
+    if paused {
+        for a in HOTKEYS {
+            if let Some(c) = hotkey_combo(a.id) {
+                unregister_hotkey(&app, &c);
+            }
+        }
+    } else {
+        register_all_hotkeys(&app);
     }
 }
 
@@ -5732,6 +6014,9 @@ pub fn run() {
             parse_filters,
             chain_curves,
             filter_responses,
+            hotkeys,
+            hotkey_set,
+            hotkeys_pause,
             preview_chain,
             preset_create_from_chain,
             settings_state,

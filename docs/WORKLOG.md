@@ -2,6 +2,12 @@
 
 Append-only session journal. Newest entry first.
 
+## 2026-10-28 (hotkeys + settings text) — Remappable global hotkeys (issue #5); Settings trimmed
+
+- **10 Hz graphs (on main earlier):** EQ graphs and curve grids start at 10 Hz (`CURVE_FMIN`), the lowest Fc. Auto scales still fit from 20 Hz up (`peakFrom20`), or a high-pass's sub-20 Hz roll-off zooms everything out; it rides the edge instead. The blind-test "identical response" check now includes 10–20 Hz.
+- **Issue #5 (A/B hotkey not remappable; Ctrl+Shift+A clashes with games):** the Settings "field" was styled text and the combo was hard-coded. Now a hotkey registry (`HOTKEYS`: id, label, default; `run_hotkey`) with `hotkeys` / `hotkey_set` / `hotkeys_pause`. Combos are stored as KeyboardEvent.code names (`ctrl+shift+KeyA`), which the shortcut plugin parses as-is. State: `hotkeys` (id → combo) + `hotkeysOff` (ids); off keeps the combo (owner: "it should save"). Rules: needs Ctrl/Alt/Win; editing shortcuts refused; clashes with another registered hotkey report "already used by another app" and keep the old one. Games read keys directly and can't be detected, which is why off exists. Capture pauses all hotkeys. The tray label and every hint follow the setting. UI: Settings › HOTKEYS, one reusable `HotkeyField` (keycaps, dashed listening state, switch, reset).
+- **Settings text:** owner found it wordy. Every note is one line or gone; the "how grayed controls behave" demo box removed.
+
 ## 2026-10-28 (filter editor) — Q-27 v1 merged; three history/undo bugs fixed on the way
 
 - **Filter editor (Q-27 v1)**, built on branch `filter-editor` and merged to main: popover from ⤢ on each card, live big plot, sliders + typed values, real-response type gallery, pop-out window that follows the selection (rule 10: traced end to end, `fe-sync`/`fe-cmd`, Ctrl+Z/Y in the window). Details in Q-27. README gained a section and screenshot.
