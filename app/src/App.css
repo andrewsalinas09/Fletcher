@@ -571,6 +571,64 @@ button.ghost {
   border-color: var(--ink);
 }
 
+/* Custom scale: a small drop-down with top/bottom sliders and number boxes. */
+.scale-custom {
+  position: relative;
+  display: flex;
+}
+
+.scale-pop {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 6;
+  display: grid;
+  gap: 6px;
+  padding: 8px 10px;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+}
+
+.scale-row {
+  display: grid;
+  grid-template-columns: 42px 140px 52px auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.scale-row input[type="range"] {
+  width: 100%;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 3px;
+  background: var(--ink);
+  margin: 6px 0;
+  cursor: pointer;
+}
+
+.scale-row input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--ink);
+  border: none;
+}
+
+.scale-reset {
+  justify-self: end;
+}
+
+.scale-num {
+  width: 52px;
+  font-size: 11px;
+  padding: 2px 4px;
+  background: var(--paper);
+  color: var(--ink);
+  border: 1px solid var(--line-mid);
+}
+
 .graph {
   width: 100%;
   height: 100%;

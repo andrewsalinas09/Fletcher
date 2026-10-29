@@ -5744,18 +5744,20 @@ function MainApp() {
   const SCALES = [
     { label: "±6", v: 6 },
     { label: "±12", v: 12 },
-    { label: "±18", v: 18 },
-    { label: "±30", v: 33 }, // margin so a ±30 dot isn't pinned to the pixel edge
+    { label: "±20", v: 20 },
   ];
-  const [yScale, setYScale] = useState<number | "auto">(() => {
+  const [yScale, setYScale] = useState<number | "auto" | "custom">(() => {
     try {
       const s = localStorage.getItem("fletcher.yscale");
-      return s === null || s === "auto" ? "auto" : Number(s);
+      if (s === null || s === "auto") return "auto";
+      if (s === "custom" || s === "33") return "custom"; // 33 = the old ±30
+      if (s === "18") return 20;
+      return SCALES.some((o) => o.v === Number(s)) ? Number(s) : "auto";
     } catch {
       return "auto";
     }
   });
-  const pickScale = (v: number | "auto") => {
+  const pickScale = (v: number | "auto" | "custom") => {
     setYScale(v);
     try {
       localStorage.setItem("fletcher.yscale", String(v));
@@ -5763,6 +5765,61 @@ function MainApp() {
       /* per-viewer nicety only */
     }
   };
+
+  // Custom scale: top and bottom set independently (two sliders + two boxes).
+  // No fixed limits: each slider's track is a 40 dB window around a centre, and
+  // releasing the handle in the outer 20% of the track re-centres it on the
+  // value, so you can grab it again and keep going ("infinite" travel).
+  const CUSTOM_TRACK_DB = 40;
+  const CUSTOM_LIMIT_DB = 200; // sanity only
+  const [custom, setCustom] = useState<{ top: number; bot: number }>(() => {
+    try {
+      const c = JSON.parse(localStorage.getItem("fletcher.yscale.custom") ?? "");
+      if (Number.isFinite(c.top) && Number.isFinite(c.bot)) return { top: c.top, bot: c.bot };
+    } catch {
+      /* fall through to the default */
+    }
+    return { top: 30, bot: -30 };
+  });
+  const [customOpen, setCustomOpen] = useState(false);
+  const [customDraft, setCustomDraft] = useState<{ top?: string; bot?: string }>({});
+  const customRef = useRef<HTMLSpanElement>(null);
+  const [customCentre, setCustomCentre] = useState(() => ({ top: custom.top, bot: custom.bot }));
+  const customTrack = (edge: "top" | "bot") => [
+    customCentre[edge] - CUSTOM_TRACK_DB / 2,
+    customCentre[edge] + CUSTOM_TRACK_DB / 2,
+  ];
+  /** Re-centre a slider's track when its value sits in the outer 20% (or off it). */
+  const recentreCustom = (edge: "top" | "bot", v: number) => {
+    const [lo, hi] = customTrack(edge);
+    const frac = (v - lo) / (hi - lo);
+    if (!(frac > 0.2 && frac < 0.8)) setCustomCentre((c) => ({ ...c, [edge]: v }));
+  };
+  const setCustomEdge = (edge: "top" | "bot", v: number) => {
+    // Top stays at least 1 dB above bottom.
+    const lo = edge === "top" ? custom.bot + 1 : -CUSTOM_LIMIT_DB;
+    const hi = edge === "top" ? CUSTOM_LIMIT_DB : custom.top - 1;
+    const next = { ...custom, [edge]: Math.round(Math.max(lo, Math.min(hi, v)) * 2) / 2 };
+    setCustom(next);
+    try {
+      localStorage.setItem("fletcher.yscale.custom", JSON.stringify(next));
+    } catch {
+      /* per-viewer nicety only */
+    }
+  };
+  useEffect(() => {
+    if (!customOpen) return;
+    const down = (e: PointerEvent) => {
+      if (!customRef.current?.contains(e.target as Node)) setCustomOpen(false);
+    };
+    const key = (e: KeyboardEvent) => e.key === "Escape" && setCustomOpen(false);
+    document.addEventListener("pointerdown", down);
+    document.addEventListener("keydown", key);
+    return () => {
+      document.removeEventListener("pointerdown", down);
+      document.removeEventListener("keydown", key);
+    };
+  }, [customOpen]);
 
   const autoFit = useMemo(() => {
     if (!state) return 12;
@@ -5777,11 +5834,17 @@ function MainApp() {
 
   // Freeze the mapping during a drag even in auto mode: the fit is only
   // allowed to change while nothing is being held.
-  const frozenRange = useRef(12);
-  if (!dragging.current) frozenRange.current = yScale === "auto" ? autoFit : yScale;
-  const dbRange = frozenRange.current;
+  const frozenRange = useRef({ top: 12, bot: -12 });
+  if (!dragging.current)
+    frozenRange.current =
+      yScale === "auto"
+        ? { top: autoFit, bot: -autoFit }
+        : yScale === "custom"
+          ? custom
+          : { top: yScale, bot: -yScale };
+  const { top: yTop, bot: yBot } = frozenRange.current;
 
-  // The plot rectangle inside the measured SVG: ±dbRange spans it exactly, so
+  // The plot rectangle inside the measured SVG: yBot..yTop spans it exactly, so
   // the grid fills the frame edge to edge and labels live in the gutters.
   const px0 = PLOT_PAD.l;
   const px1 = Math.max(px0 + 120, gsize.w - PLOT_PAD.r);
@@ -5791,27 +5854,40 @@ function MainApp() {
   const lf1 = Math.log10(FMAX);
   const xOf = (f: number) => px0 + ((Math.log10(f) - lf0) / (lf1 - lf0)) * (px1 - px0);
   const fOf = (x: number) => Math.pow(10, lf0 + ((x - px0) / (px1 - px0)) * (lf1 - lf0));
-  const dbOfR = (y: number, r: number) => r - ((y - py0) / (py1 - py0)) * 2 * r;
-  const yOf = (db: number) => py0 + ((dbRange - db) / (2 * dbRange)) * (py1 - py0);
+  const dbOf = (y: number) => yTop - ((y - py0) / (py1 - py0)) * (yTop - yBot);
+  const yOf = (db: number) => py0 + ((yTop - db) / (yTop - yBot)) * (py1 - py0);
   // Curves beyond the scale ride the plot's edge instead of vanishing: a chain
   // far below the floor (a REW import stacking LP + HP) stays one continuous,
   // visibly off-scale line. Handles still use the exact yOf.
-  const plotFloorDb = dbOfR(py1, dbRange);
-  const plotCeilDb = dbOfR(py0, dbRange);
+  const plotFloorDb = yBot;
+  const plotCeilDb = yTop;
   const yOfPinned = (db: number) => yOf(Math.max(plotFloorDb, Math.min(plotCeilDb, db)));
 
+  // Grid and labels on multiples of a step, strictly inside the frame; 0 dB is
+  // drawn separately. Wider spans get coarser steps so lines stay readable.
+  const span = yTop - yBot;
+  const stepsBetween = (step: number) => {
+    const out: number[] = [];
+    for (let db = Math.floor(yBot / step + 1) * step; db < yTop; db += step) out.push(db);
+    return out;
+  };
+  // Label every `labelStep` dB (3, 6, 12, 24, …: at most ~14 labels, however
+  // wide a custom scale gets); grid lines on the labels, every other one major.
+  let labelStep = 3;
+  while (span / labelStep > 14) labelStep *= 2;
   const gridSteps = useMemo(() => {
     const minor: number[] = [];
     const major: number[] = [];
-    for (let db = 3; db < dbRange; db += 3) (db % 6 === 0 ? major : minor).push(db, -db);
+    for (const db of stepsBetween(labelStep))
+      if (db !== 0) (db % (2 * labelStep) === 0 ? major : minor).push(db);
     return { minor, major };
-  }, [dbRange]);
-  const labelSteps = useMemo(() => {
-    const step = dbRange > 18 ? 6 : 3;
-    const out: number[] = [0];
-    for (let db = step; db < dbRange; db += step) out.push(db, -db);
-    return out;
-  }, [dbRange]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [yTop, yBot]);
+  const labelSteps = useMemo(
+    () => stepsBetween(labelStep),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [yTop, yBot],
+  );
 
   // The flag sits above everything drawn: the curve's highest point and the
   // highest handle, whichever is taller. It never covers the plot.
@@ -5824,7 +5900,7 @@ function MainApp() {
     const top = ys.length ? Math.min(...ys) : (py0 + py1) / 2;
     return Math.max(py0 + 4, top - 34);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, dbRange, gsize]);
+  }, [state, yTop, yBot, gsize]);
 
   const filterTip = (f: EqFilter) => {
     const info = TYPE_INFO[f.kind] ?? { name: f.kind, desc: "" };
@@ -5903,8 +5979,8 @@ function MainApp() {
     const p = svgPoint(e);
     const x = Math.max(px0, Math.min(px1, p.x + grabOffset.current.dx));
     const f = fOf(x);
-    const db = dbOfR(p.y + grabOffset.current.dy, dbRange);
-    const clamped = Math.max(-dbRange, Math.min(dbRange, db));
+    const db = dbOf(p.y + grabOffset.current.dy);
+    const clamped = Math.max(yBot, Math.min(yTop, db));
     // The grabbed filter follows the cursor; the rest of the selection moves
     // with it — same dB delta, same log-frequency ratio.
     const dGain = clamped - o.gain;
@@ -8815,6 +8891,86 @@ function MainApp() {
                   {s.label}
                 </span>
               ))}
+              <span className="scale-custom" ref={customRef}>
+                <span
+                  className={`scale-opt ${yScale === "custom" ? "on" : ""}`}
+                  onClick={() => {
+                    pickScale("custom");
+                    setCustomOpen((o) => !o);
+                  }}
+                  title="Set the top and bottom of the scale yourself"
+                >
+                  {yScale === "custom" ? `${fmtGain(custom.top)} / ${fmtGain(custom.bot)}` : "custom"}
+                </span>
+                {customOpen && (
+                  <div className="scale-pop">
+                    {(["top", "bot"] as const).map((edge) => {
+                      const [lo, hi] = customTrack(edge);
+                      const release = (e: React.SyntheticEvent<HTMLInputElement>) =>
+                        recentreCustom(edge, +e.currentTarget.value);
+                      return (
+                        <label key={edge} className="scale-row">
+                          <span className="dim-sm">{edge === "top" ? "top" : "bottom"}</span>
+                          <input
+                            type="range"
+                            min={lo}
+                            max={hi}
+                            step={0.5}
+                            value={custom[edge]}
+                            onChange={(e) => {
+                              setCustomDraft({});
+                              setCustomEdge(edge, +e.target.value);
+                            }}
+                            onPointerUp={release}
+                            onKeyUp={release}
+                          />
+                          <input
+                            className="scale-num mono"
+                            type="number"
+                            step={0.5}
+                            value={customDraft[edge] ?? String(custom[edge])}
+                            onChange={(e) => {
+                              // Live while typing whenever it's a usable number;
+                              // half-typed text ("-" on the way to "-15") waits.
+                              setCustomDraft((d) => ({ ...d, [edge]: e.target.value }));
+                              const v = Number(e.target.value);
+                              if (e.target.value.trim() !== "" && Number.isFinite(v)) {
+                                setCustomEdge(edge, v);
+                                if (v < lo || v > hi) setCustomCentre((c) => ({ ...c, [edge]: v }));
+                              }
+                            }}
+                            onBlur={() => {
+                              setCustomDraft((d) => ({ ...d, [edge]: undefined }));
+                              recentreCustom(edge, custom[edge]);
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                            }}
+                          />
+                          <span className="dim-sm">dB</span>
+                        </label>
+                      );
+                    })}
+                    <span
+                      className="scale-opt scale-reset"
+                      onClick={() => {
+                        // Stay in custom, with top/bottom set to what auto would show.
+                        const fit = { top: autoFit, bot: -autoFit };
+                        setCustom(fit);
+                        setCustomCentre(fit);
+                        setCustomDraft({});
+                        try {
+                          localStorage.setItem("fletcher.yscale.custom", JSON.stringify(fit));
+                        } catch {
+                          /* per-viewer nicety only */
+                        }
+                      }}
+                    >
+                      reset
+                    </span>
+                  </div>
+                )}
+              </span>
             </div>
             <svg viewBox={`0 0 ${gsize.w} ${gsize.h}`} className="graph" ref={svgRef}>
               {/* Curves stay inside the plot: a deep chain (a REW import stacking LP + HP)
