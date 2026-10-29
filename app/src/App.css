@@ -874,6 +874,237 @@ button.ghost {
   color: var(--boost-dark);
 }
 
+/* ⤢ in a card's upper left: opens the large filter editor (Q-27). */
+.cell-expand {
+  position: absolute;
+  top: 4px;
+  left: 6px;
+  color: var(--dim);
+  opacity: 0;
+  cursor: pointer;
+  line-height: 0;
+}
+
+.cell:hover .cell-expand,
+.cell.selected .cell-expand,
+.cell-expand.on {
+  opacity: 1;
+}
+
+.cell.selected .cell-expand {
+  color: var(--paper);
+}
+
+.cell-expand:hover {
+  color: var(--ink);
+}
+
+/* The large filter editor (Q-27): a popover with the palette's hard shadow but
+   no backdrop, so the graph behind stays visible and live. Black is kept for
+   the things you act on (text, handles, the current type); structure is gray. */
+.filter-editor {
+  box-sizing: border-box;
+  background: #fffdf6;
+  padding: 10px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.filter-editor.popover {
+  position: fixed;
+  z-index: 550;
+  width: 600px;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  border: 1px solid var(--line-strong);
+  box-shadow: 6px 6px 0 rgb(20 23 26 / 12%);
+}
+
+/* In its own window: fills it. */
+.fe-window {
+  min-height: 100vh;
+  background: #fffdf6;
+}
+
+.fe-window-empty {
+  padding: 24px;
+  font-size: 13px;
+}
+
+.fe-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.fe-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.fe-btn {
+  font-size: 10.5px;
+  padding: 2px 8px;
+  border: 1px solid var(--line-mid);
+  color: var(--dim);
+  cursor: pointer;
+  user-select: none;
+}
+
+.fe-btn:hover {
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+
+.fe-btn.on {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
+.fe-icon {
+  font-size: 15px;
+  line-height: 1;
+  color: var(--dim);
+  cursor: pointer;
+}
+
+.fe-icon:hover {
+  color: var(--ink);
+}
+
+.fe-plot {
+  width: 100%;
+  height: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+
+.fe-zero {
+  stroke: var(--line-mid);
+  stroke-width: 1;
+}
+
+.fe-total {
+  fill: none;
+  stroke: var(--line-strong);
+  stroke-width: 1.4;
+  stroke-dasharray: 4 3;
+}
+
+.fe-controls {
+  display: grid;
+  gap: 6px;
+}
+
+.fe-row {
+  display: grid;
+  grid-template-columns: 44px 1fr 74px 52px;
+  align-items: center;
+  gap: 10px;
+}
+
+.fe-row.unused {
+  opacity: 0.45;
+}
+
+.fe-label {
+  font-size: 11px;
+}
+
+.fe-row input[type="range"] {
+  width: 100%;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 3px;
+  background: var(--line-mid);
+  cursor: pointer;
+}
+
+.fe-row input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--ink);
+  border: none;
+}
+
+.fe-num {
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 12px;
+  padding: 3px 6px;
+  background: var(--panel);
+  color: var(--ink);
+  border: 1px solid var(--line-mid);
+}
+
+.fe-types {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 6px;
+}
+
+.fe-type {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 2px 3px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  cursor: pointer;
+}
+
+.fe-type:hover {
+  border-color: var(--line-strong);
+}
+
+.fe-type.current {
+  border-color: var(--ink);
+}
+
+.fe-thumb {
+  width: 100%;
+  height: auto;
+}
+
+.fe-thumb path {
+  fill: none;
+  stroke: var(--dim);
+  stroke-width: 1.8;
+}
+
+.fe-code {
+  font-size: 10px;
+  color: var(--dim);
+}
+
+.fe-type.current .fe-code {
+  color: var(--ink);
+}
+
+/* Every description in one grid cell; only the shown one is visible, so the box
+   is always as tall as the longest and hovering never moves anything. */
+.fe-desc {
+  display: grid;
+  font-size: 12px;
+}
+
+.fe-desc-item {
+  grid-area: 1 / 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.fe-desc-item.hidden {
+  visibility: hidden;
+}
+
 .toggle-dot {
   width: 8px;
   height: 8px;

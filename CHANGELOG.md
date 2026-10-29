@@ -9,7 +9,7 @@ Each version's section becomes its GitHub release notes and the "what's new" tex
 - **No more sudden volume jumps.** Any rise in level, from a reference change, a preset switch or leaving a comparison, fades in over about a second, never more than 3 dB at a time. Large typed increases ask first.
 - **Blind tests got harder to "cheat".** Switching between A and B in clip tests no longer briefly gets louder mid-switch, and clip trials correct each clip on its measured loudness.
 - **A finer frequency grid** with labels at 20, 50, 100, 200, 500… and a graph that uses the whole panel. Thanks for the request (#4)!
-- **Custom graph scale.** The scale options are now auto, ±6, ±12, ±20 and custom. Custom lets you set the top and bottom separately with sliders or by typing; let go of a slider near its end and it re-centres, so you can keep going.
+- **Custom graph scale.** The scale options are now auto, ±6, ±12, ±20 and custom. Custom lets you set the top and bottom separately with sliders or by typing; let go of a slider near its end and it re-centers, so you can keep going.
 - **A real icon.** Headphones with orange ear cups over a waveform that fades away into the distance, in the window, taskbar, tray and installer.
 - **Opening Fletcher twice brings the existing window forward** instead of starting a second copy.
 - Fletcher fades in briefly at launch.

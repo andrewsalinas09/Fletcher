@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
@@ -49,7 +49,7 @@ const FMAX = 20000;
 const FREQ_GRID = [10, 100, 1000, 10000]
   .flatMap((decade) => [1, 2, 3, 4, 5, 6, 7, 8, 9].map((m) => m * decade))
   .filter((f) => f >= FMIN && f <= FMAX);
-/** The labelled lines: 2-5-10 in every decade, edge to edge. */
+/** The labeled lines: 2-5-10 in every decade, edge to edge. */
 const FREQ_LABELS = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
 
 const fmtHz = (hz: number) =>
@@ -204,6 +204,7 @@ function ValueEdit({
 // This bundle serves every window; the query param picks the personality.
 const IS_HISTORY_WINDOW = new URLSearchParams(window.location.search).get("view") === "history";
 const IS_DIFF_WINDOW = new URLSearchParams(window.location.search).get("view") === "diff";
+const IS_FILTER_WINDOW = new URLSearchParams(window.location.search).get("view") === "filter";
 const IS_SCOPE_SPEC_WINDOW = new URLSearchParams(window.location.search).get("view") === "scope-spec";
 const IS_SCOPE_FFT_WINDOW = new URLSearchParams(window.location.search).get("view") === "scope-fft";
 
@@ -1301,7 +1302,7 @@ function FftView({
       ctx.fillStyle = "#8b8578";
       ctx.fillText(f >= 1000 ? `${f / 1000}k` : `${f}`, x + 3, h - 4);
     }
-    // spectrum: filled grey, −90..−10 dB mapped to the pane
+    // spectrum: filled gray, −90..−10 dB mapped to the pane
     if (spectrum) {
       const yOfDb = (db: number) => h - ((db + 90) / 80) * (h - 14);
       ctx.beginPath();
@@ -3151,62 +3152,421 @@ const verdictOf = (r: AbxResult): { text: string; good: boolean } => {
 
 // Deep teaching copy for the tooltip layer. A lot of detail, gated behind a
 // deliberate 1.5 s still-hover so it never gets in the way.
+/** What each filter type does, in plain facts (Q-27: no adjectives that claim how
+ *  something sounds). Fletcher writes Fc, Gain and Q on every line, and
+ *  Equalizer APO honors a written Q on every type, so Q always applies. */
 const TYPE_INFO: Record<string, { name: string; desc: string }> = {
   PK: {
-    name: "Peaking bell",
-    desc: "Boosts or cuts a band centered on Fc. Q sets the width — low Q (0.5–1.5) is broad and musical, high Q (4+) is surgical and audible as ringing if overdone. The workhorse: most corrections are peaks.",
+    name: "Peaking",
+    desc: "Raises or lowers a band centered on Fc by the gain. Q sets the width: higher Q, narrower band (Q 1 is about 1.4 octaves wide at half the gain).",
   },
   LSC: {
-    name: "Low shelf · corner form",
-    desc: "Raises or lowers everything below Fc by the gain, flattening out at the extremes. Q sets how sharply it bends at the corner (0.7 ≈ gentle; higher overshoots slightly before settling). AutoEQ's standard shelf — bass warmth and bass cuts live here.",
+    name: "Low shelf · center",
+    desc: "Raises or lowers everything below Fc by the gain. Fc is where the shelf reaches half its gain. Q shapes the bend: above about 0.7 the curve overshoots before settling.",
   },
   LS: {
-    name: "Low shelf · fixed slope",
-    desc: "Like LSC but with a fixed, gentle transition and no Q control. Fewer knobs, harder to make ugly.",
+    name: "Low shelf · corner",
+    desc: "The same shelf as LSC, but Fc marks the shelf's corner instead of its half-gain point.",
   },
   HSC: {
-    name: "High shelf · corner form",
-    desc: "The treble mirror of LSC: everything above Fc moves by the gain, with Q shaping the corner. Taming sizzle or adding air is usually one of these.",
+    name: "High shelf · center",
+    desc: "Raises or lowers everything above Fc by the gain. Fc is where the shelf reaches half its gain. Q shapes the bend.",
   },
   HS: {
-    name: "High shelf · fixed slope",
-    desc: "High shelf with a fixed transition and no Q control.",
+    name: "High shelf · corner",
+    desc: "The same shelf as HSC, but Fc marks the shelf's corner instead of its half-gain point.",
   },
   LP: {
     name: "Low pass",
-    desc: "Removes everything above Fc (−3 dB at Fc, falling at 12 dB/octave). Gain is ignored. Fixed 0.707 Q — no resonance.",
+    desc: "Removes content above Fc, falling 12 dB per octave. Gain is not used. At Q 0.707 it is 3 dB down at Fc; higher Q adds a peak at Fc before the roll-off.",
   },
   LPQ: {
-    name: "Low pass · with Q",
-    desc: "Low pass with adjustable Q: above 0.707 it resonates — a peak right at the cutoff before the roll-off. Synth-filter territory.",
+    name: "Low pass · Q",
+    desc: "The same low pass as LP. Fletcher always writes Q, so the two behave identically.",
   },
   HP: {
     name: "High pass",
-    desc: "Removes everything below Fc at 12 dB/octave. Gain is ignored. The classic rumble/sub-sonic cleaner.",
+    desc: "Removes content below Fc, falling 12 dB per octave. Gain is not used. At Q 0.707 it is 3 dB down at Fc; higher Q adds a peak at Fc before the roll-off.",
   },
   HPQ: {
-    name: "High pass · with Q",
-    desc: "High pass with adjustable Q for resonance at the cutoff.",
+    name: "High pass · Q",
+    desc: "The same high pass as HP. Fletcher always writes Q, so the two behave identically.",
   },
   NO: {
     name: "Notch",
-    desc: "A deep, narrow kill at Fc — gain is ignored, Q sets how narrow. For hum, whistles, and ringing resonances you want gone, not reduced.",
+    desc: "Removes a narrow band at Fc entirely. Gain is not used. Q sets the width: higher Q, narrower notch.",
   },
   BP: {
     name: "Band pass",
-    desc: "Keeps only the band around Fc, removing everything else. Gain is ignored. Rarely for correction — great for isolating a band to hear what lives there.",
+    desc: "Keeps the band around Fc and removes the rest. Gain is not used. Q sets the width: higher Q, narrower band.",
   },
   AP: {
     name: "All pass",
-    desc: "Changes phase without changing level — the magnitude curve stays flat. Advanced tool for time/phase alignment; you won't hear it on its own.",
+    desc: "Leaves the level unchanged at every frequency and shifts the phase around Fc. Gain is not used. Q sets how quickly the phase turns.",
   },
 };
+
+/** The filter types whose Gain is used; the rest ignore it. */
+const GAIN_KINDS = new Set(["PK", "LSC", "LS", "HSC", "HS"]);
+
+const FC_RANGE: [number, number] = [10, 23500];
+const Q_RANGE: [number, number] = [0.05, 50];
+
+/** Main → filter-editor window: the filter it shows (follows the selection). */
+type FeSync = { index: number | null; filter: EqFilter | null; freqs: number[]; totalDb: number[] };
+/** Filter-editor window → main: everything the editor can do. */
+type FeCmd =
+  | { type: "patch"; patch: Partial<EqFilter>; immediate: boolean }
+  | { type: "gesture"; label: string }
+  | { type: "duplicate" }
+  | { type: "delete" }
+  | { type: "slide"; active: boolean };
+
+type FilterShape = { kind: string; fcHz: number; gainDb: number; q: number };
+
+/** This filter's response plus every type's at its Fc and Q, straight from the
+ *  engine (`filter_responses`: no planning, no config reads). No debounce: the
+ *  newest settings are requested as soon as the previous answer lands, so the
+ *  curves follow the hand as fast as the engine replies. */
+function useFilterCurves(f: FilterShape, thumbGain: number) {
+  const [res, setRes] = useState<{ freqs: number[]; own: number[]; byKind: Record<string, number[]> } | null>(null);
+  const busy = useRef(false);
+  const next = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    const run = () => {
+      busy.current = true;
+      const own = { enabled: true, kind: f.kind, fcHz: f.fcHz, gainDb: f.gainDb, q: f.q };
+      const thumbs = KINDS.map((k) => ({ enabled: true, kind: k, fcHz: f.fcHz, gainDb: thumbGain, q: f.q }));
+      invoke<{ freqs: number[]; curves: number[][] }>("filter_responses", { filters: [own, ...thumbs] })
+        .then((r) =>
+          setRes({
+            freqs: r.freqs,
+            own: r.curves[0],
+            byKind: Object.fromEntries(KINDS.map((k, n) => [k, r.curves[n + 1]])),
+          }),
+        )
+        .catch(() => {})
+        .finally(() => {
+          busy.current = false;
+          const n = next.current;
+          next.current = null;
+          n?.();
+        });
+    };
+    if (busy.current) next.current = run;
+    else run();
+  }, [f.kind, f.fcHz, f.gainDb, f.q, thumbGain]);
+  return res;
+}
+
+/** The large filter editor (Q-27), as a popover over the EQ page or as the body
+ *  of its own window. Everything edits the same model as the graph and strip. */
+function FilterEditor({
+  mode,
+  filter,
+  freqs,
+  totalDb,
+  pos,
+  onPatch,
+  onGesture,
+  onDuplicate,
+  onDelete,
+  onPopOut,
+  onSlide,
+  onClose,
+}: {
+  mode: "popover" | "window";
+  filter: EqFilter;
+  freqs: number[];
+  /** The whole chain's response (no preamp), drawn faintly for context. */
+  totalDb: number[];
+  pos?: { left: number; bottom: number };
+  /** Change the filter. `immediate` = write now (typed values, clicks). */
+  onPatch: (patch: Partial<EqFilter>, immediate: boolean) => void;
+  /** A gesture finished: record it in the undo graph. */
+  onGesture: (label: string) => void;
+  onDuplicate: () => void;
+  onDelete: () => void;
+  onPopOut?: () => void;
+  /** A slider is held (true) or let go (false): main protects the value meanwhile. */
+  onSlide?: (active: boolean) => void;
+  onClose?: () => void;
+}) {
+  const [hoverKind, setHoverKind] = useState<string | null>(null);
+  const [draft, setDraft] = useState<{ fc?: string; gain?: string; q?: string }>({});
+  const usesGain = GAIN_KINDS.has(filter.kind);
+  // Thumbnails use the filter's own Fc and Q. A gain under 1 dB would draw the
+  // gain types flat, so they're shown at +6 dB then (and say so).
+  const thumbGain = Math.abs(filter.gainDb) >= 1 ? filter.gainDb : 6;
+  const curves = useFilterCurves(filter, thumbGain);
+
+  useEffect(() => {
+    if (mode !== "popover" || !onClose) return;
+    const key = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, [mode, onClose]);
+
+  // The big plot: this filter in its color, the whole chain dashed behind it.
+  const W = 576;
+  const H = 180;
+  const pad = { l: 34, r: 8, t: 8, b: 18 };
+  const lf0 = Math.log10(20);
+  const lf1 = Math.log10(20000);
+  const xOf = (f: number) => pad.l + ((Math.log10(f) - lf0) / (lf1 - lf0)) * (W - pad.l - pad.r);
+  const ownFreqs = curves?.freqs ?? freqs;
+  const ownDb = curves?.own ?? filter.responseDb;
+  const finite = (xs: number[]) => xs.filter((v) => Number.isFinite(v)).map(Math.abs);
+  const peak = Math.max(6, ...finite(ownDb), ...finite(totalDb));
+  const range = Math.min(36, Math.ceil((peak + 1) / 3) * 3);
+  const yOf = (db: number) =>
+    pad.t + ((range - Math.max(-range, Math.min(range, Number.isFinite(db) ? db : -range))) / (2 * range)) * (H - pad.t - pad.b);
+  const color = !usesGain ? "var(--ink)" : filter.gainDb >= 0 ? "var(--boost)" : "var(--cut)";
+  const fcIdx = ownFreqs.reduce(
+    (best, f, n) => (Math.abs(Math.log(f / filter.fcHz)) < Math.abs(Math.log(ownFreqs[best] / filter.fcHz)) ? n : best),
+    0,
+  );
+
+  // One control row: a slider (log for Fc and Q) and a number box.
+  const row = (key: "fc" | "gain" | "q", label: string, unit: string, value: number, enabled: boolean) => {
+    const log = key !== "gain";
+    const [lo, hi] = key === "fc" ? FC_RANGE : key === "q" ? Q_RANGE : [-30, 30];
+    const field = key === "fc" ? "fcHz" : key === "gain" ? "gainDb" : "q";
+    const set = (v: number, immediate: boolean) =>
+      onPatch({ [field]: Math.max(lo, Math.min(hi, v)) } as Partial<EqFilter>, immediate);
+    const shown = key === "fc" ? fmtHz(value) : key === "q" ? fmtQ(value) : fmtGain(value);
+    return (
+      <div className={`fe-row ${enabled ? "" : "unused"}`} key={key}>
+        <span className="mono fe-label">{label}</span>
+        <input
+          type="range"
+          disabled={!enabled}
+          min={log ? Math.log10(lo) : lo}
+          max={log ? Math.log10(hi) : hi}
+          step={log ? 0.001 : 0.1}
+          value={log ? Math.log10(value) : value}
+          onChange={(e) => set(log ? Math.pow(10, +e.target.value) : +e.target.value, false)}
+          // A slide is one gesture: while held, replies from the engine can't
+          // snap the value back (onSlide); on release the final value is
+          // written at once and recorded as one undo step. Window-level
+          // listeners, because the release often lands off the thumb.
+          onPointerDown={(e) => {
+            const el = e.currentTarget;
+            onSlide?.(true);
+            const end = () => {
+              window.removeEventListener("pointerup", end, true);
+              window.removeEventListener("pointercancel", end, true);
+              onSlide?.(false);
+              set(log ? Math.pow(10, +el.value) : +el.value, true);
+              onGesture(`${label} slid`);
+            };
+            window.addEventListener("pointerup", end, true);
+            window.addEventListener("pointercancel", end, true);
+          }}
+          onKeyUp={(e) => {
+            if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(e.key))
+              return;
+            const el = e.currentTarget;
+            set(log ? Math.pow(10, +el.value) : +el.value, true);
+            onGesture(`${label} nudged`);
+          }}
+        />
+        <input
+          className="mono fe-num"
+          disabled={!enabled}
+          value={draft[key] ?? shown}
+          onChange={(e) => setDraft((d) => ({ ...d, [key]: e.target.value }))}
+          onBlur={() => {
+            const txt = draft[key];
+            setDraft((d) => ({ ...d, [key]: undefined }));
+            if (txt === undefined) return;
+            const v = parseFloat(txt.trim().replace(/k$/i, "e3").replace(",", "."));
+            if (Number.isFinite(v)) {
+              set(v, true);
+              onGesture(`${label} typed`);
+            }
+          }}
+          onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+        />
+        <span className="dim-sm fe-unit">{enabled ? unit : "not used"}</span>
+      </div>
+    );
+  };
+
+  const shownKind = hoverKind ?? filter.kind;
+  const thumbRange = Math.max(6, Math.abs(thumbGain)) + 3;
+  const body = (
+    <div className={`filter-editor ${mode}`} style={mode === "popover" && pos ? pos : undefined}>
+      <div className="fe-head">
+        <span className="mono fe-title">{filter.kind}</span>
+        <span className="dim-sm">{TYPE_INFO[filter.kind]?.name}</span>
+        <span className="spacer" />
+        <span
+          className={`fe-btn mono ${filter.enabled ? "on" : ""}`}
+          // On/off is live state, not history (it destroys nothing): no undo step.
+          onClick={() => onPatch({ enabled: !filter.enabled }, true)}
+        >
+          {filter.enabled ? "on" : "off"}
+        </span>
+        <span className="fe-btn mono" onClick={onDuplicate}>
+          duplicate
+        </span>
+        <span className="fe-btn mono" onClick={onDelete}>
+          delete
+        </span>
+        {onPopOut && (
+          <span className="fe-icon" title="open in its own window" onClick={onPopOut}>
+            ⇱
+          </span>
+        )}
+        {onClose && (
+          <span className="fe-icon" title="close (Esc)" onClick={onClose}>
+            ×
+          </span>
+        )}
+      </div>
+
+      <svg className="fe-plot" viewBox={`0 0 ${W} ${H}`}>
+        {[100, 1000, 10000].map((f) => (
+          <line key={f} x1={xOf(f)} x2={xOf(f)} y1={pad.t} y2={H - pad.b} className="grid-minor" />
+        ))}
+        <line x1={pad.l} x2={W - pad.r} y1={yOf(0)} y2={yOf(0)} className="fe-zero" />
+        <path d={pathFrom(freqs, totalDb, xOf, yOf)} className="fe-total" />
+        <path d={pathFrom(ownFreqs, ownDb, xOf, yOf)} fill="none" stroke={color} strokeWidth="2.2" />
+        <circle cx={xOf(filter.fcHz)} cy={yOf(ownDb[fcIdx] ?? 0)} r="5" fill="none" stroke={color} strokeWidth="2" />
+        <g className="axis">
+          {[100, 1000, 10000].map((f) => (
+            <text key={f} x={xOf(f)} y={H - 4} textAnchor="middle">
+              {fmtHz(f)}
+            </text>
+          ))}
+          {[range, 0, -range].map((db) => (
+            <text key={db} x={pad.l - 6} y={yOf(db) + 3.5} textAnchor="end">
+              {db === 0 ? "0" : fmtGain(db)}
+            </text>
+          ))}
+        </g>
+      </svg>
+
+      <div className="fe-controls">
+        {row("fc", "Fc", "Hz", filter.fcHz, true)}
+        {row("gain", "Gain", "dB", filter.gainDb, usesGain)}
+        {row("q", "Q", "", filter.q, true)}
+      </div>
+
+      <div className="fe-types" onMouseLeave={() => setHoverKind(null)}>
+        {KINDS.map((k) => {
+          const db = curves?.byKind[k];
+          const tx = (f: number) => 3 + ((Math.log10(f) - lf0) / (lf1 - lf0)) * 106;
+          const ty = (v: number) =>
+            3 + ((thumbRange - Math.max(-thumbRange, Math.min(thumbRange, Number.isFinite(v) ? v : -thumbRange))) / (2 * thumbRange)) * 30;
+          const current = filter.kind === k;
+          return (
+            <div
+              key={k}
+              className={`fe-type ${current ? "current" : ""}`}
+              onMouseEnter={() => setHoverKind(k)}
+              onClick={() => {
+                if (current) return;
+                onPatch({ kind: k }, true);
+                onGesture(`type → ${k}`);
+              }}
+            >
+              <svg viewBox="0 0 112 36" className="fe-thumb">
+                <line x1="3" x2="109" y1={ty(0)} y2={ty(0)} className="fe-zero" />
+                {db && curves && (
+                  <path d={pathFrom(curves.freqs, db, tx, ty)} style={current ? { stroke: color } : undefined} />
+                )}
+              </svg>
+              <span className="mono fe-code">{k}</span>
+            </div>
+          );
+        })}
+      </div>
+      {/* Every description stacked in one grid cell, only the shown one visible:
+          the box is always as tall as the longest, so hovering never jumps. */}
+      <div className="fe-desc">
+        {KINDS.map((k) => (
+          <div key={k} className={`fe-desc-item ${k === shownKind ? "" : "hidden"}`}>
+            <b>{`${k} · ${TYPE_INFO[k]?.name}`}</b>
+            <span>{TYPE_INFO[k]?.desc}</span>
+          </div>
+        ))}
+      </div>
+      <span className="dim-sm">
+        {Math.abs(filter.gainDb) >= 1 ? "Previews use this filter's settings." : "Previews use this filter's settings, at +6 dB."}
+      </span>
+    </div>
+  );
+  return mode === "popover" ? createPortal(body, document.body) : body;
+}
+
+/** The filter editor in its own window (Q-27, Q-20 pattern): main owns the
+ *  truth and sends `fe-sync` (the selected filter, so it stays linked when you
+ *  pick another); this window sends `fe-cmd` back. Edits apply locally at once
+ *  so sliders don't wait for the round trip, then the next sync takes over. */
+function PopoutFilter() {
+  const [sync, setSync] = useState<FeSync | null>(null);
+  const [local, setLocal] = useState<Partial<EqFilter>>({});
+  const lastLocal = useRef(0);
+  const shownIndex = useRef<number | null>(null);
+
+  useEffect(() => {
+    // Say hello only after the listener is registered (the reply is a one-shot).
+    let un: (() => void) | undefined;
+    let gone = false;
+    listen<FeSync>("fe-sync", (e) => {
+      if (gone) return;
+      const switched = e.payload.index !== shownIndex.current;
+      shownIndex.current = e.payload.index;
+      // Keep our own just-made edits until main has caught up with them.
+      if (switched || Date.now() - lastLocal.current > 250) setLocal({});
+      setSync(e.payload);
+    }).then((f) => {
+      if (gone) {
+        f();
+        return;
+      }
+      un = f;
+      emitTo("main", "fe-hello", {});
+    });
+    return () => {
+      gone = true;
+      un?.();
+    };
+  }, []);
+
+  const send = (cmd: FeCmd) => emitTo("main", "fe-cmd", cmd).catch(() => {});
+  if (!sync) return <div className="fe-window-empty dim">waiting for the main window…</div>;
+  if (sync.index == null || !sync.filter)
+    return <div className="fe-window-empty dim">Select one of your filters in the main window.</div>;
+  return (
+    <div className="fe-window">
+      <FilterEditor
+        mode="window"
+        filter={{ ...sync.filter, ...local }}
+        freqs={sync.freqs}
+        totalDb={sync.totalDb}
+        onPatch={(patch, immediate) => {
+          lastLocal.current = Date.now();
+          setLocal((l) => ({ ...l, ...patch }));
+          send({ type: "patch", patch, immediate });
+        }}
+        onGesture={(label) => send({ type: "gesture", label })}
+        onDuplicate={() => send({ type: "duplicate" })}
+        onDelete={() => send({ type: "delete" })}
+        onSlide={(active) => send({ type: "slide", active })}
+      />
+    </div>
+  );
+}
 
 export default function App() {
   // Pop-out windows render only their view (fed over events). Constant per
   // window lifetime, so the early returns are hook-safe.
   if (IS_HISTORY_WINDOW) return <PopoutHistory />;
   if (IS_DIFF_WINDOW) return <PopoutDiff />;
+  if (IS_FILTER_WINDOW) return <PopoutFilter />;
   if (IS_SCOPE_SPEC_WINDOW) return <PopoutScopeSpec />;
   if (IS_SCOPE_FFT_WINDOW) return <PopoutScopeFft />;
   // eslint-disable-next-line react-hooks/rules-of-hooks
@@ -3234,6 +3594,10 @@ function MainApp() {
   const [eqMenu, setEqMenu] = useState(false);
   const [newName, setNewName] = useState("");
   const [typeMenu, setTypeMenu] = useState<{ i: number; x: number; y: number } | null>(null);
+  /** The large filter editor's popover (Q-27): where it opened, if open. */
+  const [editor, setEditor] = useState<{ left: number; bottom: number } | null>(null);
+  /** Which filter the editor shows, popover and window alike: follows the selection. */
+  const [feIndex, setFeIndex] = useState<number | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const noticeTimer = useRef<number | null>(null);
 
@@ -3242,6 +3606,12 @@ function MainApp() {
   const tipShown = useRef(false);
   const tipTimer = useRef<number | null>(null);
   const tipAnchor = useRef<{ x: number; y: number } | null>(null);
+  /** The element the tip belongs to. A click often removes it (a menu row that
+   *  closes its menu), and a removed element never fires mouseleave, so the tip
+   *  must check it's still there, or it sticks forever. */
+  const tipEl = useRef<HTMLElement | null>(null);
+  /** Pressed on the current element: no tip until the mouse leaves it. */
+  const tipMuted = useRef(false);
 
   const clearTip = () => {
     if (tipTimer.current != null) window.clearTimeout(tipTimer.current);
@@ -3251,26 +3621,51 @@ function MainApp() {
     setTip(null);
   };
 
-  const armTip = (content: React.ReactNode, x: number, y: number) => {
+  const armTip = (content: React.ReactNode, x: number, y: number, el: HTMLElement) => {
+    if (tipMuted.current) return;
     tipAnchor.current = { x, y };
+    tipEl.current = el;
     if (tipTimer.current != null) window.clearTimeout(tipTimer.current);
     tipTimer.current = window.setTimeout(() => {
+      tipTimer.current = null;
+      if (!el.isConnected) return;
       tipShown.current = true;
       setTip({ content, x, y });
     }, 1500);
   };
 
+  // While a tip shows, any pointer motion off its element (or with the element
+  // gone) dismisses it: the safety net for every way a mouseleave can go missing.
+  useEffect(() => {
+    if (!tip) return;
+    const move = (e: PointerEvent) => {
+      const el = tipEl.current;
+      if (!el || !el.isConnected || !el.contains(e.target as Node)) clearTip();
+    };
+    document.addEventListener("pointermove", move);
+    return () => document.removeEventListener("pointermove", move);
+  }, [tip]);
+
   const tipProps = (content: React.ReactNode) => ({
-    onMouseEnter: (e: React.MouseEvent) => armTip(content, e.clientX, e.clientY),
+    onMouseEnter: (e: React.MouseEvent) => {
+      tipMuted.current = false;
+      armTip(content, e.clientX, e.clientY, e.currentTarget as HTMLElement);
+    },
     onMouseMove: (e: React.MouseEvent) => {
       if (tipShown.current) return; // once shown, small motion keeps it
       const a = tipAnchor.current;
       if (!a || Math.hypot(e.clientX - a.x, e.clientY - a.y) > 6) {
-        armTip(content, e.clientX, e.clientY); // moved → restart the clock
+        armTip(content, e.clientX, e.clientY, e.currentTarget as HTMLElement); // moved → restart the clock
       }
     },
-    onMouseLeave: clearTip,
-    onMouseDown: clearTip,
+    onMouseLeave: () => {
+      tipMuted.current = false;
+      clearTip();
+    },
+    onMouseDown: () => {
+      tipMuted.current = true;
+      clearTip();
+    },
   });
 
   const showNotice = (msg: string) => {
@@ -4926,12 +5321,17 @@ function MainApp() {
     presetAction(invoke<EqState>("preset_delete", { name }));
 
   /** Send Fletcher's own chain to the backend (throttled during drags). */
+  /** The newest chain waiting for the throttled write: the timer must send the
+   *  LATEST values, not the ones from the call that started it, or the final
+   *  position of a drag can be dropped (and the reply then snaps it back). */
+  const pendingPush = useRef<EqFilter[] | null>(null);
   const pushChain = (filters: EqFilter[], immediate = false) => {
-    const own = filters
-      .filter((f) => f.sourceFile === OWN_FILE)
-      .map(({ enabled, kind, fcHz, gainDb, q }) => ({ enabled, kind, fcHz, gainDb, q }));
-    const send = () =>
-      invoke<EqState>("set_fletcher_chain", { filters: own })
+    const send = (fs: EqFilter[]) =>
+      invoke<EqState>("set_fletcher_chain", {
+        filters: fs
+          .filter((f) => f.sourceFile === OWN_FILE)
+          .map(({ enabled, kind, fcHz, gainDb, q }) => ({ enabled, kind, fcHz, gainDb, q })),
+      })
         .then((s) => {
           // Mid-drag, the response reflects an already-stale position; letting
           // it win snaps the handle back and forth under the cursor. Keep the
@@ -4959,12 +5359,18 @@ function MainApp() {
     if (immediate) {
       if (pushTimer.current != null) window.clearTimeout(pushTimer.current);
       pushTimer.current = null;
-      send();
-    } else if (pushTimer.current == null) {
-      pushTimer.current = window.setTimeout(() => {
-        pushTimer.current = null;
-        send();
-      }, 60);
+      pendingPush.current = null;
+      send(filters);
+    } else {
+      pendingPush.current = filters;
+      if (pushTimer.current == null) {
+        pushTimer.current = window.setTimeout(() => {
+          pushTimer.current = null;
+          const latest = pendingPush.current;
+          pendingPush.current = null;
+          if (latest) send(latest);
+        }, 60);
+      }
     }
   };
 
@@ -5012,7 +5418,9 @@ function MainApp() {
     if (!h) return;
     const snap = ownSnap();
     const cur = h.nodes.get(h.current)!;
-    if (JSON.stringify(snap) === JSON.stringify(cur.snap)) return; // no-op gesture
+    // No-op gesture: nothing changed but on/off, which isn't history.
+    const shape = (s: ChainSnap) => JSON.stringify(s.map(({ enabled: _on, ...rest }) => rest));
+    if (shape(snap) === shape(cur.snap)) return;
     const node: HistNode = {
       id: h.next++,
       parent: cur.id,
@@ -5049,7 +5457,10 @@ function MainApp() {
     }));
     const filters = [...foreign, ...own];
     setState({ ...cur, filters });
-    selectOnly(null);
+    // Same filters as now: keep what's selected (undoing a move shouldn't
+    // drop the filter you're working on). A different set: indexes no longer
+    // mean the same filters, so clear.
+    if (filters.length !== cur.filters.length) selectOnly(null);
     pushChain(filters, true);
   };
 
@@ -5085,7 +5496,14 @@ function MainApp() {
     const node = h?.nodes.get(id);
     if (!h || !node) return;
     h.current = id;
-    applySnap(node.snap);
+    // On/off isn't history: keep each filter's live on/off when the step has
+    // the same filters, so undoing a gain change can't switch one back on.
+    const live = ownSnap();
+    const snap =
+      live.length === node.snap.length
+        ? node.snap.map((f, k) => ({ ...f, enabled: live[k].enabled }))
+        : node.snap;
+    applySnap(snap);
     setHistVersion((v) => v + 1);
   };
 
@@ -5434,10 +5852,18 @@ function MainApp() {
     partner?: ChainSnap | null;
     spec?: { sel: number | null; base: number | null; cmp: number[] };
   };
-  const busRef = useRef<{ hello: () => void; cmd: (p: HistCmd) => void; diffHello: () => void }>({
+  const busRef = useRef<{
+    hello: () => void;
+    cmd: (p: HistCmd) => void;
+    diffHello: () => void;
+    feHello: () => void;
+    feCmd: (c: FeCmd) => void;
+  }>({
     hello: () => {},
     cmd: () => {},
     diffHello: () => {},
+    feHello: () => {},
+    feCmd: () => {},
   });
   busRef.current = {
     hello: () => {
@@ -5460,15 +5886,17 @@ function MainApp() {
       else if (p.type === "export") exportHistory();
     },
     diffHello: () => emitDiffSync(),
+    feHello: () => emitFeSync(),
+    feCmd: (c) => onFeCmd(c),
   };
   useEffect(() => {
     const u1 = listen("hist-hello", () => busRef.current.hello());
     const u2 = listen<HistCmd>("hist-cmd", (e) => busRef.current.cmd(e.payload));
     const u3 = listen("diff-hello", () => busRef.current.diffHello());
+    const u4 = listen("fe-hello", () => busRef.current.feHello());
+    const u5 = listen<FeCmd>("fe-cmd", (e) => busRef.current.feCmd(e.payload));
     return () => {
-      u1.then((f) => f());
-      u2.then((f) => f());
-      u3.then((f) => f());
+      for (const u of [u1, u2, u3, u4, u5]) u.then((f) => f());
     };
   }, []);
 
@@ -5620,8 +6048,14 @@ function MainApp() {
   // permanent; the ref body carries the always-current behavior.
   const keyRef = useRef<(e: KeyboardEvent) => void>(() => {});
   keyRef.current = (e: KeyboardEvent) => {
-    const tag = (e.target as HTMLElement)?.tagName;
-    if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+    // Typing targets keep their keys; a slider or checkbox that merely has focus
+    // (after you dragged it) must not swallow Ctrl+Z and the other shortcuts.
+    const el = e.target as HTMLElement;
+    const typing =
+      el?.tagName === "TEXTAREA" ||
+      el?.tagName === "SELECT" ||
+      (el?.tagName === "INPUT" && !["range", "checkbox", "radio", "button"].includes((el as HTMLInputElement).type));
+    if (typing) return;
     const k = e.key.toLowerCase();
     if (e.ctrlKey && !e.shiftKey && k === "z") {
       e.preventDefault();
@@ -5700,6 +6134,88 @@ function MainApp() {
     window.setTimeout(() => commitGesture("add filter"), 0);
   };
 
+  /** Insert a copy of filter i right after it, and select the copy. */
+  const duplicateFilter = (i: number) => {
+    const cur = stateRef.current;
+    if (!cur || !cur.filters[i]) return;
+    const filters = [...cur.filters.slice(0, i + 1), { ...cur.filters[i] }, ...cur.filters.slice(i + 1)];
+    setState({ ...cur, filters });
+    selectOnly(i + 1);
+    pushChain(filters, true);
+    window.setTimeout(() => commitGesture("duplicate filter"), 0);
+  };
+
+  /** Open the large editor above filter i's card (the strip sits at the bottom). */
+  const openEditor = (i: number, card: HTMLElement) => {
+    const r = card.getBoundingClientRect();
+    const width = 600;
+    setFeIndex(i);
+    setEditor({
+      left: Math.max(8, Math.min(r.left, window.innerWidth - width - 8)),
+      bottom: Math.max(8, window.innerHeight - r.top + 8),
+    });
+  };
+  const closeEditor = useCallback(() => setEditor(null), []);
+  // The editor follows the selection: pick another of your filters (graph or
+  // strip) and the popover and the window both show that one.
+  useEffect(() => {
+    if (multiSel.size !== 1) return;
+    const j = [...multiSel][0];
+    if (j !== feIndex && stateRef.current?.filters[j]?.sourceFile === OWN_FILE) setFeIndex(j);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [multiSel]);
+
+  // The filter-editor window (Q-20 pattern): main owns the truth.
+  const emitFeSync = () => {
+    const f = state && feIndex != null ? state.filters[feIndex] : undefined;
+    const own = f?.sourceFile === OWN_FILE;
+    const payload: FeSync = {
+      index: own ? feIndex : null,
+      filter: own ? f! : null,
+      freqs: state?.freqs ?? [],
+      totalDb: state ? state.sumDb.map((db) => db - state.preampDb) : [],
+    };
+    emit("fe-sync", payload);
+  };
+  useEffect(() => {
+    emitFeSync();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state, feIndex]);
+  const onFeCmd = (c: FeCmd) => {
+    if (c.type === "slide") {
+      dragging.current = c.active;
+      return;
+    }
+    if (feIndex == null || stateRef.current?.filters[feIndex]?.sourceFile !== OWN_FILE) return;
+    if (c.type === "patch") mutateFilter(feIndex, c.patch, c.immediate);
+    else if (c.type === "gesture") window.setTimeout(() => commitGesture(c.label), 0);
+    else if (c.type === "duplicate") duplicateFilter(feIndex);
+    else if (c.type === "delete") {
+      deleteSelected(feIndex);
+      setFeIndex(null);
+    }
+  };
+  const popOutEditor = async () => {
+    try {
+      const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+      const existing = await WebviewWindow.getByLabel("filter");
+      if (existing) {
+        await existing.show().catch(() => {});
+        await existing.setFocus();
+      } else {
+        new WebviewWindow("filter", {
+          url: "index.html?view=filter",
+          title: "Fletcher — Filter",
+          width: 640,
+          height: 720,
+        });
+      }
+      setEditor(null);
+    } catch (e) {
+      showNotice(String(e));
+    }
+  };
+
   const ordered = useMemo(() => {
     if (!state) return [];
     const rows = state.filters.map((f, i) => ({ f, i }));
@@ -5767,8 +6283,8 @@ function MainApp() {
   };
 
   // Custom scale: top and bottom set independently (two sliders + two boxes).
-  // No fixed limits: each slider's track is a 40 dB window around a centre, and
-  // releasing the handle in the outer 20% of the track re-centres it on the
+  // No fixed limits: each slider's track is a 40 dB window around a center, and
+  // releasing the handle in the outer 20% of the track re-centers it on the
   // value, so you can grab it again and keep going ("infinite" travel).
   const CUSTOM_TRACK_DB = 40;
   const CUSTOM_LIMIT_DB = 200; // sanity only
@@ -5784,16 +6300,16 @@ function MainApp() {
   const [customOpen, setCustomOpen] = useState(false);
   const [customDraft, setCustomDraft] = useState<{ top?: string; bot?: string }>({});
   const customRef = useRef<HTMLSpanElement>(null);
-  const [customCentre, setCustomCentre] = useState(() => ({ top: custom.top, bot: custom.bot }));
+  const [customCenter, setCustomCenter] = useState(() => ({ top: custom.top, bot: custom.bot }));
   const customTrack = (edge: "top" | "bot") => [
-    customCentre[edge] - CUSTOM_TRACK_DB / 2,
-    customCentre[edge] + CUSTOM_TRACK_DB / 2,
+    customCenter[edge] - CUSTOM_TRACK_DB / 2,
+    customCenter[edge] + CUSTOM_TRACK_DB / 2,
   ];
-  /** Re-centre a slider's track when its value sits in the outer 20% (or off it). */
-  const recentreCustom = (edge: "top" | "bot", v: number) => {
+  /** Re-center a slider's track when its value sits in the outer 20% (or off it). */
+  const recenterCustom = (edge: "top" | "bot", v: number) => {
     const [lo, hi] = customTrack(edge);
     const frac = (v - lo) / (hi - lo);
-    if (!(frac > 0.2 && frac < 0.8)) setCustomCentre((c) => ({ ...c, [edge]: v }));
+    if (!(frac > 0.2 && frac < 0.8)) setCustomCenter((c) => ({ ...c, [edge]: v }));
   };
   const setCustomEdge = (edge: "top" | "bot", v: number) => {
     // Top stays at least 1 dB above bottom.
@@ -6470,6 +6986,27 @@ function MainApp() {
           </div>,
           document.body,
         )}
+
+      {editor && feIndex != null && state?.filters[feIndex]?.sourceFile === OWN_FILE && (
+        <FilterEditor
+          mode="popover"
+          filter={state.filters[feIndex]}
+          freqs={state.freqs}
+          totalDb={state.sumDb.map((db) => db - state.preampDb)}
+          pos={editor}
+          onPatch={(patch, immediate) => mutateFilter(feIndex, patch, immediate)}
+          onGesture={(label) => window.setTimeout(() => commitGesture(label), 0)}
+          onDuplicate={() => duplicateFilter(feIndex)}
+          onDelete={() => {
+            deleteSelected(feIndex);
+            setEditor(null);
+            setFeIndex(null);
+          }}
+          onPopOut={popOutEditor}
+          onSlide={(active) => (dragging.current = active)}
+          onClose={closeEditor}
+        />
+      )}
 
       {typeMenu &&
         state &&
@@ -8371,13 +8908,13 @@ function MainApp() {
                 </div>
               </div>
               <span className="set-note">
-                Same layout in both. Standard greys out advanced tools instead of hiding them — hover any greyed
+                Same layout in both. Standard grays out advanced tools instead of hiding them — hover any grayed
                 control to learn what it does.
               </span>
             </div>
 
             <div className="set-demo">
-              <span className="mono set-head no-line">HOW GREYED CONTROLS BEHAVE</span>
+              <span className="mono set-head no-line">HOW GRAYED CONTROLS BEHAVE</span>
               <div className="set-demo-row">
                 <span className="mono">FINGERPRINTS</span>
                 <span>Fingerprint Lab — measure and match headphones</span>
@@ -8905,7 +9442,7 @@ function MainApp() {
                     {(["top", "bot"] as const).map((edge) => {
                       const [lo, hi] = customTrack(edge);
                       const release = (e: React.SyntheticEvent<HTMLInputElement>) =>
-                        recentreCustom(edge, +e.currentTarget.value);
+                        recenterCustom(edge, +e.currentTarget.value);
                       return (
                         <label key={edge} className="scale-row">
                           <span className="dim-sm">{edge === "top" ? "top" : "bottom"}</span>
@@ -8934,12 +9471,12 @@ function MainApp() {
                               const v = Number(e.target.value);
                               if (e.target.value.trim() !== "" && Number.isFinite(v)) {
                                 setCustomEdge(edge, v);
-                                if (v < lo || v > hi) setCustomCentre((c) => ({ ...c, [edge]: v }));
+                                if (v < lo || v > hi) setCustomCenter((c) => ({ ...c, [edge]: v }));
                               }
                             }}
                             onBlur={() => {
                               setCustomDraft((d) => ({ ...d, [edge]: undefined }));
-                              recentreCustom(edge, custom[edge]);
+                              recenterCustom(edge, custom[edge]);
                             }}
                             onKeyDown={(e) => {
                               if (e.key === "Enter") (e.target as HTMLInputElement).blur();
@@ -8955,7 +9492,7 @@ function MainApp() {
                         // Stay in custom, with top/bottom set to what auto would show.
                         const fit = { top: autoFit, bot: -autoFit };
                         setCustom(fit);
-                        setCustomCentre(fit);
+                        setCustomCenter(fit);
                         setCustomDraft({});
                         try {
                           localStorage.setItem("fletcher.yscale.custom", JSON.stringify(fit));
@@ -9045,7 +9582,7 @@ function MainApp() {
               )}
 
               <g className="axis">
-                {/* Gutter labels: Hz centred under their lines, dB right-aligned to the frame. */}
+                {/* Gutter labels: Hz centered under their lines, dB right-aligned to the frame. */}
                 {FREQ_LABELS.map((f) => (
                   <text key={f} x={xOf(f)} y={py1 + 16} textAnchor="middle">
                     {fmtHz(f)}
@@ -9080,15 +9617,30 @@ function MainApp() {
                   onWheel={onWheelQ(i)}
                   {...tipProps(filterTip(f))}
                 >
+                  {editable && (
+                    <span
+                      className={`cell-expand ${editor && feIndex === i ? "on" : ""}`}
+                      title="open the filter editor"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        clearTip();
+                        selectOnly(i);
+                        if (editor && feIndex === i) setEditor(null);
+                        else openEditor(i, e.currentTarget.parentElement as HTMLElement);
+                      }}
+                    >
+                      <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7">
+                        <path d="M10 2h4v4M14 2l-5 5M6 14H2v-4M2 14l5-5" />
+                      </svg>
+                    </span>
+                  )}
                   <span className="cell-type">
                     <span
                       className={`toggle-dot ${f.enabled ? "on" : ""}`}
                       onClick={(e) => {
                         e.stopPropagation();
-                        if (editable) {
-                          mutateFilter(i, { enabled: !f.enabled }, true);
-                          window.setTimeout(() => commitGesture(f.enabled ? "bypass" : "enable"), 0);
-                        }
+                        // On/off is live state, not history: no undo step.
+                        if (editable) mutateFilter(i, { enabled: !f.enabled }, true);
                       }}
                     />
                     <span

@@ -32,6 +32,13 @@ It's named for the [Fletcher–Munson curves](https://en.wikipedia.org/wiki/Equa
 ### Parametric EQ on a live curve
 Drag handles to set frequency and gain, scroll to change Q, or dial in exact values in the filter strip. Peaking, shelf, pass and notch filters are all supported. Preamp is calculated automatically so your EQ never clips, and changes are applied system-wide the instant you make them.
 
+### A filter editor that shows you what each filter does
+Click ⤢ on any filter for a larger editor: its own curve with your whole EQ behind it, sliders and exact values for frequency, gain and Q, and every filter type as a small preview drawn from your current settings. Hover a type to read what it does, click to switch. Pop it out into its own window and it follows whichever filter you select.
+
+<p align="center">
+  <img src="docs/images/filter-editor.png" alt="The filter editor open over the EQ graph: a peaking filter's curve with the full EQ dashed behind it, Fc, gain and Q sliders, and a grid of all twelve filter types drawn as small response previews" width="900">
+</p>
+
 ### 5,000+ headphone corrections, one search away
 Type a headphone name and pick from the [AutoEQ](https://github.com/jaakkopasanen/AutoEq) database. The correction imports as your own preset, ready to tweak. You can also import Peace presets or paste Equalizer APO filter lines.
 

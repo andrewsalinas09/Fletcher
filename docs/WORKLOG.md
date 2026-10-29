@@ -2,6 +2,16 @@
 
 Append-only session journal. Newest entry first.
 
+## 2026-10-28 (filter editor) — Q-27 v1 merged; three history/undo bugs fixed on the way
+
+- **Filter editor (Q-27 v1)**, built on branch `filter-editor` and merged to main: popover from ⤢ on each card, live big plot, sliders + typed values, real-response type gallery, pop-out window that follows the selection (rule 10: traced end to end, `fe-sync`/`fe-cmd`, Ctrl+Z/Y in the window). Details in Q-27. README gained a section and screenshot.
+- **No-claims scrub (owner rule):** `TYPE_INFO` now states facts only (no "broad / musical / surgical"); it also had factual errors about Q on LP/LS/HS. US spelling everywhere (memory saved).
+- **Bug: drags could lose their final position.** `pushChain`'s 60 ms throttle sent the values from the call that started the timer and dropped later moves; the reply then overwrote local state with the stale position. Now the timer sends the latest chain. Also affected scroll-wheel Q.
+- **Bug: stuck tooltips.** A press cleared the tip, but any jitter re-armed it, and when the click removed the element (a menu row) no mouseleave ever came. Class fix in the one tooltip layer: pressing mutes until leave, a tip checks its element still exists before showing, and a shown tip dismisses on pointer motion off its element.
+- **History semantics:** on/off is live state, not history: toggles record no step, jumps keep live on/off when the filter list matches, and a gesture that only changed on/off is a no-op. Undo keeps the selection when the filter list matches. Editor sliders record one step on release (window-level pointerup) and mark a drag so replies can't snap them back; a focused slider no longer swallows Ctrl+Z.
+- **Small UI:** hint is just "drag handles · scroll for Q"; preset row never wraps (the hint ellipsizes); custom scale button has a fixed width.
+- **Next:** the demos (band solo, spectrum shading, exaggerate); a pass applying the editor's gray/black balance elsewhere was offered, not requested.
+
 ## 2026-10-28 (scale + release 0.3.0) — Custom graph scale; 0.3.0 cut
 
 - **EQ graph scale (127d0a3):** options are now auto, ±6, ±12, ±20, custom (saved ±18 → ±20, saved ±30 → custom +30/−30). The graph supports an asymmetric range (`yTop`/`yBot` replace `dbRange`); grid and labels coarsen on wide ranges (label step 3, 6, 12, … so at most ~14 labels). Custom opens a drop-down with a slider and number box for top and bottom, independent and live. Releasing a slider in the outer 20% of its 40 dB track re-centres the track (the snap logic follows the owner's vibration-sensor frontend's slider re-zoom, simplified to one handle per slider), so travel is unlimited; top stays ≥ 1 dB above bottom, ±200 dB sanity cap. Reset sets both to what auto would show and stays in custom. Owner tuned the slider look live (black, 3 px track, 11 px thumb).

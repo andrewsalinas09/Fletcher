@@ -1252,6 +1252,26 @@ fn chain_curves(chains: Vec<Vec<FilterIn>>) -> Result<ChainCurves, String> {
     Ok(ChainCurves { freqs, curves })
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FilterCurves {
+    freqs: Vec<f64>,
+    curves: Vec<Vec<f64>>,
+}
+
+/// Each filter's own magnitude response, nothing else: no level planning and no
+/// config reads, so it's cheap enough to call on every slider move (the filter
+/// editor's live plot and type thumbnails, Q-27). Same math as the graph.
+#[tauri::command]
+fn filter_responses(filters: Vec<FilterIn>) -> Result<FilterCurves, String> {
+    let freqs = log_freqs(20.0, 20000.0, CURVE_POINTS);
+    let curves = specs_of(&chain_of(&filters)?)
+        .iter()
+        .map(|spec| chain_response_db(std::slice::from_ref(spec), 0.0, FS, &freqs))
+        .collect();
+    Ok(FilterCurves { freqs, curves })
+}
+
 /// Level-matched, non-destructive audition of an arbitrary chain (the history
 /// inspector's "listen"): writes fletcher.txt only — the active preset and the
 /// A/B side are untouched, so the preview leaves no trace on disk state.
@@ -5480,7 +5500,30 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Undo/redo shortcuts for the history pop-out, active only while it has
+/// The pop-outs whose Ctrl+Z / Ctrl+Y walk the main window's undo rail.
+fn has_undo_keys(label: &str) -> bool {
+    matches!(label, "history" | "filter")
+}
+
+/// Which pop-out currently owns the undo shortcuts. Moving straight from one
+/// such window to another can deliver "B focused" before "A blurred"; only the
+/// owner may unregister, so A's blur can't take B's keys away.
+static UNDO_KEYS_OWNER: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+fn undo_keys_focus(app: &tauri::AppHandle, label: &str, focused: bool) {
+    let mut owner = UNDO_KEYS_OWNER.lock().unwrap();
+    if focused {
+        if owner.is_none() {
+            set_history_shortcuts(app, true);
+        }
+        *owner = Some(label.to_string());
+    } else if owner.as_deref() == Some(label) {
+        set_history_shortcuts(app, false);
+        *owner = None;
+    }
+}
+
+/// Undo/redo shortcuts for the undo-capable pop-outs, active only while one has
 /// focus. Fired in Rust, forwarded to the main window's rail.
 fn set_history_shortcuts(app: &tauri::AppHandle, enable: bool) {
     use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
@@ -5601,15 +5644,18 @@ pub fn run() {
                     if window.label() == "main" {
                         api.prevent_close();
                         let _ = window.hide();
-                    } else if window.label() == "history" {
-                        set_history_shortcuts(window.app_handle(), false);
+                    } else if has_undo_keys(window.label()) {
+                        undo_keys_focus(window.app_handle(), window.label(), false);
                     }
                 }
                 // The pop-out webview doesn't receive DOM keyboard events, so
                 // its undo/redo keys are OS-level shortcuts registered only
                 // while it is focused — they never leak into other apps.
-                tauri::WindowEvent::Focused(focused) if window.label() == "history" => {
-                    set_history_shortcuts(window.app_handle(), *focused);
+                tauri::WindowEvent::Focused(focused) if has_undo_keys(window.label()) => {
+                    undo_keys_focus(window.app_handle(), window.label(), *focused);
+                }
+                tauri::WindowEvent::Destroyed if window.label() == "filter" => {
+                    undo_keys_focus(window.app_handle(), "filter", false);
                 }
                 tauri::WindowEvent::Focused(focused) if window.label().starts_with("scope-") => {
                     set_scope_shortcuts(window.app_handle(), window.label(), *focused);
@@ -5625,7 +5671,7 @@ pub fn run() {
                     );
                 }
                 tauri::WindowEvent::Destroyed if window.label() == "history" => {
-                    set_history_shortcuts(window.app_handle(), false);
+                    undo_keys_focus(window.app_handle(), "history", false);
                     // A preview started from the pop-out must not outlive it.
                     use tauri::Emitter;
                     let _ = window.app_handle().emit_to(
@@ -5682,6 +5728,7 @@ pub fn run() {
             preset_rename,
             parse_filters,
             chain_curves,
+            filter_responses,
             preview_chain,
             preset_create_from_chain,
             settings_state,
