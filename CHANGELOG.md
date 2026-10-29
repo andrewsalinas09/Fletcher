@@ -2,6 +2,17 @@
 
 Each version's section becomes its GitHub release notes and the "what's new" text in Settings › UPDATES. Write for listeners, not developers.
 
+## 0.3.0
+
+- **A/B comparisons are matched much more accurately.** Fletcher now judges loudness the way loudness meters (LUFS) do, so presets with treble boosts are no longer under-counted. When one side can't reach your reference level without clipping, the other side now comes down with it, instead of one side playing quieter. If two settings truly can't be matched, Fletcher says so rather than calling them matched.
+- **In Clip Studio, A/B is measured on the song itself.** Playing through your EQ, each flip measures both sides on the part of the song you're hearing, and the louder one comes down to match. Even extreme EQs now flip at equal loudness. The A/B bar shows "matched (measured on this song)".
+- **No more sudden volume jumps.** Any rise in level, from a reference change, a preset switch or leaving a comparison, fades in over about a second, never more than 3 dB at a time. Large typed increases ask first.
+- **Blind tests got harder to "cheat".** Switching between A and B in clip tests no longer briefly gets louder mid-switch, and clip trials correct each clip on its measured loudness.
+- **A finer frequency grid** with labels at 20, 50, 100, 200, 500… and a graph that uses the whole panel. Thanks for the request (#4)!
+- **Custom graph scale.** The scale options are now auto, ±6, ±12, ±20 and custom. Custom lets you set the top and bottom separately with sliders or by typing; let go of a slider near its end and it re-centres, so you can keep going.
+- **Opening Fletcher twice brings the existing window forward** instead of starting a second copy.
+- Fletcher fades in briefly at launch.
+
 ## 0.2.2
 
 - Clearer wording throughout. Tooltips, Settings notes and messages now speak plain language instead of referring to internal design notes, and show tool names (Fletcher, Peace, Equalizer APO) instead of config file names.

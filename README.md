@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/eq.png" alt="Fletcher's EQ view: a Sennheiser HD 650 correction curve with draggable filter handles and a strip of filter knobs" width="900">
+  <img src="docs/images/eq.png" alt="Fletcher's EQ view: the frequency graph with its scale controls, the filter strip, and the A/B bar showing a comparison level-matched on the song that's playing" width="900">
 </p>
 
 ## Why Fletcher?

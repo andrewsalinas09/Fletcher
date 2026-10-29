@@ -2,6 +2,14 @@
 
 Append-only session journal. Newest entry first.
 
+## 2026-10-28 (scale + release 0.3.0) — Custom graph scale; 0.3.0 cut
+
+- **EQ graph scale (127d0a3):** options are now auto, ±6, ±12, ±20, custom (saved ±18 → ±20, saved ±30 → custom +30/−30). The graph supports an asymmetric range (`yTop`/`yBot` replace `dbRange`); grid and labels coarsen on wide ranges (label step 3, 6, 12, … so at most ~14 labels). Custom opens a drop-down with a slider and number box for top and bottom, independent and live. Releasing a slider in the outer 20% of its 40 dB track re-centres the track (the snap logic follows the owner's vibration-sensor frontend's slider re-zoom, simplified to one handle per slider), so travel is unlimited; top stays ≥ 1 dB above bottom, ±200 dB sanity cap. Reset sets both to what auto would show and stays in custom. Owner tuned the slider look live (black, 3 px track, 11 px thumb).
+- Only the main EQ graph changed; the history/pop-out difference graphs keep their own scale buttons.
+- README's EQ screenshot replaced with the current view (the new scale buttons and "matched (measured on this song)" in the A/B bar).
+- **Released 0.3.0:** level matching overhaul (ADR-0016), measured Clip Studio A/B, capped fades, frequency grid and graph layout, single instance, custom scale.
+- **Still open:** fades and the flip measurement run on the UI thread (bounded); the calibration noise is 9.6 dB below Clip Studio's −16 LUFS (owner's call); ADR-0011 §3 and ADR-0014 want an explicit amendment note for the trim/headroom change (owner sign-off); the stale follow-up probe script.
+
 ## 2026-10-28 (review 2) — Measured correction moved onto Clip Studio's stream; fades capped at 3 dB
 
 Committed the level-matching work as 6c47ed8 after the owner heard Clip Studio Through-EQ matched ("even with the normal EQ it's better"). Then a second independent max-effort review: safety core holds (pairing, ceiling last, no deadlocks or writes outside fletcher.txt), three P1s and four P2s, all fixed here except the noted ones:
