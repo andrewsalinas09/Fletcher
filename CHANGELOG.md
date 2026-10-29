@@ -2,6 +2,16 @@
 
 Each version's section becomes its GitHub release notes and the "what's new" text in Settings › UPDATES. Write for listeners, not developers.
 
+## 0.4.0
+
+- **A filter editor that shows you what each filter does.** Click ⤢ on any filter for a larger editor: its own curve drawn over your whole EQ, sliders and exact values for frequency, gain and Q, and every filter type as a small preview drawn from your current settings. Hover a type to read what it does, click to switch. Pop it out into its own window: it follows whichever filter you select, and Ctrl+Z works there too.
+- **Filter descriptions are plain facts now**, and some were corrected: Fletcher always writes a Q, and Equalizer APO uses it on every filter type.
+- **Dragging is more precise.** The last bit of a quick drag could be lost and the value would jump back slightly; it now lands exactly where you let go.
+- **Turning a filter on or off no longer adds an undo step**, and undo keeps the filter you're working on selected.
+- Tooltips no longer get stuck on screen after clicking a menu item.
+- The bar above the graph no longer wraps onto two lines in a narrow window.
+- The custom scale button keeps its width, so the scale buttons don't shift while you drag.
+
 ## 0.3.0
 
 - **A/B comparisons are matched much more accurately.** Fletcher now judges loudness the way loudness meters (LUFS) do, so presets with treble boosts are no longer under-counted. When one side can't reach your reference level without clipping, the other side now comes down with it, instead of one side playing quieter. If two settings truly can't be matched, Fletcher says so rather than calling them matched.
