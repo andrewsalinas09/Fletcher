@@ -2,6 +2,12 @@
 
 Each version's section becomes its GitHub release notes and the "what's new" text in Settings › UPDATES. Write for listeners, not developers.
 
+## 0.5.0
+
+- **Change the A/B hotkey.** In Settings › Hotkeys, click the hotkey and press any combination with Ctrl, Alt or Win, switch it off (your combination is kept for later), or reset it. Handy when Ctrl+Shift+A collides with a game. Thanks for the report (#5)!
+- **The EQ graph starts at 10 Hz**, the lowest frequency a filter can use, so everything a filter does is visible.
+- **Shorter Settings.** Every explanation is now one line, or gone.
+
 ## 0.4.0
 
 - **A filter editor that shows you what each filter does.** Click ⤢ on any filter for a larger editor: its own curve drawn over your whole EQ, sliders and exact values for frequency, gain and Q, and every filter type as a small preview drawn from your current settings. Hover a type to read what it does, click to switch. Pop it out into its own window: it follows whichever filter you select, and Ctrl+Z works there too.
