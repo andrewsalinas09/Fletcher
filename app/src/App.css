@@ -137,12 +137,28 @@ nav {
 
 .preset-wrap {
   position: relative;
+  flex-shrink: 0;
+}
+
+/* The chips never wrap (a narrow window used to split "Sennheiser HD 650" and the
+   undo count over two lines); the hint gives way instead. */
+.preset-line > :not(.preset-hint) {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.preset-hint {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .preset-chip {
   display: flex;
   align-items: baseline;
   gap: 8px;
+  white-space: nowrap;
   border: 1px solid var(--line-mid);
   background: var(--panel);
   padding: 5px 12px;
@@ -285,6 +301,7 @@ nav {
 }
 
 .hist-chip {
+  white-space: nowrap;
   font-size: 11px;
   border: 1px solid var(--line-mid);
   background: var(--panel);
@@ -575,6 +592,14 @@ button.ghost {
 .scale-custom {
   position: relative;
   display: flex;
+}
+
+/* Fixed width, centred: its label ("+12.5 / −80.5") changes while you drag, and a
+   changing width would shove the right-aligned scale buttons back and forth. */
+.scale-custom > .scale-opt {
+  width: 13ch;
+  text-align: center;
+  box-sizing: content-box;
 }
 
 .scale-pop {

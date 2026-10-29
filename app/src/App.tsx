@@ -8790,9 +8790,7 @@ function MainApp() {
                   document.body,
                 )}
             </span>
-            <span className="dim-sm">
-              drag handles · scroll for Q · locked filters: duplicate from live to edit
-            </span>
+            <span className="dim-sm preset-hint">drag handles · scroll for Q</span>
             <span className="spacer" />
             {state.filters.some((f) => f.enabled && f.sourceFile !== OWN_FILE) &&
               state.filters.some((f) => f.enabled && f.sourceFile === OWN_FILE) && (
