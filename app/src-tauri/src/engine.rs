@@ -37,6 +37,9 @@ pub struct BusConfig {
     /// bus A on this exact material (ADR-0003: track mode measures).
     pub preamp_b_db: f64,
     pub trim_b_db: f64,
+    /// Bus A's share of the measured correction (≤ 0): when B can't come up far
+    /// enough without clipping, A comes down by the rest (ADR-0016, review F1).
+    pub trim_a_db: f64,
     /// Honesty switch snapshot: false = no trim, comparisons marked unmatched.
     pub matched: bool,
     /// Exclusive sessions run the EQ in-engine. Shared fallback must NOT —
@@ -72,7 +75,11 @@ pub struct TrackShared {
 /// The audio-thread source: pulls interleaved stereo f32 PCM from memory and
 /// runs BOTH buses every frame — the bypass bus goes through identical
 /// buffering so switching is symmetric in latency and audibility (TB-12).
-/// The equal-power crossfade (~15 ms) makes the switch seamless. Pause plays
+/// A ~15 ms equal-GAIN crossfade makes the switch seamless: A and B are the
+/// same audio through two EQs, i.e. correlated, so the gains must sum to 1. An
+/// equal-power (sin/cos) blend sums to √2 mid-switch, a +3 dB bump only on
+/// A↔B transitions, which is an ABX cue (review F3; supersedes ADR-0012's
+/// "equal-power", see ADR-0016). Pause plays
 /// silence (the stream stays open — resume is instant); end of track ends
 /// the session.
 pub struct TrackSource {
@@ -81,6 +88,7 @@ pub struct TrackSource {
     seen_gen: u64,
     bus_a: ChainProcessor,
     bus_b: ChainProcessor,
+    gain_a_extra: f64,
     gain_b_extra: f64,
     in_engine_eq: bool,
     /// Crossfade position 0 (A) .. 1 (B); slews toward the target side.
@@ -99,6 +107,7 @@ impl TrackSource {
             seen_gen: u64::MAX,
             bus_a: ChainProcessor::new(&[], 0.0, 48000.0),
             bus_b: ChainProcessor::new(&[], 0.0, 48000.0),
+            gain_a_extra: 1.0,
             gain_b_extra: 1.0,
             in_engine_eq: false,
             xfade: 0.0,
@@ -118,11 +127,13 @@ impl TrackSource {
         self.in_engine_eq = cfg.in_engine_eq;
         self.bus_a.set_chain(&cfg.specs, cfg.preamp_a_db, fs);
         self.bus_b.set_chain(&cfg.specs_b, cfg.preamp_b_db, fs);
-        self.gain_b_extra = if cfg.matched {
-            10f64.powf(cfg.trim_b_db / 20.0)
+        let (ta, tb) = if cfg.matched {
+            (cfg.trim_a_db, cfg.trim_b_db)
         } else {
-            1.0
+            (0.0, 0.0)
         };
+        self.gain_a_extra = 10f64.powf(ta / 20.0);
+        self.gain_b_extra = 10f64.powf(tb / 20.0);
     }
 }
 
@@ -216,17 +227,17 @@ impl Source for TrackSource {
                 frame[1] = r;
                 continue;
             }
-            // Both buses always run (TB-12); equal-power blend between them.
+            // Both buses always run (TB-12); equal-gain blend between them.
             let (al, ar) = self.bus_a.process_frame(l, r);
             let (bl, br) = self.bus_b.process_frame(l, r);
+            let (al, ar) = (al * self.gain_a_extra, ar * self.gain_a_extra);
             let (bl, br) = (bl * self.gain_b_extra, br * self.gain_b_extra);
             if self.xfade < target {
                 self.xfade = (self.xfade + self.xstep).min(1.0);
             } else if self.xfade > target {
                 self.xfade = (self.xfade - self.xstep).max(0.0);
             }
-            let ga = (self.xfade * std::f64::consts::FRAC_PI_2).cos();
-            let gb = (self.xfade * std::f64::consts::FRAC_PI_2).sin();
+            let (ga, gb) = (1.0 - self.xfade, self.xfade);
             frame[0] = al * ga + bl * gb;
             frame[1] = ar * ga + br * gb;
         }

@@ -24,7 +24,8 @@
 - **HpTF** — headphone transfer function; the response a specific headphone produces at your eardrum.
 - **Deconvolution** — removing a known transfer function from a signal by applying its inverse filter; numerically dangerous without regularization (TB-16).
 - **Reinsertion variance** — measurement-to-measurement spread caused by re-seating mics/headphones; the dominant error source in HpTF work (TB-14).
-- **Reference level** — the single global loudness (dB, default −8) every chain is normalized to via `matched_preamp`; makes all comparisons level-matched by construction (Q-06, ADR-0003).
+- **Reference level** — the global loudness (dB, default −8) every chain is aimed at: its K-weighted loudness (≈ LUFS on pink noise) plus its preamp lands here, unless its clip ceiling stops it short. The two sides of any comparison are then paired to the lower one (ADR-0016, ADR-0003, Q-06).
+- **Shortfall** — how far a chain's clip ceiling (its own peak plus outside Preamp lines) holds it below the reference; a comparison plays both sides that far below (ADR-0016).
 - **Undo graph / history tree** — branching record of completed gestures; nodes hold full chain snapshots; per-preset, persisted, exportable (Q-17).
 - **The rail** — the fixed undo/redo track laid when you click a node: its ancestry up to root plus its descent via latest-created children; Ctrl+Z/Shift+Z walk it without re-deriving.
 - **Trial room** — the full-window focus mode where a blind session runs (A/B/X targets — or unlabeled 1/2 slots for preference — neutral progress dots, hidden-by-default score).

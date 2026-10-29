@@ -1163,6 +1163,7 @@ dependencies = [
 name = "fletcher-core"
 version = "0.2.2"
 dependencies = [
+ "ebur128",
  "wasapi",
  "windows 0.62.2",
  "windows-core 0.62.2",

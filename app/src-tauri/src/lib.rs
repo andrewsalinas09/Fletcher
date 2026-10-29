@@ -2,7 +2,7 @@
 //! the UI draws, the core thinks). DTOs live here so the core stays serde-free.
 
 use fletcher_core::config::{render_fletcher_file, ChainFilter, ConfigDoc, FilterKind, Parsed};
-use fletcher_core::dsp::{auto_preamp_db, chain_response_db, log_freqs, FilterSpec};
+use fletcher_core::dsp::{chain_response_db, log_freqs, loudness_db, FilterSpec};
 use fletcher_core::presets::{sanitize_name, PresetStore};
 use fletcher_core::{apo, devices, dsp, fsx, rew};
 use serde::{Deserialize, Serialize};
@@ -64,10 +64,16 @@ fn reference_db() -> f64 {
 /// 2026-08-29, TB-31.
 const TRIM_MIN_DB: f64 = -20.0;
 const TRIM_MAX_DB: f64 = 12.0;
-/// Total written preamp is still bounded; the ceiling is the trim's, so a
-/// user compensating external attenuation can reach it, and no further.
-const PREAMP_MIN_DB: f64 = -30.0;
+/// Total written preamp bounds. The ceiling is the trim's, so a user
+/// compensating external attenuation can reach it, and no further. The floor is
+/// a sanity bound, NOT a safeguard: no finite floor covers every accepted chain
+/// (±30 dB per filter, any number of filters). The clip ceiling is applied after
+/// it, and a plan the floor would distort is reported as unmatched (review F5).
+const PREAMP_MIN_DB: f64 = -120.0;
 const PREAMP_MAX_DB: f64 = TRIM_MAX_DB;
+/// A level rise bigger than this is never written in one go: it's stepped up
+/// 1 dB at a time so nothing ever surprises the listener (TB-20, ADR-0016).
+const MAX_JUMP_DB: f64 = 3.0;
 
 /// A user-set output trim added to every matched preamp, on every side.
 ///
@@ -119,7 +125,11 @@ struct EqState {
     /// APO was registered on this device during this run. APO 1.4.2 takes effect
     /// immediately (verified 2026-10-26); older versions may need a restart.
     apo_reboot_pending: bool,
+    /// Every Preamp line APO applies, summed (Fletcher's + outside ones).
     preamp_db: f64,
+    /// Fletcher's own auto preamp alone (fletcher.txt). The UI shows this as
+    /// "auto preamp" and names the outside part separately (TB-31).
+    own_preamp_db: f64,
     freqs: Vec<f64>,
     sum_db: Vec<f64>,
     filters: Vec<EqFilter>,
@@ -167,6 +177,7 @@ fn eq_state() -> Result<EqState, String> {
     }
 
     let mut preamp_db = 0.0;
+    let mut own_preamp_db = 0.0;
     // q stays an Option: an unwritten Q means something specific to APO (TB-34).
     let mut filters: Vec<(bool, FilterKind, f64, f64, Option<f64>, String)> = Vec::new();
     let mut source_files = Vec::new();
@@ -176,6 +187,9 @@ fn eq_state() -> Result<EqState, String> {
             match d {
                 Parsed::Preamp { db } => {
                     preamp_db += db;
+                    if name.eq_ignore_ascii_case("fletcher.txt") {
+                        own_preamp_db += db;
+                    }
                     contributed = true;
                 }
                 Parsed::Filter {
@@ -245,6 +259,7 @@ fn eq_state() -> Result<EqState, String> {
         apo_on_device,
         apo_reboot_pending,
         preamp_db,
+        own_preamp_db,
         freqs,
         sum_db,
         filters: filter_dtos,
@@ -273,7 +288,9 @@ fn chain_of(filters: &[FilterIn]) -> Result<Vec<ChainFilter>, String> {
                 enabled: f.enabled,
                 kind: FilterKind::from_code(&f.kind)
                     .ok_or_else(|| format!("unknown filter type {}", f.kind))?,
-                fc_hz: f.fc_hz.clamp(10.0, 24000.0),
+                // Below Nyquist: a filter AT Nyquist has all-zero coefficients
+                // and silences everything.
+                fc_hz: f.fc_hz.clamp(10.0, 0.49 * FS),
                 gain_db: f.gain_db.clamp(-30.0, 30.0),
                 q: f.q.clamp(0.01, 100.0),
             })
@@ -302,20 +319,93 @@ fn write_fletcher_file(config_dir: &std::path::Path, text: &str) -> Result<(), S
     Ok(())
 }
 
+/// Loudness last written to fletcher.txt (the chain's loudness + its preamp),
+/// for the rise limit. `None` until this run's first write.
+static LAST_WRITTEN_LEVEL: std::sync::Mutex<Option<f64>> = std::sync::Mutex::new(None);
+
+/// THE way Fletcher's chain reaches fletcher.txt. Never raises loudness by more
+/// than `MAX_JUMP_DB` in one write (TB-20, ADR-0016): a bigger rise is stepped up
+/// 1 dB per write, ~80 ms apart, which APO hot-reloads as a short fade-in. That
+/// covers every path at once: a typed reference or trim, turning matching off,
+/// a preset switch, leaving a paired comparison, ending a trial. Drops apply
+/// immediately. The lock also serializes writers, so a ramp is never interleaved.
+fn write_chain_safely(chain: &[ChainFilter], preamp: f64) -> Result<(), String> {
+    if !preamp.is_finite() {
+        return Err("refusing to write a non-finite preamp".into());
+    }
+    let install = apo::detect().map_err(|e| e.to_string())?;
+    let level = loudness_db(&specs_of(chain), FS) + preamp;
+    let mut last = LAST_WRITTEN_LEVEL.lock().unwrap();
+    // First write of this run (e.g. at launch, over whatever the last session
+    // left playing): compare against what's actually on disk, not "nothing",
+    // or the very first write could jump (review F11). Unreadable → assume it
+    // was 12 dB quieter, which turns the first write into a fade-in. Never
+    // assume more than 12 dB below: that bounds the fade to ~1 s, and a silent
+    // chain's −∞ loudness can't make it endless (it once froze the app).
+    let prev = last
+        .unwrap_or_else(|| disk_level(&install.config_path).unwrap_or(level - 12.0))
+        .max(level - 12.0);
+    if level - prev > MAX_JUMP_DB {
+        // Start one step above where we were, then climb.
+        let mut below_final = level - prev - 1.0;
+        while below_final > 0.05 {
+            let step = round_tenth(preamp - below_final);
+            write_fletcher_file(&install.config_path, &render_fletcher_file(step, chain))?;
+            std::thread::sleep(std::time::Duration::from_millis(80));
+            below_final -= 1.0;
+        }
+    }
+    write_fletcher_file(&install.config_path, &render_fletcher_file(preamp, chain))?;
+    *last = Some(level);
+    Ok(())
+}
+
+/// The loudness fletcher.txt currently puts out (its chain's loudness + its
+/// preamp), as `write_chain_safely` measures it. `None` if absent/unreadable.
+fn disk_level(config_dir: &std::path::Path) -> Option<f64> {
+    let text = std::fs::read_to_string(config_dir.join("fletcher.txt")).ok()?;
+    let (mut preamp, mut specs) = (0.0, Vec::new());
+    for d in ConfigDoc::parse(&text).directives() {
+        match d {
+            Parsed::Preamp { db } => preamp += db,
+            Parsed::Filter {
+                enabled: true,
+                kind,
+                fc_hz,
+                gain_db,
+                q,
+                ..
+            } => specs.extend(dsp::apo_resolve(
+                *kind,
+                fc_hz.unwrap_or(1000.0),
+                gain_db.unwrap_or(0.0),
+                *q,
+            )),
+            _ => {}
+        }
+    }
+    Some(loudness_db(&specs, FS) + preamp)
+}
+
+/// Refuse a direct chain write while a blind test runs: it would change what's
+/// playing under the trial and record votes against the wrong sound (TB-26).
+fn refuse_mid_trial() -> Result<(), String> {
+    if TRIAL.lock().unwrap().is_some() {
+        return Err("a blind test is running — finish or cancel it first".into());
+    }
+    Ok(())
+}
+
 /// Replace Fletcher's own chain (fletcher.txt) with the given filters.
 /// Auto-preamp is computed from the summed response peak (TB-06), the file
 /// is written atomically (TB-11), and APO hot-reloads it. Returns the fresh
 /// merged state.
 #[tauri::command]
 fn set_fletcher_chain(filters: Vec<FilterIn>) -> Result<EqState, String> {
-    let install = apo::detect().map_err(|e| e.to_string())?;
-
+    refuse_mid_trial()?;
     let chain = chain_of(&filters)?;
     let specs = specs_of(&chain);
-    let preamp = matched_preamp(&specs);
-
-    let text = render_fletcher_file(preamp, &chain);
-    write_fletcher_file(&install.config_path, &text)?;
+    write_chain_safely(&chain, matched_preamp(&specs))?;
     push_chain_to_track(&chain);
 
     // Edits persist into the active preset, so switching away and back keeps them.
@@ -337,8 +427,7 @@ fn activate_chain(chain: &[ChainFilter]) -> Result<(), String> {
 /// `activate_chain` at an explicit preamp: comparisons pass the PAIRED level
 /// from `matched_pair`, so both sides of an A/B or a blind test match (TB-08).
 fn activate_chain_at(chain: &[ChainFilter], preamp: f64) -> Result<(), String> {
-    let install = apo::detect().map_err(|e| e.to_string())?;
-    write_fletcher_file(&install.config_path, &render_fletcher_file(preamp, chain))?;
+    write_chain_safely(chain, preamp)?;
     push_chain_to_track(chain);
     Ok(())
 }
@@ -377,6 +466,7 @@ fn presets_state() -> Result<PresetsState, String> {
 /// Switch the active preset (None = flat: empty fletcher.txt).
 #[tauri::command]
 fn preset_switch(name: Option<String>) -> Result<EqState, String> {
+    refuse_mid_trial()?;
     match &name {
         Some(n) => {
             let preset = store()?
@@ -406,6 +496,7 @@ fn preset_chain(name: String) -> Result<Vec<PastedFilter>, String> {
 /// The new preset becomes active.
 #[tauri::command]
 fn preset_create(name: String, from_live: bool) -> Result<EqState, String> {
+    refuse_mid_trial()?;
     let name = sanitize_name(&name).ok_or("invalid preset name")?;
     let st = store()?;
     if st.exists(&name) {
@@ -509,75 +600,236 @@ fn specs_of(chain: &[ChainFilter]) -> Vec<FilterSpec> {
         .collect()
 }
 
-/// The preamp that lands a chain at the global reference loudness (its mean
-/// response over a log grid ≈ pink-noise weighting hits `reference_db`),
-/// tightened to the clip-safe preamp when the reference can't be reached
-/// without exceeding 0 dB peak (TB-06). Everything — flat, every preset,
-/// mid-edit chains — normalizes to the same reference (Q-06/ADR-0003).
+fn round_tenth(db: f64) -> f64 {
+    (db * 10.0).round() / 10.0
+}
+
+/// What Equalizer APO applies on the playback path besides fletcher.txt, read
+/// simply (ADR-0016): config.txt and the files it includes directly. Fletcher
+/// does not model other tools' processing; it only asks whether the outside
+/// path is PLAIN, i.e. nothing but `Preamp:`, `Include:` and comments, all
+/// readable. Only then do outside cuts provably apply to this device and count
+/// as headroom. Anything else (Peace's filters, GraphicEQ, Device/Channel
+/// scopes, nested includes, a missing file) means "not provable", and Fletcher
+/// errs quiet.
+#[derive(Default, Debug, PartialEq)]
+struct OutsidePath {
+    /// Sum of outside Preamp cuts (≤ 0), whatever their scope.
+    cut_db: f64,
+    /// Sum of outside Preamp boosts (≥ 0), whatever their scope.
+    boost_db: f64,
+    plain: bool,
+    /// A file on the path couldn't be read: its effect is unknown.
+    unreadable: bool,
+}
+
+impl OutsidePath {
+    /// For the clip ceiling: boosts always count; cuts only when provable.
+    fn ceiling_preamp_db(&self) -> f64 {
+        self.boost_db + if self.plain { self.cut_db } else { 0.0 }
+    }
+
+    /// For exclusive playback, which must recreate the shared path's level and
+    /// must never come out louder: every cut counts, whatever its scope; boosts
+    /// don't; an unreadable file costs a 10 dB pad.
+    fn exclusive_preamp_db(&self) -> f64 {
+        self.cut_db + if self.unreadable { -10.0 } else { 0.0 }
+    }
+}
+
+fn outside_path() -> OutsidePath {
+    match apo::detect() {
+        Ok(install) => outside_path_in(&install.config_path),
+        Err(_) => OutsidePath::default(),
+    }
+}
+
+fn outside_path_in(dir: &std::path::Path) -> OutsidePath {
+    let mut out = OutsidePath {
+        plain: true,
+        ..OutsidePath::default()
+    };
+    read_outside(&dir.join("config.txt"), dir, true, &mut out);
+    out
+}
+
+fn read_outside(file: &std::path::Path, dir: &std::path::Path, top: bool, out: &mut OutsidePath) {
+    let Ok(text) = std::fs::read_to_string(file) else {
+        out.unreadable = true;
+        out.plain = false;
+        return;
+    };
+    for line in text.lines().map(str::trim) {
+        let key = line
+            .split(':')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        if !(line.is_empty() || line.starts_with('#') || key == "preamp" || key == "include") {
+            out.plain = false;
+        }
+    }
+    for d in ConfigDoc::parse(&text).directives() {
+        match d {
+            Parsed::Preamp { db } if *db > 0.0 => out.boost_db += db,
+            Parsed::Preamp { db } => out.cut_db += db,
+            Parsed::Include { path } if path.eq_ignore_ascii_case("fletcher.txt") => {}
+            // Nested includes aren't followed: not plain.
+            Parsed::Include { path } if top => read_outside(&dir.join(path), dir, false, out),
+            Parsed::Include { .. } => out.plain = false,
+            _ => {}
+        }
+    }
+}
+
+/// One chain's level plan (ADR-0016). Returns (preamp to write, shortfall).
+///
+/// - target = reference + `trim`: the loudness everything lands at.
+/// - Level matching on: the preamp that puts the chain's loudness (≈ LUFS on
+///   pink noise) at the target. Off: every chain gets the target preamp, so
+///   presets keep their own loudness relative to Flat and Flat stays at the
+///   reference (never a jump).
+/// - Never above the clip ceiling (see `dsp::plan_level`).
+/// - shortfall > 0: held below the target by the ceiling. < 0: infeasible.
+fn level_plan(specs: &[FilterSpec], trim: f64, outside: &OutsidePath) -> (f64, f64) {
+    dsp::plan_level(
+        specs,
+        outside.ceiling_preamp_db(),
+        FS,
+        reference_db().min(0.0) + trim,
+        level_matching(),
+        (PREAMP_MIN_DB, PREAMP_MAX_DB),
+    )
+}
+
+/// The plan for what plays through Equalizer APO: this machine's trim and the
+/// outside path.
+fn matched_preamp_full(specs: &[FilterSpec]) -> (f64, f64) {
+    level_plan(specs, preamp_trim_db(), &outside_path())
+}
+
+/// The preamp that lands a chain at the reference loudness through APO.
 fn matched_preamp(specs: &[FilterSpec]) -> f64 {
     matched_preamp_full(specs).0
 }
 
-/// Preamps for two chains that will be COMPARED (TB-08 v2). Each side is first
-/// matched to the reference on its own; if the clip-safe cap stops either one
-/// short, BOTH come down by the larger shortfall, so they always play at the
-/// same loudness, just below the reference. Matching the pair to each other is
-/// the guarantee that matters (ADR-0003); landing exactly on the reference is
-/// secondary. Returns (preamp_a, preamp_b, dB below reference; 0 = on it).
-fn matched_pair(a: &[FilterSpec], b: &[FilterSpec]) -> (f64, f64, f64) {
-    let (pa, sa) = matched_preamp_full(a);
-    let (pb, sb) = matched_preamp_full(b);
-    let below = sa.max(sb);
-    let lower = |p: f64, own: f64| {
-        (((p - (below - own)) * 10.0).round() / 10.0).clamp(PREAMP_MIN_DB, PREAMP_MAX_DB)
-    };
-    (lower(pa, sa), lower(pb, sb), below)
+/// The plan for the track engine's exclusive path, which bypasses APO
+/// entirely: nothing outside applies there, and the listening level is applied
+/// as stream gain instead (`exclusive_listening_db`), so the bus stays clip-safe.
+fn engine_preamp_full(specs: &[FilterSpec]) -> (f64, f64) {
+    level_plan(specs, 0.0, &OutsidePath::default())
 }
 
-/// The preamp a PRESET stores. Deliberately untrimmed (ADR-0014): the trim is
-/// a property of this machine's playback, not of the tuning. Baking it in
-/// would make an exported preset arrive at someone else's ears offset by a
-/// number that only ever meant something here.
+/// Preamps for two chains that will be COMPARED (TB-08 v2, ADR-0016). Each side
+/// is planned on its own; if the ceiling holds either one short, BOTH come down
+/// by the larger shortfall, so they play at the same loudness. Returns
+/// (preamp_a, preamp_b, dB below the target, matched). `matched` is false only
+/// when equality is impossible, and then the UI must say "unmatched" (F5).
+fn pair_from(plan_a: (f64, f64), plan_b: (f64, f64)) -> (f64, f64, f64, bool) {
+    dsp::pair_levels(plan_a, plan_b, (PREAMP_MIN_DB, PREAMP_MAX_DB))
+}
+
+/// A pair played through Equalizer APO (system A/B, system-audio trials, previews).
+fn matched_pair(a: &[FilterSpec], b: &[FilterSpec]) -> (f64, f64, f64, bool) {
+    let (outside, trim) = (outside_path(), preamp_trim_db());
+    pair_from(level_plan(a, trim, &outside), level_plan(b, trim, &outside))
+}
+
+/// A pair played by the track engine (clip trials).
+fn engine_pair(a: &[FilterSpec], b: &[FilterSpec]) -> (f64, f64, f64, bool) {
+    pair_from(engine_preamp_full(a), engine_preamp_full(b))
+}
+
+/// The preamp a PRESET stores. Deliberately untrimmed (ADR-0014) and without
+/// this machine's outside path: both describe this machine's playback, not the
+/// tuning. Baking them in would make an exported preset arrive at someone
+/// else's ears offset by a number that only ever meant something here.
 fn preset_preamp(specs: &[FilterSpec]) -> f64 {
-    matched_preamp_untrimmed(specs).0
+    engine_preamp_full(specs).0
 }
 
-/// (preamp, shortfall): shortfall > 0 means the clip-safe cap won the fight
-/// and the chain sits that many dB ABOVE the reference — the comparison is
-/// then only imperfectly matched, and the UI must say so (TB-08 v1).
-fn matched_preamp_full(specs: &[FilterSpec]) -> (f64, f64) {
-    let (matched, shortfall) = matched_preamp_untrimmed(specs);
-    // The trim lands here and nowhere else: every write path (set_fletcher_chain,
-    // activate_chain, apply_side for BOTH sides, preset save, the trial engine)
-    // reaches the file through this one function, so one addition moves them all
-    // by the same amount — which is exactly why matching survives it.
-    let trimmed = ((matched + preamp_trim_db()) * 10.0).round() / 10.0;
-    (trimmed.clamp(PREAMP_MIN_DB, PREAMP_MAX_DB), shortfall)
+/// Clip Studio brings every song to this loudness before anything else, in
+/// BOTH play methods (Flat and EQ), so Flat ↔ EQ and song ↔ song stay at one
+/// fixed level (ADR-0016; the owner's choice for review F8). −16 LUFS is the
+/// common streaming level: nearly every modern master comes DOWN to it.
+/// Attenuate-only, so a quieter master stays a little quieter, but it gets the
+/// same gain in both methods, so the comparison is unaffected.
+const SONG_NORM_LUFS: f64 = -16.0;
+
+/// The Windows volume exclusive mode skips (TB-37): 0 dB on devices whose
+/// volume is in hardware (it applies to exclusive streams too, so recreating it
+/// would apply it twice). If the device can't be read, assume a quiet −20 dB
+/// rather than full volume.
+fn bypassed_volume_db() -> f64 {
+    devices::default_render_bypassed_volume_db().unwrap_or(-20.0)
 }
 
-/// The level-matched preamp before the user's output trim — the ADR-0003
-/// number. `shortfall` is a *relative* mismatch (chain vs reference), so the
-/// trim never touches it.
-fn matched_preamp_untrimmed(specs: &[FilterSpec]) -> (f64, f64) {
-    let clip_safe = auto_preamp_db(specs, FS);
-    if !level_matching() {
-        // Honesty switch off: clip safety only, no reference normalization —
-        // every comparison is then louder-vs-quieter and the UI says so.
-        return ((clip_safe.clamp(-30.0, 0.0) * 10.0).round() / 10.0, 0.0);
+/// What the exclusive engine adds after song normalization to land where the
+/// shared path would put Flat at `flat_preamp_db`: that preamp, the outside
+/// Preamp cuts, and the Windows volume exclusive mode skips. Errs quiet
+/// (`exclusive_preamp_db`). Always ≤ 0 dB. Only for EXCLUSIVE output: a shared
+/// stream gets all of these from APO and Windows already (review F2). Sampled
+/// when playback starts, so a Windows volume change mid-song takes effect from
+/// the next play, as with any exclusive-mode player.
+fn exclusive_listening_db(flat_preamp_db: f64) -> f64 {
+    (flat_preamp_db + outside_path().exclusive_preamp_db() + bypassed_volume_db()).min(0.0)
+}
+
+/// Flat's preamp as `apply_side` writes it for side B: paired with the active
+/// chain, so never above the level Flat plays at in the A/B (follow-up R4).
+fn compared_flat_preamp_db() -> f64 {
+    matched_pair(&specs_of(&active_chain()), &[]).1
+}
+
+/// The chain the last A/B write was measured with in Clip Studio, if any.
+static STUDIO_MEASURED: std::sync::Mutex<Option<Vec<ChainFilter>>> = std::sync::Mutex::new(None);
+
+/// Clip Studio is playing a song through your EQ: we have the actual audio, so
+/// don't estimate. Measure A (chain at `pa`) and B (Flat at `pb`) on the 20 s
+/// of the song around the playhead, read from the decode cache, and return
+/// LUFS(A) − LUFS(B). None when there's nothing to measure (no song, Bypass,
+/// a trial, too short, silent), and the estimate stands. Synchronous, at the
+/// moment of the flip: nothing changes behind the listener's back.
+fn studio_measured_diff(specs: &[FilterSpec], pa: f64, pb: f64) -> Option<f64> {
+    use std::io::{Read, Seek, SeekFrom};
+    use std::sync::atomic::Ordering::Relaxed;
+    if trial_owns_track() {
+        return None;
     }
-    let reference = reference_db().min(0.0);
-    if specs.is_empty() {
-        return ((reference * 10.0).round() / 10.0, 0.0);
-    }
-    let freqs = log_freqs(20.0, 20000.0, 200);
-    let resp = chain_response_db(specs, 0.0, FS, &freqs);
-    let mean = resp.iter().sum::<f64>() / resp.len() as f64;
-    let to_reference = reference - mean;
-    let shortfall = ((to_reference - clip_safe).max(0.0) * 10.0).round() / 10.0;
-    (
-        ((to_reference.min(clip_safe) * 10.0).round() / 10.0).clamp(-30.0, 0.0),
-        shortfall,
-    )
+    let (id, rate, pos, total) = {
+        let guard = TRACK.lock().unwrap();
+        let s = guard.as_ref()?;
+        if !matches!(s.mode, fletcher_core::playback::OutputMode::Shared) {
+            return None;
+        }
+        (
+            s.track_id,
+            s.shared.rate,
+            s.shared.pos.load(Relaxed),
+            s.shared.total_frames,
+        )
+    };
+    let len = (20 * rate as u64).min(total);
+    let start = pos.saturating_sub(len / 2).min(total - len);
+    let path = data_dir()
+        .join("cache")
+        .join("pcm")
+        .join(format!("{id}-{rate}.f32"));
+    let mut file = std::fs::File::open(path).ok()?;
+    file.seek(SeekFrom::Start(start * 8)).ok()?;
+    let mut bytes = vec![0u8; (len * 8) as usize];
+    file.read_exact(&mut bytes).ok()?;
+    let pcm: Vec<f32> = bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| f32::from_le_bytes(*b))
+        .collect();
+    let (la, _) = engine::lufs_peak_through(&pcm, rate, specs, pa).ok()?;
+    let (lb, _) = engine::lufs_peak_through(&pcm, rate, &[], pb).ok()?;
+    let diff = la - lb;
+    diff.is_finite().then_some(diff)
 }
 
 /// Write fletcher.txt for the given side: A = the active chain; B = flat,
@@ -586,13 +838,24 @@ fn matched_preamp_untrimmed(specs: &[FilterSpec]) -> (f64, f64) {
 /// of leaving it louder (TB-08 v2).
 fn apply_side(side: &str) -> Result<(), String> {
     let chain = active_chain();
-    let (pa, pb, _) = matched_pair(&specs_of(&chain), &[]);
+    let specs = specs_of(&chain);
+    let (mut pa, mut pb, _, matched) = matched_pair(&specs, &[]);
+    *STUDIO_MEASURED.lock().unwrap() = None;
+    if matched {
+        if let Some(diff) = studio_measured_diff(&specs, pa, pb) {
+            // Whichever side is louder ON THIS SONG comes down; nothing rises,
+            // so the estimate's clip safety still holds.
+            if diff > 0.0 {
+                pa = round_tenth(pa - diff);
+            } else {
+                pb = round_tenth(pb + diff);
+            }
+            *STUDIO_MEASURED.lock().unwrap() = Some(chain.clone());
+        }
+    }
     match side {
         // Flat goes to the file only; a running track keeps the active chain.
-        "b" => {
-            let install = apo::detect().map_err(|e| e.to_string())?;
-            write_fletcher_file(&install.config_path, &render_fletcher_file(pb, &[]))
-        }
+        "b" => write_chain_safely(&[], pb),
         _ => activate_chain_at(&chain, pa),
     }
 }
@@ -928,6 +1191,10 @@ fn parse_filters(text: String) -> Vec<PastedFilter> {
 struct ChainCurve {
     response_db: Vec<f64>,
     matched_preamp_db: f64,
+    /// How far the clip ceiling kept this chain below the target. Adding it to
+    /// the audible curve makes any two curves' difference the PAIRED difference
+    /// (ADR-0016): (pa + sa) − (pb + sb) is exactly what `matched_pair` plays.
+    shortfall_db: f64,
 }
 
 #[derive(Serialize)]
@@ -947,9 +1214,11 @@ fn chain_curves(chains: Vec<Vec<FilterIn>>) -> Result<ChainCurves, String> {
         .iter()
         .map(|filters| {
             let specs = specs_of(&chain_of(filters)?);
+            let (preamp, shortfall) = matched_preamp_full(&specs);
             Ok(ChainCurve {
                 response_db: chain_response_db(&specs, 0.0, FS, &freqs),
-                matched_preamp_db: matched_preamp(&specs),
+                matched_preamp_db: preamp,
+                shortfall_db: shortfall,
             })
         })
         .collect::<Result<_, String>>()?;
@@ -960,15 +1229,37 @@ fn chain_curves(chains: Vec<Vec<FilterIn>>) -> Result<ChainCurves, String> {
 /// inspector's "listen"): writes fletcher.txt only — the active preset and the
 /// A/B side are untouched, so the preview leaves no trace on disk state.
 /// Refused mid-ABX: an outside write would break the blinding.
+///
+/// `partner` is what this preview is being compared against (the other node in
+/// the inspector, the other side of a finished blind test). With it, both play
+/// at the PAIRED level (ADR-0016), so flipping between them is never
+/// louder-vs-quieter, the same guarantee A/B and the trials give.
+///
+/// Returns whether it IS matched: false when equality is impossible (an
+/// infeasible chain), so the UI can say so instead of implying a match
+/// (follow-up R6).
 #[tauri::command]
-fn preview_chain(filters: Vec<FilterIn>) -> Result<(), String> {
+fn preview_chain(filters: Vec<FilterIn>, partner: Option<Vec<FilterIn>>) -> Result<bool, String> {
     if TRIAL.lock().unwrap().is_some() {
         return Err("a blind test is running — finish or cancel it first".into());
     }
     if profile_running() {
         return Err("a hearing-profile session is running — finish or cancel it first".into());
     }
-    activate_chain(&chain_of(&filters)?)
+    let chain = chain_of(&filters)?;
+    let specs = specs_of(&chain);
+    let (preamp, matched) = match partner {
+        Some(p) => {
+            let (pa, _, _, matched) = matched_pair(&specs, &specs_of(&chain_of(&p)?));
+            (pa, matched)
+        }
+        None => {
+            let (p, shortfall) = matched_preamp_full(&specs);
+            (p, shortfall >= -0.05)
+        }
+    };
+    activate_chain_at(&chain, preamp)?;
+    Ok(matched)
 }
 
 /// Promote an arbitrary chain (a history node) into a preset. Auto-suffixes on
@@ -1079,6 +1370,11 @@ fn calibration_noise(app: tauri::AppHandle, on: bool) -> Result<(), String> {
     let stop = Arc::new(AtomicBool::new(false));
     *guard = Some(stop.clone());
     drop(guard);
+    // Calibrate against the reference itself: Flat at the reference (+ trim),
+    // not whatever is active. A capped preset, or a paired Flat sitting below
+    // the reference, would otherwise get the knob set several dB too loud
+    // for everything afterwards (review F8).
+    write_chain_safely(&[], matched_preamp(&[]))?;
     std::thread::spawn(move || {
         use fletcher_core::{playback, signal};
         let mut src = playback::SignalSource::new(
@@ -1086,6 +1382,10 @@ fn calibration_noise(app: tauri::AppHandle, on: bool) -> Result<(), String> {
             None,
         );
         let result = playback::play(playback::OutputMode::Shared, &mut src, 1.0, &stop, |_| {});
+        // Put back what was playing, unless a session took over meanwhile.
+        if TRIAL.lock().unwrap().is_none() && !profile_running() {
+            let _ = apply_side(&ab_side());
+        }
         let mut guard = CAL_NOISE.lock().unwrap();
         if let Some(cur) = guard.as_ref() {
             if Arc::ptr_eq(cur, &stop) {
@@ -2716,7 +3016,7 @@ fn push_chain_to_track(chain: &[ChainFilter]) {
     let guard = TRACK.lock().unwrap();
     if let Some(s) = guard.as_ref() {
         let specs = specs_of(chain);
-        let preamp_a = matched_preamp(&specs);
+        let preamp_a = engine_preamp_full(&specs).0;
         {
             let mut bus = s.shared.bus.lock().unwrap();
             bus.specs = specs;
@@ -2862,14 +3162,22 @@ async fn track_play(app: tauri::AppHandle, id: i64) -> Result<(), String> {
             }
         }
 
-        // Bypass level match: bring the raw track toward the reference
-        // loudness (target scales with referenceDb; −16 LUFS at the −8
-        // default). Attenuate-only — a positive gain could clip (TB-06).
-        let gain_db = if bypass {
-            let target = -16.0 + (reference_db() + 8.0);
-            lufs_flat.map(|l| (target - l).min(0.0)).unwrap_or(0.0)
+        // ADR-0016 (owner's choice for review F8): every song is first brought
+        // to one loudness, identically in BOTH play methods, so Flat ↔ EQ is
+        // matched and song ↔ song stays fixed. Attenuate-only (TB-06).
+        let song_db = lufs_flat
+            .map(|l| (SONG_NORM_LUFS - l).min(0.0))
+            .unwrap_or(0.0);
+        // Then the listening level. On the SHARED path (EQ mode, or Flat when the
+        // device refused exclusive), APO and Windows already apply Fletcher's
+        // preamp, outside Preamp lines and the volume, so nothing more is added.
+        // The EXCLUSIVE path skips all of that, so the engine recreates it. This
+        // branches on the actual output mode, not on the method asked for
+        // (review F2: shared EQ used to get it twice, about 10 dB too quiet).
+        let gain_db = if exclusive {
+            song_db + exclusive_listening_db(compared_flat_preamp_db())
         } else {
-            0.0
+            song_db
         };
 
         let session = engine::TrackSession::new(id, mode, rate, (pcm.len() / 2) as u64, 0);
@@ -3235,37 +3543,8 @@ struct SettingsState {
 /// Sum of every `Preamp:` reachable from config.txt that isn't ours. Fletcher
 /// may not edit these (ADR-0007) but it must be able to explain them.
 fn foreign_preamp_db() -> f64 {
-    let Ok(install) = apo::detect() else {
-        return 0.0;
-    };
-    let root_path = install.config_path.join("config.txt");
-    let Ok(root_text) = std::fs::read_to_string(&root_path) else {
-        return 0.0;
-    };
-    let root = ConfigDoc::parse(&root_text);
-    let includes: Vec<String> = root
-        .directives()
-        .filter_map(|d| match d {
-            Parsed::Include { path } => Some(path.clone()),
-            _ => None,
-        })
-        .collect();
-    let mut docs = vec![root];
-    for inc in includes {
-        if inc.eq_ignore_ascii_case("fletcher.txt") {
-            continue;
-        }
-        if let Ok(text) = std::fs::read_to_string(install.config_path.join(&inc)) {
-            docs.push(ConfigDoc::parse(&text));
-        }
-    }
-    docs.iter()
-        .flat_map(|d| d.directives())
-        .filter_map(|d| match d {
-            Parsed::Preamp { db } => Some(*db),
-            _ => None,
-        })
-        .sum()
+    let o = outside_path();
+    o.cut_db + o.boost_db
 }
 
 #[tauri::command]
@@ -3467,20 +3746,30 @@ fn device_set_default(id: String) -> Result<EqState, String> {
 #[serde(rename_all = "camelCase")]
 struct AbInfo {
     side: String,
-    match_db: f64,
-    /// TB-08: dB by which BOTH sides sit below the reference because the
-    /// active chain's clip-safe cap won. They still match each other
-    /// (`matched_pair`); 0 = both exactly on the reference.
+    /// The loudness both sides play at, on the reference scale: reference +
+    /// trim − shortfall. What the user actually hears, never a raw preamp (TB-31).
+    level_db: f64,
+    /// TB-08: dB by which BOTH sides sit below reference + trim because the
+    /// active chain hit its clip ceiling. They still match each other
+    /// (`matched_pair`); 0 = both exactly on the target.
     shortfall_db: f64,
+    /// False when the two sides CAN'T be matched (an infeasible chain, F5): the
+    /// bar must then say unmatched, never "matched".
+    matched: bool,
+    /// The last flip was measured on the Clip Studio song, for this chain.
+    measured: bool,
 }
 
 #[tauri::command]
 fn ab_info() -> AbInfo {
-    let (_, match_db, shortfall_db) = matched_pair(&specs_of(&active_chain()), &[]);
+    let chain = active_chain();
+    let (_, _, shortfall_db, matched) = matched_pair(&specs_of(&chain), &[]);
     AbInfo {
         side: ab_side(),
-        match_db,
+        level_db: round_tenth(reference_db().min(0.0) + preamp_trim_db() - shortfall_db),
         shortfall_db,
+        matched,
+        measured: STUDIO_MEASURED.lock().unwrap().as_deref() == Some(chain.as_slice()),
     }
 }
 
@@ -3559,7 +3848,10 @@ struct TrialClip {
     frame_out: u64,
     /// True-LUFS trim bringing bus B to bus A's loudness on this clip.
     trim_b_db: f64,
-    /// >0 when the TB-06 headroom cap kept the trim short of a perfect match.
+    /// Bus A's share (≤ 0): when B couldn't come up far enough without
+    /// clipping, A came down by the rest, so the two are equal (review F1).
+    trim_a_db: f64,
+    /// Kept for record compatibility; always 0 now that A takes the remainder.
     trim_shortfall_db: f64,
     lufs_a: f64,
     lufs_b: f64,
@@ -3661,7 +3953,7 @@ fn trial_apply_audition(session: &mut TrialSession, target: &str) -> Result<(), 
     let hear_a = trial_hear_a(session, target);
     match &session.material {
         Material::System => {
-            let (pa, pb, _) = matched_pair(&specs_of(&session.a), &specs_of(&session.b));
+            let (pa, pb, _, _) = matched_pair(&specs_of(&session.a), &specs_of(&session.b));
             if hear_a {
                 activate_chain_at(&session.a, pa)?;
             } else {
@@ -3915,7 +4207,7 @@ fn spawn_trial_clip(
     session.shared.loop_on.store(true, Relaxed);
     session.shared.side_b.store(!hear_a, Relaxed);
     let (sa, sb) = (specs_of(chains.a), specs_of(chains.b));
-    let (pa, pb, _) = matched_pair(&sa, &sb);
+    let (pa, pb, _, _) = engine_pair(&sa, &sb);
     {
         let mut bus = session.shared.bus.lock().unwrap();
         *bus = engine::BusConfig {
@@ -3924,6 +4216,7 @@ fn spawn_trial_clip(
             specs_b: sb,
             preamp_b_db: pb,
             trim_b_db: clip.trim_b_db,
+            trim_a_db: clip.trim_a_db,
             matched: chains.level_matched,
             in_engine_eq: true,
         };
@@ -4007,7 +4300,7 @@ fn trial_start_inner(app: &tauri::AppHandle, spec: TrialSpec) -> Result<TrialSta
     {
         let freqs = log_freqs(20.0, 20000.0, CURVE_POINTS);
         let (sa, sb) = (specs_of(&chain_a), specs_of(&chain_b));
-        let (pa, pb, _) = matched_pair(&sa, &sb);
+        let (pa, pb, _, _) = matched_pair(&sa, &sb);
         let ra = chain_response_db(&sa, pa, FS, &freqs);
         let rb = chain_response_db(&sb, pb, FS, &freqs);
         if ra.iter().zip(&rb).all(|(x, y)| (x - y).abs() < 0.05) {
@@ -4059,6 +4352,14 @@ fn trial_start_inner(app: &tauri::AppHandle, spec: TrialSpec) -> Result<TrialSta
         )?,
     };
 
+    // "Matched" only if it truly can be: the setting is on AND the pair is
+    // feasible (an infeasible chain can't be matched, review F5). Clip trials
+    // additionally measure and correct per clip (`dsp::measured_trims`).
+    let (sa, sb) = (specs_of(&chain_a), specs_of(&chain_b));
+    let pair_ok = match material {
+        Material::System => matched_pair(&sa, &sb).3,
+        Material::Clips { .. } => engine_pair(&sa, &sb).3,
+    };
     let mut session = TrialSession {
         id: format!("{id_prefix}-{}", now_ms()),
         protocol,
@@ -4072,7 +4373,7 @@ fn trial_start_inner(app: &tauri::AppHandle, spec: TrialSpec) -> Result<TrialSta
         answers: Vec::new(),
         stats_viewed: Vec::new(),
         audition: opening.into(),
-        level_matched: level_matching(),
+        level_matched: level_matching() && pair_ok,
         started_ms: now_ms(),
     };
 
@@ -4248,13 +4549,17 @@ fn trial_build_clips_material(
         })?;
 
     // Measure each distinct clip once: LUFS through both chains over the clip
-    // region, trim B to match A (TB-06: positive trims capped at post-chain
-    // peak headroom − 0.3 dB, shortfall recorded). Per-track stream gain from
-    // the loudest clip so nothing exceeds the reference target and clips keep
-    // their natural relative loudness.
+    // region, then the measured correction (`dsp::measured_trims`): B takes it,
+    // and if B can't come up far enough without clipping, A comes down by the
+    // rest, so no residual is ever labelled matched (review F1). Silent clips
+    // are refused (F9). Per-track stream gain from the loudest clip, so nothing
+    // exceeds the target and clips keep their natural relative loudness.
     let (sa, sb) = (specs_of(chain_a), specs_of(chain_b));
-    let (pa, pb, _) = matched_pair(&sa, &sb);
-    let target = -16.0 + (reference_db() + 8.0);
+    let (pa, pb, _, _) = engine_pair(&sa, &sb);
+    // The same level Clip Studio plays at: songs at SONG_NORM_LUFS, then the
+    // listening level the shared path would apply (exclusive output skips it).
+    let target = SONG_NORM_LUFS
+        + exclusive_listening_db(level_plan(&[], preamp_trim_db(), &outside_path()).0);
     let mut measured: std::collections::HashMap<i64, TrialClip> = std::collections::HashMap::new();
     let mut track_gain: std::collections::HashMap<i64, f64> = std::collections::HashMap::new();
     let mut track_ids: Vec<i64> = Vec::new();
@@ -4289,14 +4594,9 @@ fn trial_build_clips_material(
             }
             let (lufs_a, _) = engine::lufs_peak_through(&slice, rate, &sa, pa)?;
             let (lufs_b, peak_b) = engine::lufs_peak_through(&slice, rate, &sb, pb)?;
-            let want = lufs_a - lufs_b;
-            let (trim, shortfall) = if want > 0.0 {
-                let headroom = (-peak_b - 0.3).max(0.0);
-                (want.min(headroom), (want - headroom).max(0.0))
-            } else {
-                (want, 0.0)
-            };
-            let g = (target - lufs_a).min(0.0);
+            let (trim_a, trim_b) = dsp::measured_trims(lufs_a, lufs_b, peak_b, 0.3)
+                .map_err(|why| format!("\"{}\" {why} — pick a clip with sound in it", c.name))?;
+            let g = (target - (lufs_a + trim_a)).min(0.0);
             let e = track_gain.entry(*tid).or_insert(g);
             *e = e.min(g);
             measured.insert(
@@ -4308,8 +4608,9 @@ fn trial_build_clips_material(
                     track_title: c.title.clone(),
                     frame_in: fi,
                     frame_out: fo,
-                    trim_b_db: trim,
-                    trim_shortfall_db: shortfall,
+                    trim_b_db: trim_b,
+                    trim_a_db: trim_a,
+                    trim_shortfall_db: 0.0,
                     lufs_a,
                     lufs_b,
                     gain_db: 0.0, // filled below from the track minimum
@@ -4421,6 +4722,13 @@ struct TrialResult {
     b_chain: Vec<PastedFilter>,
     reference_db: f64,
     level_matched: bool,
+    /// How the two sides were levelled (ADR-0016), so a result can be judged
+    /// later: both sides sat this many dB below the target because one of them
+    /// hit its clip ceiling (0 = both on target)…
+    pair_below_db: f64,
+    /// …using this loudness method: "k-weighted-pink" (system audio, estimated
+    /// from the EQ curves) or "measured-lufs" (clips, measured on the audio).
+    level_method: &'static str,
     trials: usize,
     /// ABX only: correct count + one-sided exact binomial p.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -4494,6 +4802,7 @@ fn trial_result_of(
                         "clipId": c.clip_id,
                         "trackId": c.track_id,
                         "trimBDb": c.trim_b_db,
+                        "trimADb": c.trim_a_db,
                         "trimShortfallDb": c.trim_shortfall_db,
                         "lufsA": c.lufs_a,
                         "lufsB": c.lufs_b,
@@ -4557,6 +4866,14 @@ fn trial_result_of(
         b_chain: dto_chain(&session.b),
         reference_db: reference_db(),
         level_matched: session.level_matched,
+        pair_below_db: match session.material {
+            Material::System => matched_pair(&specs_of(&session.a), &specs_of(&session.b)).2,
+            Material::Clips { .. } => engine_pair(&specs_of(&session.a), &specs_of(&session.b)).2,
+        },
+        level_method: match session.material {
+            Material::System => "k-weighted-pink",
+            Material::Clips { .. } => "measured-lufs",
+        },
         trials: n,
         correct: is_abx.then_some(k),
         p_value: is_abx.then(|| fletcher_core::stats::binomial_p_one_sided(k as u32, n as u32)),
@@ -4688,6 +5005,7 @@ fn trial_vote_inner(app: &tauri::AppHandle, pick: bool) -> Result<serde_json::Va
                 {
                     let mut bus = s.shared.bus.lock().unwrap();
                     bus.trim_b_db = next.trim_b_db;
+                    bus.trim_a_db = next.trim_a_db;
                 }
                 s.shared.chain_gen.fetch_add(1, Relaxed);
                 s.shared.side_b.store(!hear_a, Relaxed);
@@ -5039,8 +5357,9 @@ fn spawn_config_watcher(handle: tauri::AppHandle) {
             eprintln!("fletcher: config watcher unavailable");
             return;
         };
+        // Recursive: includes can live in subfolders, and they count (R2/R3).
         if watcher
-            .watch(&install.config_path, RecursiveMode::NonRecursive)
+            .watch(&install.config_path, RecursiveMode::Recursive)
             .is_err()
         {
             eprintln!("fletcher: cannot watch {}", install.config_path.display());
@@ -5052,6 +5371,14 @@ fn spawn_config_watcher(handle: tauri::AppHandle) {
                     && p.extension().is_none_or(|e| e != "fletcher-tmp")
             })
         };
+        // Fletcher's plan depends on the WHOLE outside path (ADR-0016): Preamp
+        // lines, outside filters, their scopes, nested includes, unreadable
+        // files. When any of it changes, re-plan and rewrite at once (follow-up
+        // R3: it used to watch only the old preamp total, so turning an outside
+        // cut off, or changing a scope, left a stale preamp in the file). Our
+        // own rewrite never changes the outside path, so this can't loop.
+        let fingerprint = || format!("{:?}", outside_path());
+        let mut known = fingerprint();
         while let Ok(ev) = rx.recv() {
             let Ok(ev) = ev else { continue };
             if !relevant(&ev) {
@@ -5060,9 +5387,34 @@ fn spawn_config_watcher(handle: tauri::AppHandle) {
             // Debounce bursts (editors and Peace write several events per save).
             std::thread::sleep(std::time::Duration::from_millis(150));
             while rx.try_recv().is_ok() {}
+            let now = fingerprint();
+            if now != known {
+                known = now;
+                replan_after_outside_change();
+            }
             let _ = handle.emit("apo-config-changed", ());
         }
     });
+}
+
+/// The outside path changed: rewrite what's playing at its new plan. A running
+/// SYSTEM-audio trial gets its current audition re-applied (both sides are
+/// planned against the same path, so the pair stays matched); clip trials and
+/// the hearing profile play exclusively, untouched by APO, so they're left alone.
+fn replan_after_outside_change() {
+    if profile_running() {
+        return;
+    }
+    let mut guard = TRIAL.lock().unwrap();
+    if let Some(session) = guard.as_mut() {
+        if matches!(session.material, Material::System) {
+            let audition = session.audition.clone();
+            let _ = trial_apply_audition(session, &audition);
+        }
+        return;
+    }
+    drop(guard);
+    let _ = apply_side(&ab_side());
 }
 
 /// Bring the main window back from the tray, unminimized and focused. Used by
@@ -5352,4 +5704,90 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod outside_path_tests {
+    //! The plain-path rule (ADR-0016) on real files in a temp folder.
+    use super::*;
+
+    fn read(name: &str, files: &[(&str, &str)]) -> OutsidePath {
+        let dir =
+            std::env::temp_dir().join(format!("fletcher-outside-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for (file, text) in files {
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(file), text).unwrap();
+        }
+        let out = outside_path_in(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        out
+    }
+
+    #[test]
+    fn a_plain_cut_is_headroom() {
+        // The owner's own setup: an empty peace.txt, Fletcher, and −10 dB.
+        let out = read(
+            "plain",
+            &[
+                (
+                    "config.txt",
+                    "# note\nInclude: peace.txt\nInclude: fletcher.txt\n\nPreamp: -10 dB\n",
+                ),
+                ("peace.txt", ""),
+            ],
+        );
+        assert!(out.plain);
+        assert_eq!(
+            (out.ceiling_preamp_db(), out.exclusive_preamp_db()),
+            (-10.0, -10.0)
+        );
+    }
+
+    #[test]
+    fn anything_else_on_the_path_earns_no_headroom() {
+        for (name, extra) in [
+            ("filter", "Filter: ON PK Fc 100 Hz Gain 9 dB Q 1\n"),
+            ("graphiceq", "GraphicEQ: 25 6; 100 0\n"),
+            ("scope", "Device: Speakers\n"),
+            ("nested", "Include: more.txt\n"),
+        ] {
+            let out = read(
+                name,
+                &[
+                    ("config.txt", "Preamp: -6 dB\nInclude: other.txt\n"),
+                    ("other.txt", extra),
+                ],
+            );
+            assert!(!out.plain, "{name}");
+            assert_eq!(
+                out.ceiling_preamp_db(),
+                0.0,
+                "{name}: a cut it can't prove isn't headroom"
+            );
+            assert_eq!(
+                out.exclusive_preamp_db(),
+                -6.0,
+                "{name}: exclusive still takes the cut"
+            );
+        }
+    }
+
+    #[test]
+    fn boosts_always_count_and_missing_files_err_quiet() {
+        let boost = read("boost", &[("config.txt", "Device: X\nPreamp: 4 dB\n")]);
+        assert_eq!(boost.ceiling_preamp_db(), 4.0);
+        assert_eq!(
+            boost.exclusive_preamp_db(),
+            0.0,
+            "never louder in exclusive"
+        );
+        let missing = read(
+            "missing",
+            &[("config.txt", "Preamp: -6 dB\nInclude: gone.txt\n")],
+        );
+        assert!(missing.unreadable && !missing.plain);
+        assert_eq!(missing.ceiling_preamp_db(), 0.0);
+        assert_eq!(missing.exclusive_preamp_db(), -16.0);
+    }
 }

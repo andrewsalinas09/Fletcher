@@ -22,7 +22,10 @@ type EqState = {
   apoOnDevice: ApoOnDevice;
   /** APO was registered on this device during this run — usually live at once; older APO may need a restart. */
   apoRebootPending: boolean;
+  /** Every Preamp line APO applies, summed (Fletcher's + outside ones). */
   preampDb: number;
+  /** Fletcher's own auto preamp alone. */
+  ownPreampDb: number;
   freqs: number[];
   sumDb: number[];
   filters: EqFilter[];
@@ -52,6 +55,14 @@ const FREQ_LABELS = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
 const fmtHz = (hz: number) =>
   hz >= 1000 ? `${+(hz / 1000).toFixed(2)}k` : `${+hz.toFixed(0)}`;
 const fmtGain = (g: number) => `${g > 0 ? "+" : ""}${+g.toFixed(1)}`;
+/** ADR-0016 / TB-39: system-wide matching is an estimate, so the UI says so. */
+const LEVEL_ESTIMATE_NOTE =
+  "System-wide, the match is an estimate: each preset's loudness effect measured the way LUFS hears it, on pink noise. Music isn't pink noise, so a preset that mostly changes one region (a big bass shelf, say) can still sound a little louder or quieter on some songs. Clip trials measure the actual audio instead.";
+
+/** ADR-0016: in Clip Studio, the flip is measured on the playing song. */
+const MEASURED_NOTE =
+  "Measured on the song playing in Clip Studio: the 20 seconds around the playhead were run through your preset and through Flat, and the louder side brought down to match. Measured at the moment you flipped; after an EQ edit, flip again to re-measure.";
+
 /** Imports compute exact Qs (a REW shelf's equivalent Q is 0.6708203932…); show three places. */
 const fmtQ = (q: number) => `${+q.toFixed(3)}`;
 /** The tool behind an APO config file, in words a user knows; unknown files keep their name. */
@@ -217,10 +228,31 @@ const apoLine = (f: ChainSnap[number]) =>
 
 // ---- inspector curve math (Q-24): all responses come from Rust, TS only
 // subtracts. "Audible" = response + matched preamp — what actually plays.
-type ChainCurvesResp = { freqs: number[]; curves: { responseDb: number[]; matchedPreampDb: number }[] };
-type CurveMap = { freqs: number[]; byId: Map<number, { responseDb: number[]; preamp: number }> };
+type ChainCurvesResp = { freqs: number[]; curves: { responseDb: number[]; matchedPreampDb: number; shortfallDb: number }[] };
+/** One chain's response and its level plan (matched preamp, shortfall). */
+type CurvePlan = { responseDb: number[]; preamp: number; shortfall: number };
+type CurveMap = { freqs: number[]; byId: Map<number, CurvePlan> };
 
-const audibleOf = (c: { responseDb: number[]; preamp: number }) => c.responseDb.map((db) => db + c.preamp);
+const planOf = (c: ChainCurvesResp["curves"][number]): CurvePlan => ({
+  responseDb: c.responseDb,
+  preamp: c.matchedPreampDb,
+  shortfall: c.shortfallDb,
+});
+
+/** What two chains actually play when COMPARED: the backend's `pair_levels`
+ *  rule (ADR-0016). Feasible → both come down by the larger shortfall;
+ *  infeasible (a negative shortfall, or the floor) → each plays its own plan,
+ *  and the difference shows it unmatched (follow-up R6). */
+const PREAMP_FLOOR_DB = -120;
+function pairedAudible(a: CurvePlan, b: CurvePlan): [number[], number[]] {
+  let [oa, ob] = [a.preamp, b.preamp];
+  if (a.shortfall >= -0.05 && b.shortfall >= -0.05) {
+    const below = Math.max(a.shortfall, b.shortfall);
+    const [la, lb] = [a.preamp - (below - a.shortfall), b.preamp - (below - b.shortfall)];
+    if (la >= PREAMP_FLOOR_DB && lb >= PREAMP_FLOOR_DB) [oa, ob] = [la, lb];
+  }
+  return [a.responseDb.map((db) => db + oa), b.responseDb.map((db) => db + ob)];
+}
 const diffOf = (a: number[], b: number[]) => a.map((v, i) => v - (b[i] ?? 0));
 const meanAbs = (xs: number[]) => (xs.length ? xs.reduce((s, x) => s + Math.abs(x), 0) / xs.length : 0);
 
@@ -415,7 +447,7 @@ function HistoryTree({
   onJump: (id: number) => void;
   onDelete: (id: number) => void;
   onEdit: (id: number, patch: NodePatch) => void;
-  onPreview: (snap: ChainSnap | null) => void;
+  onPreview: (snap: ChainSnap | null, partner?: ChainSnap | null) => void;
   onAbx: (aId: number, bId: number) => void;
   onPromote: (id: number) => void;
   /** Drag-graft: copy `id`'s exact sound as one clean step under `ontoId`. */
@@ -481,10 +513,7 @@ function HistoryTree({
           setCurves({
             freqs: r.freqs,
             byId: new Map(
-              nodes.map((n, k) => [
-                n.id,
-                { responseDb: r.curves[k].responseDb, preamp: r.curves[k].matchedPreampDb },
-              ]),
+              nodes.map((n, k) => [n.id, planOf(r.curves[k])]),
             ),
           }),
         )
@@ -504,14 +533,16 @@ function HistoryTree({
   );
   const multi = group.length >= 2;
 
-  const audible = (id: number) => {
-    const c = curves?.byId.get(id);
-    return c ? audibleOf(c) : null;
+  /** The audible difference id − base, at the levels comparing them plays. */
+  const pairDiffOf = (id: number, base: number) => {
+    const [a, b] = [curves?.byId.get(id), curves?.byId.get(base)];
+    if (!a || !b) return null;
+    const [pa, pb] = pairedAudible(a, b);
+    return diffOf(pa, pb);
   };
   const madBetween = (i: number, j: number) => {
-    const a = audible(i);
-    const b = audible(j);
-    return a && b ? meanAbs(diffOf(a, b)) : null;
+    const d = pairDiffOf(i, j);
+    return d ? meanAbs(d) : null;
   };
   const edgeW = (child: number, parent: number) => {
     const mad = madBetween(child, parent);
@@ -682,8 +713,7 @@ function HistoryTree({
   let pairDiff: number[] | null = null;
   let faint: number[][] | undefined;
   if (!multi && selCurve && baseCurve) {
-    const a = audibleOf(selCurve);
-    const b = audibleOf(baseCurve);
+    const [a, b] = pairedAudible(selCurve, baseCurve);
     pairDiff = diffOf(a, b);
     // Context curves centered on their joint mean: shapes AND their relative
     // offset survive; absolute level (≈ the reference) is not the story here.
@@ -692,11 +722,11 @@ function HistoryTree({
   }
   const multiDiffs =
     multi && baseNode
-      ? group.map((id, k) => {
-          const a = audible(id);
-          const b = audible(baseNode.id);
-          return { id, color: CMP_COLORS[k % CMP_COLORS.length], dbs: a && b ? diffOf(a, b) : null };
-        })
+      ? group.map((id, k) => ({
+          id,
+          color: CMP_COLORS[k % CMP_COLORS.length],
+          dbs: pairDiffOf(id, baseNode.id),
+        }))
       : [];
   const autoRange = (() => {
     const peaks = [
@@ -724,7 +754,7 @@ function HistoryTree({
       onPreview(null);
     } else {
       setPreviewing(which);
-      onPreview(target.snap ?? []);
+      onPreview(target.snap ?? [], (which === "node" ? baseNode : selNode)?.snap ?? null);
     }
   };
   const copyNode = () => {
@@ -1449,7 +1479,9 @@ function PopoutHistory() {
           onJump={(id) => emitTo("main", "hist-cmd", { type: "jump", id })}
           onDelete={(id) => emitTo("main", "hist-cmd", { type: "del", id })}
           onEdit={(id, patch) => emitTo("main", "hist-cmd", { type: "edit", id, patch })}
-          onPreview={(snap) => emitTo("main", "hist-cmd", { type: snap ? "preview" : "restore", id: 0, snap })}
+          onPreview={(snap, partner) =>
+            emitTo("main", "hist-cmd", { type: snap ? "preview" : "restore", id: 0, snap, partner })
+          }
           onAbx={(a, b) => emitTo("main", "hist-cmd", { type: "abx", id: a, base: b })}
           onPromote={(id) => emitTo("main", "hist-cmd", { type: "promote", id })}
           onCompare={(spec) => emitTo("main", "hist-cmd", { type: "compare", id: 0, spec })}
@@ -1915,7 +1947,7 @@ const storeDiffScale = (v: number | "auto") => {
  *  gesture change" while sculpting. */
 function PopoutDiff() {
   const [sync, setSync] = useState<DiffSync | null>(null);
-  const [curves, setCurves] = useState<{ freqs: number[]; audible: number[][] } | null>(null);
+  const [curves, setCurves] = useState<{ freqs: number[]; plans: CurvePlan[] } | null>(null);
   const [scale, setScale] = useState<number | "auto">(loadDiffScale);
 
   useEffect(() => {
@@ -1949,10 +1981,7 @@ function PopoutDiff() {
     const t = window.setTimeout(() => {
       invoke<ChainCurvesResp>("chain_curves", { chains })
         .then((r) =>
-          setCurves({
-            freqs: r.freqs,
-            audible: r.curves.map((c) => c.responseDb.map((db) => db + c.matchedPreampDb)),
-          }),
+          setCurves({ freqs: r.freqs, plans: r.curves.map(planOf) }),
         )
         .catch(() => {});
     }, 100);
@@ -1962,15 +1991,15 @@ function PopoutDiff() {
   const diffs =
     sync && curves
       ? sync.series.map((s, k) => ({
-          dbs: diffOf(curves.audible[k + 1], curves.audible[0]),
+          // Each series vs the base at the levels comparing THEM plays (R6).
+          dbs: diffOf(...pairedAudible(curves.plans[k + 1], curves.plans[0])),
           color: sync.series.length === 1 ? "var(--ink)" : s.color,
         }))
       : [];
   const faint =
     sync && curves && sync.series.length === 1
       ? (() => {
-          const a = curves.audible[1];
-          const b = curves.audible[0];
+          const [a, b] = pairedAudible(curves.plans[1], curves.plans[0]);
           const center =
             (a.reduce((s, x) => s + x, 0) + b.reduce((s, x) => s + x, 0)) / (a.length + b.length);
           return [a.map((x) => x - center), b.map((x) => x - center)];
@@ -2036,7 +2065,14 @@ function PopoutDiff() {
 }
 
 type PresetsState = { presets: string[]; active: string | null };
-type AbInfo = { side: string; matchDb: number; shortfallDb: number };
+type AbInfo = {
+  side: string;
+  levelDb: number;
+  shortfallDb: number;
+  matched: boolean;
+  /** The last flip was measured on the Clip Studio song (ADR-0016). */
+  measured: boolean;
+};
 type Device = { id: string; name: string; isDefault: boolean; apo: ApoOnDevice };
 type UpdateStatus = {
   current: string;
@@ -3258,7 +3294,7 @@ function MainApp() {
       })
       .catch((e) => setError(String(e)));
 
-  const [ab, setAb] = useState<AbInfo>({ side: "a", matchDb: 0, shortfallDb: 0 });
+  const [ab, setAb] = useState<AbInfo>({ side: "a", levelDb: -8, shortfallDb: 0, matched: true, measured: false });
   const [devices, setDevices] = useState<Device[]>([]);
   const [deviceMenu, setDeviceMenu] = useState(false);
   const [renaming, setRenaming] = useState<{ from: string; value: string } | null>(null);
@@ -4032,7 +4068,20 @@ function MainApp() {
       showNotice(String(e));
     }
   };
-  const setReference = (db: number) =>
+  /** TB-20: a typed value can be a big jump (or a typo — "8" for "−8"). The
+   *  backend fades any rise in 1 dB steps; this asks first when it's large. */
+  const confirmLouder = async (by: number) => {
+    if (by <= 3) return true;
+    const { ask } = await import("@tauri-apps/plugin-dialog");
+    return ask(`This makes everything ${by.toFixed(1)} dB louder. Turn your volume down first if needed.`, {
+      title: "Raise the level?",
+      kind: "warning",
+      okLabel: `Raise ${by.toFixed(1)} dB`,
+      cancelLabel: "Cancel",
+    });
+  };
+  const setReference = async (db: number) => {
+    if (settings && !(await confirmLouder(db - settings.referenceDb))) return;
     invoke<EqState>("set_reference_db", { db })
       .then((s) => {
         setState(s);
@@ -4040,11 +4089,13 @@ function MainApp() {
         refreshPresets();
       })
       .catch((e) => showNotice(String(e)));
-  /** Output trim (TB-31). Steps only — never a jump, per TB-20. */
-  const setTrim = (db: number) => {
+  };
+  /** Output trim (TB-31). ± buttons step 1 dB; typed rises over 3 dB are confirmed (TB-20). */
+  const setTrim = async (db: number) => {
     if (!settings) return;
     const clamped = Math.max(settings.trimMinDb, Math.min(settings.trimMaxDb, Math.round(db * 10) / 10));
     if (clamped === settings.preampTrimDb) return;
+    if (!(await confirmLouder(clamped - settings.preampTrimDb))) return;
     invoke<EqState>("set_preamp_trim", { db: clamped })
       .then((s) => {
         setState(s);
@@ -5145,10 +5196,21 @@ function MainApp() {
    *  before the first preview. Uses preview_chain — fletcher.txt only, no
    *  preset mutation, no A/B side reset. */
   const previewRestore = useRef<ChainSnap | null>(null);
-  const previewSnap = (snap: ChainSnap | null) => {
+  /** Audition `filters` at the level it plays when compared with `partner`. The
+   *  backend says whether that pair CAN be matched; when it can't, say so
+   *  rather than imply an honest comparison (ADR-0016, follow-up R6). */
+  const previewPaired = (filters: ChainSnap, partner: ChainSnap | null) =>
+    invoke<boolean>("preview_chain", { filters, partner })
+      .then((matched) => {
+        if (!matched)
+          showNotice("These two can't be loudness-matched — the boosts are too large in total, so this is louder-vs-quieter.");
+      })
+      .catch((e) => showNotice(String(e)));
+  const previewSnap = (snap: ChainSnap | null, partner?: ChainSnap | null) => {
     if (snap) {
       if (previewRestore.current == null) previewRestore.current = ownSnap();
-      invoke("preview_chain", { filters: snap }).catch((e) => showNotice(String(e)));
+      // With a partner (the node it's compared to), both play at the paired level.
+      previewPaired(snap, partner ?? null);
     } else {
       const back = previewRestore.current;
       previewRestore.current = null;
@@ -5368,6 +5430,8 @@ function MainApp() {
     base?: number;
     patch?: NodePatch;
     snap?: ChainSnap | null;
+    /** A preview's comparison partner: both play at the paired level (ADR-0016). */
+    partner?: ChainSnap | null;
     spec?: { sel: number | null; base: number | null; cmp: number[] };
   };
   const busRef = useRef<{ hello: () => void; cmd: (p: HistCmd) => void; diffHello: () => void }>({
@@ -5385,7 +5449,7 @@ function MainApp() {
       else if (p.type === "undo") undo();
       else if (p.type === "redo") redo();
       else if (p.type === "edit" && p.patch) editNode(p.id, p.patch);
-      else if (p.type === "preview" && p.snap) previewSnap(p.snap);
+      else if (p.type === "preview" && p.snap) previewSnap(p.snap, p.partner);
       else if (p.type === "restore") previewSnap(null);
       else if (p.type === "abx" && p.base != null) abxNodes(p.id, p.base);
       else if (p.type === "promote") promoteNode(p.id);
@@ -6118,7 +6182,12 @@ function MainApp() {
               {abx.levelMatched === false ? (
                 <span className="warn-text">▲ levels NOT matched — this result measures loudness too</span>
               ) : (
-                <span className="ok-text">● levels matched</span>
+                <span
+                  className="ok-text"
+                  title={abx.material === "clips" ? "Measured on these clips, then corrected." : LEVEL_ESTIMATE_NOTE}
+                >
+                  {abx.material === "clips" ? "● levels matched (measured)" : "● levels matched (estimate)"}
+                </span>
               )}
               <span>every trial recorded — replay with labels afterwards</span>
               <span className="spacer" />
@@ -6667,7 +6736,16 @@ function MainApp() {
                 : "Each trial presents the two, blind, as 1 and 2 (freshly shuffled every trial) — pick the one you prefer. There is no right answer; the tally stays hidden until the end."}
             </p>
             <span className="spacer" />
-            <span className="mono dim-sm ok-text">● level-matched by construction</span>
+            <span
+              className="mono dim-sm ok-text"
+              title={
+                labMaterial == null
+                  ? `${LEVEL_ESTIMATE_NOTE} If one side can't reach your reference level without clipping, both play a little below it.`
+                  : "Measured: each clip's loudness is measured through both contenders and corrected, so they match on the actual audio. If one side can't come up without clipping, the other comes down instead."
+              }
+            >
+              {labMaterial == null ? "● level-matched (estimate)" : "● level-matched (measured)"}
+            </span>
             <button className="primary lab-begin" onClick={() => beginTrial()}>
               Begin — enters focus mode
             </button>
@@ -6903,7 +6981,8 @@ function MainApp() {
                         <button
                           onClick={() =>
                             r.aChain
-                              ? invoke("preview_chain", { filters: r.aChain }).catch((e) => showNotice(String(e)))
+                              ? // Paired with B, exactly as the blind trials played them (ADR-0016).
+                                previewPaired(r.aChain, r.bChain ?? [])
                               : setSide("a")
                           }
                         >
@@ -6912,7 +6991,7 @@ function MainApp() {
                         <button
                           onClick={() =>
                             r.bChain
-                              ? invoke("preview_chain", { filters: r.bChain }).catch((e) => showNotice(String(e)))
+                              ? previewPaired(r.bChain, r.aChain ?? ownSnap())
                               : setSide("b")
                           }
                         >
@@ -8038,13 +8117,16 @@ function MainApp() {
                   <div className="knob" />
                 </div>
                 {settings.levelMatching ? (
-                  <span className="set-live ok-text">on — every comparison loudness-matched to the reference</span>
+                  <span className="set-live ok-text" title={LEVEL_ESTIMATE_NOTE}>
+                    on — both sides of every comparison are loudness-matched (estimated system-wide, measured in clip trials)
+                  </span>
                 ) : (
                   <span className="set-live warn-text">off — every comparison is marked unmatched</span>
                 )}
               </div>
               <span className="set-note">
-                Louder reliably sounds better; matched is honest. Off keeps only clip protection — the A/B bar,
+                Louder reliably sounds better; matched is honest. Off, Flat stays at your reference level and
+                each preset keeps its own loudness relative to it, with clip protection still on — the A/B bar,
                 trial room, and session records all mark comparisons as unmatched.
               </span>
             </div>
@@ -8066,16 +8148,17 @@ function MainApp() {
                 <span className="set-live dim-sm">
                   {calNoise
                     ? "playing — adjust your volume until this sits comfortably"
-                    : "plays through the normal path, level-matched like everything else"}
+                    : "plays Flat at exactly your reference level"}
                 </span>
               </div>
               <span className="set-note">
-                Everything — flat, every preset, even one you're still editing — plays at this loudness, so
-                comparisons are about tone, not volume. Play the pink noise and set your volume knob where
-                you like listening: that knob position becomes your reference, whatever the number here.
-                −8 dB leaves room for boosts. A preset can only reach this level if its boosts fit without
-                clipping; raise it toward 0 and boosted presets can't, so both sides of a comparison play a
-                little quieter instead — still matched, just below the reference.
+                Flat and every preset — even one you're still editing — play at this loudness, so comparisons
+                are about tone, not volume. Play the pink noise and set your volume knob where you like
+                listening: that knob position becomes your reference, whatever the number here. −8 dB leaves
+                room for boosts. A preset whose boosts don't fit at this level without clipping plays below
+                it, and whatever you compare it with comes down by the same amount — so comparisons stay
+                matched; the A/B bar shows how far below. The higher you set this, the more presets that
+                affects.
               </span>
             </div>
 
@@ -8124,11 +8207,11 @@ function MainApp() {
               <span className="set-note">
                 Moves absolute loudness without touching what makes comparisons honest. Reference loudness is
                 capped at 0 dB, so when attenuation lives somewhere Fletcher may not edit — a Preamp line
-                you or another tool added to Equalizer APO's config — the app has no other way to answer
-                "it's too quiet". This is that control, and the only one that can raise Fletcher's output
-                above 0 dB. It is added equally to A and to B, so it cancels in every comparison: level
-                matching still works. It moves in 1 dB steps so the level never jumps. Above 0 dB total, a
-                boosted preset can clip; back it off if you hear it.
+                you or another tool added to Equalizer APO's config — this is how you answer "it's too quiet".
+                It is added equally to A and to B, so it cancels in every comparison: level matching still
+                works. It never makes anything clip: it can raise Fletcher's output only as far as outside
+                Preamp lines leave room for, and if one of those is removed, Fletcher lowers itself to match.
+                Any increase Fletcher makes of more than 3 dB fades in 1 dB at a time instead of jumping.
               </span>
             </div>
 
@@ -8654,8 +8737,17 @@ function MainApp() {
                 trim {fmtGain(settings.preampTrimDb)} dB
               </span>
             )}
-            <span className="mono dim-sm">auto preamp</span>
-            <span className="mono preamp-val">{fmtGain(state.preampDb)} dB</span>
+            <span
+              className="mono dim-sm"
+              title={
+                Math.abs(state.preampDb - state.ownPreampDb) > 0.05
+                  ? `Fletcher's automatic preamp. Equalizer APO also applies ${fmtGain(state.preampDb - state.ownPreampDb)} dB from Preamp lines outside Fletcher — ${fmtGain(state.preampDb)} dB in total.`
+                  : "Fletcher's automatic preamp: sets the level and keeps boosts from clipping."
+              }
+            >
+              auto preamp
+            </span>
+            <span className="mono preamp-val">{fmtGain(state.ownPreampDb)} dB</span>
             <span className="preset-wrap">
               <span
                 className="hist-chip mono"
@@ -8817,8 +8909,8 @@ function MainApp() {
           <div className="strip">
             <div className="cell pre">
               <span className="cell-type mono dim-sm">PRE · AUTO</span>
-              <GainGauge gainDb={state.preampDb} />
-              <span className="cell-gain mono">{fmtGain(state.preampDb)}</span>
+              <GainGauge gainDb={state.ownPreampDb} />
+              <span className="cell-gain mono">{fmtGain(state.ownPreampDb)}</span>
               <span className="cell-fc mono">amp</span>
               <span className="cell-q">no clip</span>
             </div>
@@ -8943,15 +9035,14 @@ function MainApp() {
             onClick={() => setSide("b")}
             {...tipProps(
               <div>
-                <div className="t-title">B — flat, at the reference level</div>
+                <div className="t-title">B — flat, loudness-matched to A</div>
                 <p>
-                  No filters — but not naive bypass: everything in Fletcher (flat, every
-                  preset, your chain mid-edit) is normalized to one global reference
-                  loudness, so flipping compares tone, not volume. Louder always sounds
+                  No filters — but not naive bypass: Flat plays at the same loudness as
+                  your preset, so flipping compares tone, not volume. Louder always sounds
                   better; matched is honest. You can set the reference level in
                   Settings › Reference.
                 </p>
-                <p className="t-vals mono">{`reference ${fmtGain(ab.matchDb)} dB`}</p>
+                <p className="t-vals mono">{`both play at ${fmtGain(ab.levelDb)} dB`}</p>
               </div>,
             )}
           >
@@ -9019,18 +9110,31 @@ function MainApp() {
             <span className="dot bad" />
             unmatched — louder side wins
           </span>
+        ) : !ab.matched ? (
+          <span
+            className="matched mono unmatched"
+            title="This preset boosts so much in total that Fletcher can't bring it down to Flat's loudness, so this comparison is louder-vs-quieter. Reduce the biggest boosts to make it matchable."
+          >
+            <span className="dot bad" />
+            unmatched — boosts too large to level
+          </span>
         ) : ab.shortfallDb > 0.05 ? (
           <span
             className="matched mono"
-            title={`This preset's boosts can't reach your reference loudness without clipping, so both sides play ${ab.shortfallDb.toFixed(1)} dB quieter than the reference. They're still matched to each other, so the comparison is fair. To compare at the reference level, lower Reference loudness in Settings — −8 dB suits most presets.`}
+            title={`This preset can't reach your reference loudness without clipping, so both sides play ${ab.shortfallDb.toFixed(1)} dB quieter than the reference. They're still matched to each other.${
+              settings ? ` To compare at the reference level, set Reference loudness in Settings to ${fmtGain(Math.round((settings.referenceDb - ab.shortfallDb) * 10) / 10)} dB or lower.` : ""
+            } ${ab.measured ? MEASURED_NOTE : LEVEL_ESTIMATE_NOTE}`}
           >
             <span className="dot" />
-            {`matched · ${ab.shortfallDb.toFixed(1)} dB below reference`}
+            {`matched (${ab.measured ? "measured on this song" : "estimate"}) · ${ab.shortfallDb.toFixed(1)} dB below reference`}
           </span>
         ) : (
-          <span className="matched mono">
+          <span
+            className="matched mono"
+            title={`Both sides set to the same loudness. ${ab.measured ? MEASURED_NOTE : LEVEL_ESTIMATE_NOTE}`}
+          >
             <span className="dot" />
-            {`matched · B ${fmtGain(ab.matchDb)} dB`}
+            {ab.measured ? "matched (measured on this song)" : "matched (estimate)"}
           </span>
         )}
         <span className="spacer" />

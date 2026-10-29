@@ -25,6 +25,44 @@ pub fn default_render_device_name() -> Option<String> {
     device.get_friendlyname().ok()
 }
 
+/// The default playback device's Windows volume as an exclusive-mode stream
+/// experiences it: the attenuation exclusive mode SKIPS, in dB.
+///
+/// Microsoft's EndpointVolume API: a *software* endpoint volume applies only to
+/// shared-mode streams, so exclusive playback must recreate it; a *hardware*
+/// volume control (on the device itself) applies to exclusive streams too, so
+/// recreating it would apply it twice → 0 dB here (TB-37). Muted (software)
+/// → −120. `None` if the device can't be queried; callers must then fail SAFE
+/// (assume a quiet setting), never assume full volume.
+pub fn default_render_bypassed_volume_db() -> Option<f64> {
+    use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
+    use windows::Win32::Media::Audio::{
+        ENDPOINT_HARDWARE_SUPPORT_MUTE, ENDPOINT_HARDWARE_SUPPORT_VOLUME, IMMDeviceEnumerator,
+        MMDeviceEnumerator, eConsole, eRender,
+    };
+    ensure_com();
+    // SAFETY: plain COM calls on interfaces we own for the duration.
+    unsafe {
+        let enumerator: IMMDeviceEnumerator =
+            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).ok()?;
+        let device = enumerator.GetDefaultAudioEndpoint(eRender, eConsole).ok()?;
+        let volume: IAudioEndpointVolume = device.Activate(CLSCTX_ALL, None).ok()?;
+        let hw = volume.QueryHardwareSupport().ok()?;
+        // Volume and mute are INDEPENDENT capabilities (follow-up R5): a device
+        // can have hardware volume but software mute, and exclusive mode would
+        // then bypass the mute. Each part counts only if it's software.
+        let muted_in_software =
+            hw & ENDPOINT_HARDWARE_SUPPORT_MUTE == 0 && volume.GetMute().ok()?.as_bool();
+        if muted_in_software {
+            return Some(-120.0);
+        }
+        if hw & ENDPOINT_HARDWARE_SUPPORT_VOLUME != 0 {
+            return Some(0.0);
+        }
+        Some(volume.GetMasterVolumeLevel().ok()? as f64)
+    }
+}
+
 /// MMDevice id of the default render device — the key `apo::device_apo_status` takes.
 pub fn default_render_device_id() -> Option<String> {
     ensure_com();

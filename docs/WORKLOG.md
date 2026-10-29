@@ -2,6 +2,86 @@
 
 Append-only session journal. Newest entry first.
 
+## 2026-10-28 (follow-up, then trimmed) — Core kept, bloat cut, a freeze fixed
+
+Worked through the [follow-up review](research/loudness-matching-followup-2026-10-28.md) (R1–R6), shipped a live "measured" Clip Studio A/B, and broke the app with it. The owner said it had become bloated ("this is supposed to be straightforward"). An independent max-effort review agreed: the core is right, about a quarter of the new code wasn't worth it, and it found a real freeze. Trimmed in place (~320 lines out).
+- **Kept (the core):** K-weighted loudness, pairing, the clip ceiling applied last, measured clip-trial trims, the equal-gain crossfade, the single safe writer, paired previews (R6: `preview_chain` reports unmatched and the UI warns) and paired graph differences (`pairedAudible`, main and pop-out).
+- **Cut: the live Clip Studio measurement.** It re-measured the playing song in the background and rewrote the system A/B level mid-song. Its first build looped (measure → apply → measure), rewrote fletcher.txt every few seconds and whited out the window. It also raced A/B flips and overwrote previews. Through-EQ already uses the system A/B; Bypass isn't a comparison (ADR-0011 §3; the owner had been thinking of Through-EQ). A measured in-Clip-Studio compare, if wanted, belongs in the Lab's dual-bus engine.
+- **Replaced: the APO config walker** (scopes, nested/repeated includes, known/maybe filters) with the plain-path rule (ADR-0016 §6). The walker was big and still not safe: it couldn't see GraphicEQ, Convolution or VST, so a cut protecting those counted as free headroom. `foreign_preamp_db` now reuses the same reader. `dsp::Outside` and `response_peak_bound_db` are gone.
+- **Fixed: exclusive mode erred loud.** It used the ceiling's view, which drops unprovable cuts. Bypass now takes every cut (and a 10 dB pad for an unreadable file).
+- **Fixed: freeze.** A filter at Nyquist (Fc ≥ 24 kHz, typed or dragged) has zero loudness (−∞). The fade loop in `write_chain_safely` then never ended, wrote `Preamp: -inf dB`, and the freeze came back on every restart. Now the fade starts at most 12 dB below, non-finite preamps are refused, `plan_level` reports such chains infeasible at the floor, and Fc is clamped below Nyquist. The owner's fletcher.txt was checked: clean.
+- **Then the owner heard B clearly louder in Clip Studio Through-EQ** while experimenting live with a +28 dB treble shelf. The estimate was right about pink noise (+18.1 vs +18.2 dB rendered) but music has far less treble: measured on 13 cached songs, Flat was 2–13 dB louder. The owner's point: "in Clip Studio... we have the clip." So `apply_side` now measures both sides on 20 s of the song around the playhead at the moment of the flip (`studio_measured_diff`); the louder side comes down. Synchronous, nothing raised, no threads. The bar says "matched (measured on this song)".
+- R4 (Bypass uses the paired Flat) and R5 (hardware volume and mute detected separately) kept.
+- Tests: plain-rule fixtures and a silent-chain test. fmt, clippy -D warnings, all workspace tests and tsc are clean.
+- **Not done (small, from the review):** the watcher and calibration restore can still overwrite an in-progress preview; the calibration "playing" flag is set before its write; the A/B bar isn't greyed out in Bypass; ADR-0011 §3 and ADR-0014 need an explicit amendment note for the trim/headroom change (owner sign-off).
+- **Needs the user's ears:** A/B at reference −10 and 0; remove and restore the −10 line; Bypass at Windows volume 30% and 100%; a typed reference change from −30 to 0; a history preview from the pop-out (rule 10); one system ABX and one clip trial.
+
+## 2026-10-28 (re-review) — Several fixes verified; six remaining findings
+
+- **Did:** Re-reviewed the working tree against all eleven original findings and the revised ADR-0016. [Follow-up report](research/loudness-matching-followup-2026-10-28.md) distinguishes verified fixes from remaining problems; added an offline diagnostic runner that extracts the current production config walker. Runtime code and live audio setup untouched.
+- **Verified:** 68 workspace tests passed, 2 hardware tests ignored; strict Clippy, fmt and TypeScript passed. Original measured trim rail, identical-bus switching, narrow-peak, silent-clip and core infeasible-plan cases are addressed; shared compensation branches on actual mode.
+- **Remaining:** scoped cuts still cancel real boosts in the safety model (+10.7 dB reproduced); repeated/nested include handling misses +6/+12 dB; watcher still invalidates from the old scalar; Studio solo Flat ignores paired cap (8.5063 dB gap); hardware-volume early return skips independent software mute; infeasible history/satellite graphs disagree with played gains by 30 dB. Five offline probes confirm the numeric/config cases; watcher/mute findings are source traces.
+- **Next:** Fix the six findings and cover the orchestration paths in tests. Then live verification of Studio Flat/EQ, trials, first-write fade and history/diff pop-outs. No new design decision or accepted ADR was superseded.
+
+## 2026-10-28 (later) — Every review finding fixed; ADR-0016 rewritten to what's verified
+
+- **Did:** All eleven accuracy-review findings, after verifying each against the code:
+  - **F2 (what the user heard):** Clip Studio EQ mode was ~11 dB quieter than Flat. Compensation now branches on the actual output mode.
+  - **F8:** owner chose option 2. Every song is normalized to −16 LUFS in both methods.
+  - **F3:** equal-gain crossfade, superseding ADR-0012's equal-power.
+  - **F1:** A takes the remainder of a capped measured trim (`dsp::measured_trims`).
+  - **F11:** the first write ramps from the on-disk level.
+  - **F5:** the ceiling is applied after the floor; infeasible plans are flagged and the pair reports unmatched.
+  - **F4:** `response_peak_db` refines every local maximum.
+  - **F6:** `outside_path` is scope-aware, follows nested includes, and counts outside filters.
+  - **F7:** hardware endpoint volume counts as 0; unreadable volume → −20 dB.
+  - **F9:** silent clips are refused.
+  - **F10:** the UI says "matched (estimate)" system-wide and "matched (measured)" for clips.
+  - **Tests:** new rendered-buffer suite `app/src-tauri/tests/levels_rendered.rs` (switch adds no level, zero residual at the rail, paired pink renders equal, silence refused), plus core tests on a dense independent grid. 68 tests pass.
+  - **Docs:** ADR-0016 rewritten with explicit "guaranteed / not guaranteed" lists; TB-06/08/12/20/36–39 and Q-26 marked addressed.
+- **Learned:**
+  - The first ADR-0016 pass declared guarantees the code didn't have. The F2 bug was audible within minutes of the user listening.
+  - Unit tests on the math alone can't catch path bugs. Only rendering through the real engine does.
+  - The calibration noise sits at −25.6 LUFS, 9.6 dB under Clip Studio's level and ~17 dB under typical masters (filed in ADR-0016 Consequences).
+- **Untested live:** the dev build hasn't been listened to since these fixes: Clip Studio Flat ↔ EQ, clip trials, a capped/unmatched preset, the first-launch fade, and pop-out previews (rule 10).
+- **Next:**
+  - User listens.
+  - Decide whether to align the calibration noise with the −16 LUFS programme level.
+  - Remaining UX ideas from the first review (rename Reference/trim; per-preset "room" badge).
+
+## 2026-10-28 — Independent loudness accuracy review
+
+- **Did:** Reviewed trim/filter/pairing commits (`380f300`, `b087750`, `b9d205c`) plus the existing uncommitted ADR-0016 rewrite. Wrote [the review](research/loudness-matching-review-2026-10-28.md) and [six offline diagnostic probes](research/loudness-review-probe.rs). Preserved runtime code and the user's existing changes; no audio playback or APO config writes.
+- **Found:** clip LUFS correction still leaves a 0.2979 dB rail mismatch; shared playback applies the new exclusive compensation twice; correlated switching adds 3.0103 dB; the sparse peak scan misses an allowed filter by 8.6 dB; −80 dB is still a reachable preamp floor (40.8815 dB mismatch); silence creates NaN trim. Also traced unsafe use of scoped foreign preamps, hardware/software endpoint-volume differences, absolute versus relative playback levels, and the startup ramp bypass. A 60 Hz probe differs by 6.1123 dB under the pink estimate, so system matching must be described as estimated. New Windows/APO claims have primary sources in the review.
+- **Verified:** baseline workspace tests (60 passed, 2 ignored), strict Clippy, TypeScript; all six diagnostic assertions reproduced the documented gaps. Existing pink fixtures do agree within approximately 0.03 dB. Satellite partner wiring/capabilities checked statically; live pop-out and endpoint behavior remain unverified.
+- **Next:** Resolve the findings before asserting unconditional matching/safety; add independent final-output regression checks. Q-06 has residual validation work; Q-26 records unresolved switching/level-contract choices. TB-06/08/12/20 reopened in the review addendum, with TB-36–39 for additional cases. No design decision or ADR was superseded by this review.
+
+## 2026-10-27/28 — UI copy pass, v0.2.1–0.2.2, issue #4 grid, single instance, and the level model rebuilt (ADR-0016)
+
+- **Did:**
+  - Shipped 0.2.1 (REW import, TB-34) and verified the in-app updater end to end. Then a plain-language pass over everything users read (no doc IDs in tooltips; tool names instead of config file names), shipped as 0.2.2.
+  - Added `NOTICE` for Apache-2.0 attribution.
+  - **Issue #4:** log-step frequency grid with labelled 2-5-10 lines. The EQ graph now measures its panel and draws 1:1 with label gutters, so it no longer letterboxes or overlaps.
+  - **TB-35:** single instance. A second launch focuses the existing window instead of starting another copy (four copies had been running at once).
+  - **A user report** (A/B unmatched at reference 0) led to pair matching, then an independent review of every level path, then the rebuild in ADR-0016:
+    - K-weighted loudness (`dsp::loudness_db`, validated against ebur128 within 0.03 dB; the old mean-of-dB estimate was off by up to 1.57 dB).
+    - Per-chain level plans with a whole-path clip ceiling (outside Preamp lines included).
+    - Pairing on every comparison path (A/B, both trial kinds, previews incl. the pop-out, re-listen, diff plot).
+    - `write_chain_safely` as the only fletcher.txt writer: rises over 3 dB fade in 1 dB steps.
+    - Typed increases confirmed; matching off keeps Flat at the reference.
+    - Calibration noise plays Flat at the reference.
+    - Exclusive-mode playback applies Windows volume, trim and outside preamps (`devices::default_render_volume_db`).
+    - Trial guards on direct chain writes; provenance fields on trial records.
+    - Bar, tooltips and readouts show levels, not raw preamps.
+- **Learned:**
+  - The mean of a dB curve systematically flatters the EQ'd side. Treble shelves were under-counted by ~1.6 dB, which is enough to pass an ABX on level alone.
+  - Matching each side to a fixed reference isn't the guarantee that matters; matching the two sides of a comparison to *each other* is.
+  - One writer for the file is what makes "never a jump" enforceable.
+- **Untested by the user:** all of ADR-0016 live. In particular: the fade on a big reference change; the confirm dialog; matching off; trim with and without an outside Preamp line (and removing that line); Clip Studio's level against Windows volume; history previews in the pop-out with a capped node (rule 10); calibration noise restoring the previous state.
+- **Next:**
+  - User verifies the above.
+  - Then decide the remaining UX questions from the review (rename Reference to "Room for boosts" and trim to "Volume offset"; a per-preset "needs N dB room" badge), and whether preset *switching* should also pair with the previous preset.
+
 ## 2026-10-26 (night) — v0.2.0 shipped; REW import (issue #1), and APO's real filter semantics
 
 - **Did:** Cut **v0.2.0**, the first release with the updater: bump script, CHANGELOG notes, tag, CI build, draft, then the user pressed Publish. The pipeline worked end to end. v0.1.0 had 27 downloads and no updater, so those users can only be reached where the link was shared. Then GitHub issue #1, REW filter import. A probe showed today's parser read REW's PK/LP/HP/LPQ/HPQ/LS/HS/NO/AP but **silently dropped** `Modal` and the `LS/HS 6dB/12dB` shelves, and dropped *everything* in European-locale exports. Read APO's own source (BiQuadFilterFactory/BiQuadFilter/BiQuad.cpp, GitHub mirror) for the exact rules and recorded them in `docs/research/apo-filter-semantics.md`. Built `fletcher_core::rew`: header detection, APO's exact number rules (comma → dot, `8.000` Fc → 8000), and every Generic type mapped onto an *identical* biquad in Fletcher's exact-drawing kinds (PK/LPQ/HPQ/BP/NO/AP/LSC/HSC with explicit Q; shelves go corner→center and S→Q). Unplayable lines are returned with reasons, never dropped. A test ports APO's shelf code line for line and asserts every spelling matches to 1e-9 dB over 200 frequencies. `rew_import` turns a file into a new preset (shared `import_as_preset` with AutoEQ) and recognises REW's binary `.req` save with a helpful message. Ctrl+V of a REW export uses the same reader. UI: "From REW file…" in the preset menu.

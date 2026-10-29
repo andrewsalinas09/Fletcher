@@ -300,15 +300,207 @@ pub fn log_freqs(lo: f64, hi: f64, n: usize) -> Vec<f64> {
         .collect()
 }
 
-/// Preamp that guarantees the summed chain never exceeds 0 dB (TB-06):
-/// the negative of the summed response's positive peak — filter *interaction*
-/// counts, not just the largest single gain. Rounded to 0.1 dB.
+/// The chain's highest steady-state gain (dB) anywhere from 10 Hz to just below
+/// Nyquist. Not a sparse scan (review F4: a Q 100 boost fits between 400 grid
+/// points and was missed by 8.6 dB): candidates are a log grid PLUS every
+/// filter's own Fc, and each local maximum is then refined by golden-section
+/// search in log-frequency. What this bounds is the steady-state magnitude
+/// response; it is not an inter-sample or transient true-peak bound.
+pub fn response_peak_db(filters: &[FilterSpec], fs: f64) -> f64 {
+    if filters.is_empty() {
+        return 0.0;
+    }
+    let top = 0.49 * fs;
+    let biquads: Vec<Biquad> = filters.iter().map(|f| f.biquad(fs)).collect();
+    let resp = |f: f64| biquads.iter().map(|b| b.magnitude_db(f, fs)).sum::<f64>();
+    let mut cands = log_freqs(10.0, top, 512);
+    cands.extend(
+        filters
+            .iter()
+            .map(|f| f.fc_hz)
+            .filter(|f| *f > 10.0 && *f < top),
+    );
+    cands.sort_by(f64::total_cmp);
+    cands.dedup();
+    let vals: Vec<f64> = cands.iter().map(|&f| resp(f)).collect();
+    let mut peak = vals.iter().copied().fold(f64::MIN, f64::max);
+    const G: f64 = 0.618_033_988_749_895;
+    for i in 0..vals.len() {
+        let left = if i > 0 { vals[i - 1] } else { f64::MIN };
+        let right = vals.get(i + 1).copied().unwrap_or(f64::MIN);
+        // Strict on the left so a flat plateau is refined once, not 500 times.
+        if !(vals[i] > left && vals[i] >= right) {
+            continue;
+        }
+        let (mut a, mut b) = (
+            cands[i.saturating_sub(1)].ln(),
+            cands[(i + 1).min(cands.len() - 1)].ln(),
+        );
+        let (mut c, mut d) = (b - G * (b - a), a + G * (b - a));
+        let (mut rc, mut rd) = (resp(c.exp()), resp(d.exp()));
+        for _ in 0..60 {
+            if rc > rd {
+                b = d;
+                d = c;
+                rd = rc;
+                c = b - G * (b - a);
+                rc = resp(c.exp());
+            } else {
+                a = c;
+                c = d;
+                rc = rd;
+                d = a + G * (b - a);
+                rd = resp(d.exp());
+            }
+        }
+        peak = peak.max(rc).max(rd);
+    }
+    peak
+}
+
+/// Preamp that keeps the summed chain at or under 0 dB (TB-06): the negative
+/// of its positive peak — filter *interaction* counts, not just the largest
+/// single gain. Rounded (down) to 0.1 dB.
 pub fn auto_preamp_db(filters: &[FilterSpec], fs: f64) -> f64 {
-    let freqs = log_freqs(20.0, 20000.0, 400);
-    let peak = chain_response_db(filters, 0.0, fs, &freqs)
-        .into_iter()
-        .fold(0.0_f64, f64::max);
-    -(peak * 10.0).ceil() / 10.0
+    -(response_peak_db(filters, fs).max(0.0) * 10.0).ceil() / 10.0
+}
+
+/// ITU-R BS.1770 K-weighting (the LUFS pre-filter) as its two published
+/// biquads at 48 kHz: a +4 dB high shelf, then the RLB high-pass.
+const K_WEIGHT_48K: [Biquad; 2] = [
+    Biquad {
+        b0: 1.535_124_859_586_97,
+        b1: -2.691_696_189_406_38,
+        b2: 1.198_392_810_852_85,
+        a1: -1.690_659_293_182_41,
+        a2: 0.732_480_774_215_85,
+    },
+    Biquad {
+        b0: 1.0,
+        b1: -2.0,
+        b2: 1.0,
+        a1: -1.990_047_454_833_98,
+        a2: 0.990_072_250_366_21,
+    },
+];
+
+/// How much louder (dB) pink noise sounds through `filters` than through
+/// nothing: the K-weighted power gain over the whole band, i.e. the LUFS change
+/// a chain causes on pink noise. This is what level matching normalizes (ADR-0016).
+/// It replaced the mean of the dB curve, which ignored that a dB average
+/// under-counts boosts and ignores the ear's treble weighting, so EQ'd chains
+/// came out up to ~1 dB louder than Flat. The coefficients are the 48 kHz set,
+/// so `fs` should be 48000 (Fletcher's analysis rate).
+pub fn loudness_db(filters: &[FilterSpec], fs: f64) -> f64 {
+    if filters.is_empty() {
+        return 0.0;
+    }
+    // The band LUFS itself measures: everything up to just below Nyquist (a
+    // treble shelf's energy above 20 kHz counts in LUFS too), and down past
+    // where the RLB high-pass removes it.
+    let freqs = log_freqs(10.0, 0.49 * fs, 600);
+    let resp = chain_response_db(filters, 0.0, fs, &freqs);
+    let (mut num, mut den) = (0.0, 0.0);
+    for (f, r) in freqs.iter().zip(&resp) {
+        // Log-spaced points carry equal weight: equal power per octave = pink.
+        let k = 10f64.powf(
+            K_WEIGHT_48K
+                .iter()
+                .map(|b| b.magnitude_db(*f, fs))
+                .sum::<f64>()
+                / 10.0,
+        );
+        num += k * 10f64.powf(r / 10.0);
+        den += k;
+    }
+    10.0 * (num / den).log10()
+}
+
+fn round_tenth(db: f64) -> f64 {
+    (db * 10.0).round() / 10.0
+}
+
+/// The level plan for one chain (ADR-0016): (preamp to write, shortfall).
+///
+/// - `outside_preamp_db`: outside Preamp gain known to apply on this path
+///   (cuts give headroom back, boosts take it away).
+/// - `target_db`: where everything should land (reference + trim).
+/// - `matching`: on → the preamp puts the chain's loudness at the target;
+///   off → every chain gets the target preamp, so presets keep their own
+///   loudness relative to Flat, which stays at the target.
+/// - `range`: the written preamp's (floor, ceiling).
+///
+/// The clip ceiling (the chain's peak plus the outside preamp) is applied
+/// LAST, so nothing (not even the floor) can put the preamp above it (review
+/// F5). shortfall = target − what was achievable: positive = held below the
+/// target by the ceiling; negative = the plan is infeasible (only the floor kept
+/// it from going lower) and the chain plays LOUDER than intended. Callers must
+/// treat negative as "cannot match". A chain with no finite loudness (e.g. a
+/// high-pass at Nyquist silences everything) is reported infeasible at the
+/// floor: quiet, and never a non-finite preamp.
+pub fn plan_level(
+    filters: &[FilterSpec],
+    outside_preamp_db: f64,
+    fs: f64,
+    target_db: f64,
+    matching: bool,
+    range: (f64, f64),
+) -> (f64, f64) {
+    let peak = response_peak_db(filters, fs).max(0.0);
+    let ceiling = (-(peak * 10.0).ceil() / 10.0 - outside_preamp_db).min(range.1);
+    let want = if matching {
+        target_db - loudness_db(filters, fs)
+    } else {
+        target_db
+    };
+    if !want.is_finite() || !ceiling.is_finite() {
+        return (range.0, -1.0);
+    }
+    let preamp = want.max(range.0).min(ceiling);
+    let shortfall = if matching { want - preamp } else { 0.0 };
+    (round_tenth(preamp), round_tenth(shortfall))
+}
+
+/// Two plans that will be COMPARED, made equal (TB-08 v2, ADR-0016): if either
+/// side's ceiling held it short, both come down by the larger shortfall, so they
+/// play at the same loudness. Returns (preamp_a, preamp_b, dB below target,
+/// matched). `matched` is false when equality is impossible (either plan is
+/// infeasible, or lowering a side would hit the floor); the preamps are then
+/// each side's own plan, and the UI must say "unmatched".
+pub fn pair_levels(a: (f64, f64), b: (f64, f64), range: (f64, f64)) -> (f64, f64, f64, bool) {
+    let ((pa, sa), (pb, sb)) = (a, b);
+    if sa < -0.05 || sb < -0.05 {
+        return (pa, pb, 0.0, false);
+    }
+    let below = sa.max(sb);
+    let (la, lb) = (pa - (below - sa), pb - (below - sb));
+    if la < range.0 || lb < range.0 {
+        return (pa, pb, 0.0, false);
+    }
+    (round_tenth(la), round_tenth(lb), below, true)
+}
+
+/// The measured A/B correction for clip trials (ADR-0016), from the two buses'
+/// real loudness on this material: returns (trim_a_db, trim_b_db) that make them
+/// equal. B normally takes the whole correction; if raising B would push its
+/// peak past `margin_db` below full scale, A comes down by the remainder
+/// instead of leaving a residual (review F1). Silent or unmeasurable material
+/// (−∞ LUFS, which would make the trim NaN) is an error, never a "match" (F9).
+pub fn measured_trims(
+    lufs_a: f64,
+    lufs_b: f64,
+    peak_b_db: f64,
+    margin_db: f64,
+) -> Result<(f64, f64), &'static str> {
+    if !(lufs_a.is_finite() && lufs_b.is_finite() && peak_b_db.is_finite()) {
+        return Err("is silent or too quiet to measure");
+    }
+    let want = lufs_a - lufs_b;
+    if want <= 0.0 {
+        return Ok((0.0, want));
+    }
+    let up = want.min((-peak_b_db - margin_db).max(0.0));
+    Ok((-(want - up), up))
 }
 
 /// Summed chain response (preamp + all filters) at each frequency.
@@ -396,6 +588,167 @@ mod tests {
             20.0 * 2f64.log10(),
             1e-6
         ));
+    }
+
+    // ---- ADR-0016 level-plan guarantees ----
+    const RANGE: (f64, f64) = (-120.0, 12.0);
+    fn loud_at(f: &[FilterSpec], preamp: f64) -> f64 {
+        loudness_db(f, FS) + preamp
+    }
+    /// Independent reference for "never clips": a DENSE grid (not the
+    /// implementation's own candidates), so a missed narrow peak shows up.
+    fn dense_peak(f: &[FilterSpec]) -> f64 {
+        chain_response_db(f, 0.0, FS, &log_freqs(10.0, 0.49 * FS, 200_000))
+            .into_iter()
+            .fold(f64::MIN, f64::max)
+    }
+    fn peak_with(f: &[FilterSpec], preamp: f64, foreign: f64) -> f64 {
+        dense_peak(f) + preamp + foreign
+    }
+    fn boost6() -> Vec<FilterSpec> {
+        vec![spec(Peaking, 3000.0, 6.0, 1.0)]
+    }
+
+    #[test]
+    fn level_plan_lands_on_target_when_it_can() {
+        for f in [vec![], boost6(), vec![spec(Peaking, 1000.0, -6.0, 2.0)]] {
+            let (p, s) = plan_level(&f, 0.0, FS, -8.0, true, RANGE);
+            assert_eq!(s, 0.0);
+            assert!(
+                close(loud_at(&f, p), -8.0, 0.06),
+                "lands at {}",
+                loud_at(&f, p)
+            );
+        }
+    }
+
+    #[test]
+    fn level_plan_never_clips_the_whole_path() {
+        // Reference 0 + positive trim, with and without an outside −6 dB line.
+        for foreign in [0.0, -6.0] {
+            for target in [0.0, 6.0] {
+                let (p, _) = plan_level(&boost6(), foreign, FS, target, true, RANGE);
+                assert!(
+                    peak_with(&boost6(), p, foreign) <= 0.06,
+                    "clips at target {target}, foreign {foreign}"
+                );
+            }
+        }
+        // An outside −6 dB line gives exactly 6 dB of headroom back to the trim.
+        let (p0, _) = plan_level(&[], 0.0, FS, 6.0, true, RANGE);
+        let (p6, _) = plan_level(&[], -6.0, FS, 6.0, true, RANGE);
+        assert_eq!((p0, p6), (0.0, 6.0));
+    }
+
+    #[test]
+    fn matching_off_never_raises_flat_above_the_target() {
+        // Review F1: "off" used to put Flat at 0 dB, +8 at the default reference.
+        assert_eq!(plan_level(&[], 0.0, FS, -8.0, false, RANGE), (-8.0, 0.0));
+        // A boosted preset keeps its own loudness relative to Flat (unmatched on purpose).
+        let (p, _) = plan_level(&boost6(), 0.0, FS, -8.0, false, RANGE);
+        assert_eq!(p, -8.0);
+    }
+
+    #[test]
+    fn reported_bug_pair_plays_at_one_loudness() {
+        // The user report: reference 0 dB, a +6 dB peak vs Flat. Solo, the preset
+        // was ~2 dB quieter than Flat; paired, both land at the same loudness.
+        let a = plan_level(&boost6(), 0.0, FS, 0.0, true, RANGE);
+        let b = plan_level(&[], 0.0, FS, 0.0, true, RANGE);
+        assert!(
+            a.1 > 1.0,
+            "the preset should hit its ceiling at reference 0"
+        );
+        let (pa, pb, below, matched) = pair_levels(a, b, RANGE);
+        assert!(matched);
+        assert!(close(loud_at(&boost6(), pa), loud_at(&[], pb), 0.12));
+        assert!(
+            close(below, a.1, 1e-9) && pb < 0.0,
+            "Flat comes down with it"
+        );
+    }
+
+    #[test]
+    fn peak_search_finds_narrow_boosts_between_grid_points() {
+        // Review F4: a Q 100 boost centred between two old grid points.
+        let grid = log_freqs(20.0, 20000.0, 400);
+        for (fc, q) in [
+            ((grid[210] * grid[211]).sqrt(), 100.0),
+            (765.1327, 100.0),
+            (14_321.0, 60.0),
+        ] {
+            let chain = [spec(Peaking, fc, 12.0, q)];
+            let found = response_peak_db(&chain, FS);
+            let truth = dense_peak(&chain).max(chain_response_db(&chain, 0.0, FS, &[fc])[0]);
+            assert!(
+                found >= truth - 0.01,
+                "fc {fc}: found {found:.3} vs true {truth:.3}"
+            );
+            let p = auto_preamp_db(&chain, FS);
+            assert!(
+                truth + p <= 0.01,
+                "fc {fc}: still {:.3} dB over after preamp",
+                truth + p
+            );
+        }
+    }
+
+    #[test]
+    fn infeasible_plans_never_exceed_the_ceiling_and_never_claim_a_match() {
+        // Review F5: three coincident +30 dB boosts. With a reachable floor the
+        // old code clamped UP past the ceiling and reported a perfect match.
+        let chain = vec![spec(Peaking, 1000.0, 30.0, 1.0); 3];
+        let tight = (-80.0, 12.0);
+        let a = plan_level(&chain, 0.0, FS, -50.0, true, tight);
+        assert!(
+            a.0 <= auto_preamp_db(&chain, FS) + 1e-9,
+            "above the ceiling"
+        );
+        assert!(
+            a.1 < 0.0,
+            "infeasible must be reported as negative shortfall"
+        );
+        let (_, _, _, matched) =
+            pair_levels(a, plan_level(&[], 0.0, FS, -50.0, true, tight), tight);
+        assert!(!matched, "an impossible match must say so");
+        // No finite floor covers every accepted chain (±30 dB per filter, any
+        // count), so the floor is NOT the safeguard; the ordering is. Even at the
+        // app's −120 floor this chain is infeasible, and that's reported, not hidden.
+        let real = plan_level(&chain, 0.0, FS, -50.0, true, RANGE);
+        assert!(real.0 <= auto_preamp_db(&chain, FS) + 1e-9);
+        if real.1 < 0.0 {
+            assert!(!pair_levels(real, plan_level(&[], 0.0, FS, -50.0, true, RANGE), RANGE).3);
+        }
+    }
+
+    #[test]
+    fn a_silent_chain_is_infeasible_and_quiet_never_non_finite() {
+        // A high-pass at Nyquist has all-zero coefficients: no finite loudness.
+        let chain = [spec(HighPass, FS / 2.0, 0.0, 0.707)];
+        let (p, s) = plan_level(&chain, 0.0, FS, -8.0, true, RANGE);
+        assert!(p.is_finite() && s.is_finite());
+        assert_eq!((p, s < 0.0), (RANGE.0, true));
+    }
+
+    #[test]
+    fn measured_trims_leave_no_residual_and_reject_silence() {
+        // Review F1: B needs +5.3 dB but has only 5.0 of headroom (0.3 margin).
+        let (ta, tb) = measured_trims(-10.0, -15.2987, -5.3009, 0.3).unwrap();
+        assert!(
+            close(-10.0 + ta, -15.2987 + tb, 1e-9),
+            "residual {}",
+            (-10.0 + ta) - (-15.2987 + tb)
+        );
+        assert!(ta < 0.0 && close(tb, 5.0009, 1e-9));
+        // B louder: B simply comes down.
+        assert_eq!(
+            measured_trims(-12.0, -10.0, -1.0, 0.3).unwrap(),
+            (0.0, -2.0)
+        );
+        // Review F9: silence is −∞ LUFS; never a NaN trim.
+        assert!(
+            measured_trims(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY, 0.3).is_err()
+        );
     }
 
     #[test]
