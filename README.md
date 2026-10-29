@@ -1,4 +1,4 @@
-<h1 align="center">Fletcher</h1>
+<h1 align="center"><img src="design/icon/fletcher-icon.svg" alt="" width="44" align="absmiddle"> Fletcher</h1>
 
 <p align="center">
   <b>A parametric EQ for Windows that's pleasant to use, and honest about what you can actually hear.</b><br>
@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/eq.png" alt="Fletcher's EQ view: the frequency graph with its scale controls, the filter strip, and the A/B bar showing a comparison level-matched on the song that's playing" width="900">
+  <img src="docs/images/eq.png" alt="Fletcher's EQ view: a Sennheiser HD 650 correction curve with draggable filter handles, the strip of filter knobs, and the A/B bar showing a comparison level-matched on the song that's playing" width="900">
 </p>
 
 ## Why Fletcher?
