@@ -324,11 +324,11 @@ fn write_fletcher_file(config_dir: &std::path::Path, text: &str) -> Result<(), S
 static LAST_WRITTEN_LEVEL: std::sync::Mutex<Option<f64>> = std::sync::Mutex::new(None);
 
 /// THE way Fletcher's chain reaches fletcher.txt. Never raises loudness by more
-/// than `MAX_JUMP_DB` in one write (TB-20, ADR-0016): a bigger rise is stepped up
-/// 1 dB per write, ~80 ms apart, which APO hot-reloads as a short fade-in. That
+/// than `MAX_JUMP_DB` in one write (TB-20, ADR-0016): a bigger rise becomes a
+/// short fade-in (`fade_steps`, ~80 ms apart, which APO hot-reloads). That
 /// covers every path at once: a typed reference or trim, turning matching off,
 /// a preset switch, leaving a paired comparison, ending a trial. Drops apply
-/// immediately. The lock also serializes writers, so a ramp is never interleaved.
+/// immediately. The lock also serializes writers, so a fade is never interleaved.
 fn write_chain_safely(chain: &[ChainFilter], preamp: f64) -> Result<(), String> {
     if !preamp.is_finite() {
         return Err("refusing to write a non-finite preamp".into());
@@ -336,55 +336,36 @@ fn write_chain_safely(chain: &[ChainFilter], preamp: f64) -> Result<(), String> 
     let install = apo::detect().map_err(|e| e.to_string())?;
     let level = loudness_db(&specs_of(chain), FS) + preamp;
     let mut last = LAST_WRITTEN_LEVEL.lock().unwrap();
-    // First write of this run (e.g. at launch, over whatever the last session
-    // left playing): compare against what's actually on disk, not "nothing",
-    // or the very first write could jump (review F11). Unreadable → assume it
-    // was 12 dB quieter, which turns the first write into a fade-in. Never
-    // assume more than 12 dB below: that bounds the fade to ~1 s, and a silent
-    // chain's −∞ loudness can't make it endless (it once froze the app).
-    let prev = last
-        .unwrap_or_else(|| disk_level(&install.config_path).unwrap_or(level - 12.0))
-        .max(level - 12.0);
-    if level - prev > MAX_JUMP_DB {
-        // Start one step above where we were, then climb.
-        let mut below_final = level - prev - 1.0;
-        while below_final > 0.05 {
-            let step = round_tenth(preamp - below_final);
-            write_fletcher_file(&install.config_path, &render_fletcher_file(step, chain))?;
-            std::thread::sleep(std::time::Duration::from_millis(80));
-            below_final -= 1.0;
-        }
+    // The first write of a run (whatever the last session left playing)
+    // fades in from 12 dB below. A silent chain's −∞ loudness counts the same.
+    let prev = last.filter(|p| p.is_finite()).unwrap_or(level - 12.0);
+    for below in fade_steps(level - prev) {
+        let step = round_tenth(preamp - below);
+        write_fletcher_file(&install.config_path, &render_fletcher_file(step, chain))?;
+        std::thread::sleep(std::time::Duration::from_millis(80));
     }
     write_fletcher_file(&install.config_path, &render_fletcher_file(preamp, chain))?;
     *last = Some(level);
     Ok(())
 }
 
-/// The loudness fletcher.txt currently puts out (its chain's loudness + its
-/// preamp), as `write_chain_safely` measures it. `None` if absent/unreadable.
-fn disk_level(config_dir: &std::path::Path) -> Option<f64> {
-    let text = std::fs::read_to_string(config_dir.join("fletcher.txt")).ok()?;
-    let (mut preamp, mut specs) = (0.0, Vec::new());
-    for d in ConfigDoc::parse(&text).directives() {
-        match d {
-            Parsed::Preamp { db } => preamp += db,
-            Parsed::Filter {
-                enabled: true,
-                kind,
-                fc_hz,
-                gain_db,
-                q,
-                ..
-            } => specs.extend(dsp::apo_resolve(
-                *kind,
-                fc_hz.unwrap_or(1000.0),
-                gain_db.unwrap_or(0.0),
-                *q,
-            )),
-            _ => {}
-        }
+/// How far below the final level each fade write sits, for a rise of `rise`
+/// dB. Nothing for a rise within `MAX_JUMP_DB`. Otherwise at most 12 writes
+/// (~1 s), each rising by the same step of 1 to 3 dB. A rise over 36 dB starts
+/// 36 dB below: from something that quiet, that's still a fade-in.
+fn fade_steps(rise: f64) -> Vec<f64> {
+    if rise.is_nan() || rise <= MAX_JUMP_DB {
+        return Vec::new();
     }
-    Some(loudness_db(&specs, FS) + preamp)
+    let rise = rise.min(36.0);
+    let step = (rise / 12.0).max(1.0);
+    let mut out = Vec::new();
+    let mut below = rise - step;
+    while below > 0.05 {
+        out.push(below);
+        below -= step;
+    }
+    out
 }
 
 /// Refuse a direct chain write while a blind test runs: it would change what's
@@ -405,7 +386,7 @@ fn set_fletcher_chain(filters: Vec<FilterIn>) -> Result<EqState, String> {
     refuse_mid_trial()?;
     let chain = chain_of(&filters)?;
     let specs = specs_of(&chain);
-    write_chain_safely(&chain, matched_preamp(&specs))?;
+    write_chain_safely(&chain, matched_preamp_full(&specs).0)?;
     push_chain_to_track(&chain);
 
     // Edits persist into the active preset, so switching away and back keeps them.
@@ -421,7 +402,7 @@ fn set_fletcher_chain(filters: Vec<FilterIn>) -> Result<EqState, String> {
 /// Rewrite fletcher.txt from a chain (with fresh auto-preamp). Also feeds a
 /// running track session — the tuning loop and the engine share one truth.
 fn activate_chain(chain: &[ChainFilter]) -> Result<(), String> {
-    activate_chain_at(chain, matched_preamp(&specs_of(chain)))
+    activate_chain_at(chain, matched_preamp_full(&specs_of(chain)).0)
 }
 
 /// `activate_chain` at an explicit preamp: comparisons pass the PAIRED level
@@ -709,11 +690,6 @@ fn matched_preamp_full(specs: &[FilterSpec]) -> (f64, f64) {
     level_plan(specs, preamp_trim_db(), &outside_path())
 }
 
-/// The preamp that lands a chain at the reference loudness through APO.
-fn matched_preamp(specs: &[FilterSpec]) -> f64 {
-    matched_preamp_full(specs).0
-}
-
 /// The plan for the track engine's exclusive path, which bypasses APO
 /// entirely: nothing outside applies there, and the listening level is applied
 /// as stream gain instead (`exclusive_listening_db`), so the bus stays clip-safe.
@@ -782,36 +758,56 @@ fn compared_flat_preamp_db() -> f64 {
     matched_pair(&specs_of(&active_chain()), &[]).1
 }
 
-/// The chain the last A/B write was measured with in Clip Studio, if any.
-static STUDIO_MEASURED: std::sync::Mutex<Option<Vec<ChainFilter>>> = std::sync::Mutex::new(None);
+/// Clip Studio's measured A/B (ADR-0016): the playing session it was measured
+/// in, and the chain it was measured with.
+type StudioMeasured = (std::sync::Weak<engine::TrackShared>, Vec<ChainFilter>);
+static STUDIO_MEASURED: std::sync::Mutex<Option<StudioMeasured>> = std::sync::Mutex::new(None);
 
-/// Clip Studio is playing a song through your EQ: we have the actual audio, so
-/// don't estimate. Measure A (chain at `pa`) and B (Flat at `pb`) on the 20 s
-/// of the song around the playhead, read from the decode cache, and return
-/// LUFS(A) − LUFS(B). None when there's nothing to measure (no song, Bypass,
-/// a trial, too short, silent), and the estimate stands. Synchronous, at the
-/// moment of the flip: nothing changes behind the listener's back.
-fn studio_measured_diff(specs: &[FilterSpec], pa: f64, pb: f64) -> Option<f64> {
-    use std::io::{Read, Seek, SeekFrom};
-    use std::sync::atomic::Ordering::Relaxed;
+/// The playing Clip Studio session when APO does the EQ (Through-EQ): the one
+/// case where there's a song to measure and a raw stream to correct.
+fn studio_through_eq() -> Option<(i64, std::sync::Arc<engine::TrackShared>)> {
     if trial_owns_track() {
         return None;
     }
-    let (id, rate, pos, total) = {
-        let guard = TRACK.lock().unwrap();
-        let s = guard.as_ref()?;
-        if !matches!(s.mode, fletcher_core::playback::OutputMode::Shared) {
-            return None;
-        }
+    let guard = TRACK.lock().unwrap();
+    let s = guard.as_ref()?;
+    matches!(s.mode, fletcher_core::playback::OutputMode::Shared)
+        .then(|| (s.track_id, s.shared.clone()))
+}
+
+/// We have the actual audio, so don't estimate: measure A (chain at `pa`) and
+/// B (Flat at `pb`) on what's being heard, i.e. the loop when one is on, else
+/// the 20 s around the playhead, read from the decode cache. Returns
+/// LUFS(A) − LUFS(B), or None (too short, silent, no cache) and the estimate
+/// stands. ~40 ms in a release build.
+fn studio_measured_diff(
+    id: i64,
+    shared: &engine::TrackShared,
+    specs: &[FilterSpec],
+    pa: f64,
+    pb: f64,
+) -> Option<f64> {
+    use std::io::{Read, Seek, SeekFrom};
+    use std::sync::atomic::Ordering::Relaxed;
+    let (rate, total) = (shared.rate, shared.total_frames);
+    let window = 20 * rate as u64;
+    let (loop_a, loop_b) = (
+        shared.loop_a.load(Relaxed),
+        shared.loop_b.load(Relaxed).min(total),
+    );
+    let (start, len) = if shared.loop_on.load(Relaxed) && loop_b > loop_a {
+        (loop_a, (loop_b - loop_a).min(window))
+    } else {
+        let len = window.min(total);
         (
-            s.track_id,
-            s.shared.rate,
-            s.shared.pos.load(Relaxed),
-            s.shared.total_frames,
+            shared
+                .pos
+                .load(Relaxed)
+                .saturating_sub(len / 2)
+                .min(total - len),
+            len,
         )
     };
-    let len = (20 * rate as u64).min(total);
-    let start = pos.saturating_sub(len / 2).min(total - len);
     let path = data_dir()
         .join("cache")
         .join("pcm")
@@ -832,32 +828,63 @@ fn studio_measured_diff(specs: &[FilterSpec], pa: f64, pb: f64) -> Option<f64> {
     diff.is_finite().then_some(diff)
 }
 
+/// Whether the A/B now playing was measured: in this very Clip Studio session
+/// (not a replay of the same song), for this chain (not since an edit).
+fn studio_measured_now(chain: &[ChainFilter]) -> bool {
+    let Some((_, playing)) = studio_through_eq() else {
+        return false;
+    };
+    let guard = STUDIO_MEASURED.lock().unwrap();
+    guard.as_ref().is_some_and(|(session, measured)| {
+        session
+            .upgrade()
+            .is_some_and(|s| std::sync::Arc::ptr_eq(&s, &playing))
+            && measured.as_slice() == chain
+    })
+}
+
+/// The measured correction for the side now playing: the louder side comes
+/// down, nothing is raised (≤ 0 dB).
+fn studio_side_trim_db(diff_a_minus_b: f64, side: &str) -> f64 {
+    match side {
+        "b" => diff_a_minus_b.min(0.0),
+        _ => (-diff_a_minus_b).min(0.0),
+    }
+}
+
 /// Write fletcher.txt for the given side: A = the active chain; B = flat,
 /// level-matched to the chain's average loudness. Both sides use the PAIRED
 /// levels, so a boost that hits the clip cap brings Flat down with it instead
 /// of leaving it louder (TB-08 v2).
+///
+/// While Clip Studio plays a song Through-EQ, the flip is also MEASURED on
+/// that song and the correction goes on Clip Studio's own stream, never into
+/// fletcher.txt: it affects only the song, ends with it, and leaves the
+/// system-wide levels (and the fade limiter) on the plain estimate.
 fn apply_side(side: &str) -> Result<(), String> {
     let chain = active_chain();
     let specs = specs_of(&chain);
-    let (mut pa, mut pb, _, matched) = matched_pair(&specs, &[]);
-    *STUDIO_MEASURED.lock().unwrap() = None;
-    if matched {
-        if let Some(diff) = studio_measured_diff(&specs, pa, pb) {
-            // Whichever side is louder ON THIS SONG comes down; nothing rises,
-            // so the estimate's clip safety still holds.
-            if diff > 0.0 {
-                pa = round_tenth(pa - diff);
-            } else {
-                pb = round_tenth(pb + diff);
-            }
-            *STUDIO_MEASURED.lock().unwrap() = Some(chain.clone());
-        }
-    }
+    let (pa, pb, _, matched) = matched_pair(&specs, &[]);
     match side {
         // Flat goes to the file only; a running track keeps the active chain.
-        "b" => write_chain_safely(&[], pb),
-        _ => activate_chain_at(&chain, pa),
+        "b" => write_chain_safely(&[], pb)?,
+        _ => activate_chain_at(&chain, pa)?,
     }
+    *STUDIO_MEASURED.lock().unwrap() = None;
+    if let Some((id, shared)) = studio_through_eq() {
+        let diff = (matched && level_matching())
+            .then(|| studio_measured_diff(id, &shared, &specs, pa, pb))
+            .flatten();
+        let trim = diff.map_or(0.0, |d| studio_side_trim_db(d, side));
+        shared.raw_gain_bits.store(
+            10f64.powf(trim / 20.0).to_bits(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        if diff.is_some() {
+            *STUDIO_MEASURED.lock().unwrap() = Some((std::sync::Arc::downgrade(&shared), chain));
+        }
+    }
+    Ok(())
 }
 
 // ---------------- AutoEQ: fetch-on-demand headphone presets (ADR-0008) ----------------
@@ -1374,7 +1401,7 @@ fn calibration_noise(app: tauri::AppHandle, on: bool) -> Result<(), String> {
     // not whatever is active. A capped preset, or a paired Flat sitting below
     // the reference, would otherwise get the knob set several dB too loud
     // for everything afterwards (review F8).
-    write_chain_safely(&[], matched_preamp(&[]))?;
+    write_chain_safely(&[], matched_preamp_full(&[]).0)?;
     std::thread::spawn(move || {
         use fletcher_core::{playback, signal};
         let mut src = playback::SignalSource::new(
@@ -3769,7 +3796,7 @@ fn ab_info() -> AbInfo {
         level_db: round_tenth(reference_db().min(0.0) + preamp_trim_db() - shortfall_db),
         shortfall_db,
         matched,
-        measured: STUDIO_MEASURED.lock().unwrap().as_deref() == Some(chain.as_slice()),
+        measured: studio_measured_now(&chain),
     }
 }
 
@@ -5789,5 +5816,39 @@ mod outside_path_tests {
         assert!(missing.unreadable && !missing.plain);
         assert_eq!(missing.ceiling_preamp_db(), 0.0);
         assert_eq!(missing.exclusive_preamp_db(), -16.0);
+    }
+}
+
+#[cfg(test)]
+mod level_write_tests {
+    use super::*;
+
+    #[test]
+    fn fades_never_rise_more_than_3_db_per_write() {
+        // Review 2, P1-1: a reference −30 → 0 used to jump 19 dB in one write.
+        for rise in [3.5, 6.0, 12.0, 19.0, 30.0, 36.0, 80.0, f64::INFINITY] {
+            let steps = fade_steps(rise);
+            assert!(steps.len() <= 12, "rise {rise}: {} writes", steps.len());
+            let start = rise.min(36.0);
+            let mut prev = 0.0 - start; // relative to the final level
+            for below in steps.iter().chain(&[0.0]) {
+                assert!(
+                    -below - prev <= MAX_JUMP_DB + 1e-9,
+                    "rise {rise}: {prev} → {}",
+                    -below
+                );
+                prev = -below;
+            }
+        }
+        assert!(fade_steps(3.0).is_empty() && fade_steps(f64::NAN).is_empty());
+    }
+
+    #[test]
+    fn the_louder_side_comes_down_and_nothing_rises() {
+        // diff = LUFS(A) − LUFS(B) on the song.
+        assert_eq!(studio_side_trim_db(4.0, "a"), -4.0);
+        assert_eq!(studio_side_trim_db(4.0, "b"), 0.0);
+        assert_eq!(studio_side_trim_db(-6.0, "b"), -6.0);
+        assert_eq!(studio_side_trim_db(-6.0, "a"), 0.0);
     }
 }

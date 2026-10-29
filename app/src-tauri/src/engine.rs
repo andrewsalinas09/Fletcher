@@ -68,6 +68,11 @@ pub struct TrackShared {
     /// Bumped on every BusConfig swap; the audio thread rebuilds on change.
     pub chain_gen: AtomicU64,
     pub bus: Mutex<BusConfig>,
+    /// Linear gain (f64 bits, ≤ 1) on the RAW stream, i.e. when APO does the
+    /// EQ (Clip Studio Through-EQ): the measured A/B correction for the side
+    /// now playing (ADR-0016). It lives here, not in fletcher.txt, so it
+    /// affects only this song and ends with it.
+    pub raw_gain_bits: AtomicU64,
     pub total_frames: u64,
     pub rate: u32,
 }
@@ -91,6 +96,8 @@ pub struct TrackSource {
     gain_a_extra: f64,
     gain_b_extra: f64,
     in_engine_eq: bool,
+    /// The raw-stream gain as heard, slewing toward `raw_gain_bits` (~15 ms).
+    raw_gain: f64,
     /// Crossfade position 0 (A) .. 1 (B); slews toward the target side.
     xfade: f64,
     xstep: f64,
@@ -110,6 +117,7 @@ impl TrackSource {
             gain_a_extra: 1.0,
             gain_b_extra: 1.0,
             in_engine_eq: false,
+            raw_gain: 1.0,
             xfade: 0.0,
             xstep: 1.0 / (0.015 * 48000.0),
             scrub_cursor: 0.0,
@@ -210,6 +218,7 @@ impl Source for TrackSource {
         } else {
             0.0
         };
+        let raw_target = f64::from_bits(self.shared.raw_gain_bits.load(Ordering::Relaxed));
         for frame in buf.as_chunks_mut::<2>().0 {
             if pos >= total {
                 frame[0] = 0.0;
@@ -223,8 +232,9 @@ impl Source for TrackSource {
                 pos = loop_a;
             }
             if !self.in_engine_eq {
-                frame[0] = l;
-                frame[1] = r;
+                self.raw_gain += (raw_target - self.raw_gain) * self.xstep.min(1.0);
+                frame[0] = l * self.raw_gain;
+                frame[1] = r * self.raw_gain;
                 continue;
             }
             // Both buses always run (TB-12); equal-gain blend between them.
@@ -379,6 +389,7 @@ impl TrackSession {
                 scrub: AtomicBool::new(false),
                 chain_gen: AtomicU64::new(0),
                 bus: Mutex::new(BusConfig::default()),
+                raw_gain_bits: AtomicU64::new(1f64.to_bits()),
                 total_frames,
                 rate,
             }),

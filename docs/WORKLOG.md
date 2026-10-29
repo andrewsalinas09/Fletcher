@@ -2,6 +2,14 @@
 
 Append-only session journal. Newest entry first.
 
+## 2026-10-28 (review 2) — Measured correction moved onto Clip Studio's stream; fades capped at 3 dB
+
+Committed the level-matching work as 6c47ed8 after the owner heard Clip Studio Through-EQ matched ("even with the normal EQ it's better"). Then a second independent max-effort review: safety core holds (pairing, ceiling last, no deadlocks or writes outside fletcher.txt), three P1s and four P2s, all fixed here except the noted ones:
+- **P1-1, fades could jump:** clamping the fade start at 12 dB below made the first write jump by rise − 11 dB (a reference −30 → 0 jumped 19 dB), breaking TB-20. `fade_steps` now spreads any rise over ≤ 12 equal steps of 1–3 dB; tested. `disk_level` removed: the first write of a run fades in from 12 dB below.
+- **P1-2/P1-3, the measured correction lived in fletcher.txt:** it outlived the song (paused/stopped/next song, and other apps), and the pink-level fade limiter saw every measured flip as a rise, so flips faded in slowly. Moved the correction onto Clip Studio's raw stream (`raw_gain_bits`, slewed 15 ms; set by `apply_side` after the normal write). fletcher.txt now always holds the plain estimate. The bar's "measured" is tied to the exact playing session (`Weak` + `ptr_eq`) and chain.
+- **P2s fixed:** matching off no longer measures; a loop is measured on the loop region; an edit no longer undoes A's measured cut (the stream keeps it until the next flip).
+- **Not done:** fades and the measurement still run on the UI thread (bounded: ≤ ~1 s fade, ~40 ms measurement in release); `docs/research/run-loudness-followup-probe.ps1` extracts the removed `walk_config` and no longer runs (historical). The wrapper `matched_preamp` was inlined.
+
 ## 2026-10-28 (follow-up, then trimmed) — Core kept, bloat cut, a freeze fixed
 
 Worked through the [follow-up review](research/loudness-matching-followup-2026-10-28.md) (R1–R6), shipped a live "measured" Clip Studio A/B, and broke the app with it. The owner said it had become bloated ("this is supposed to be straightforward"). An independent max-effort review agreed: the core is right, about a quarter of the new code wasn't worth it, and it found a real freeze. Trimmed in place (~320 lines out).
