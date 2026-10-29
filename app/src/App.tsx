@@ -256,6 +256,11 @@ function pairedAudible(a: CurvePlan, b: CurvePlan): [number[], number[]] {
   return [a.responseDb.map((db) => db + oa), b.responseDb.map((db) => db + ob)];
 }
 const diffOf = (a: number[], b: number[]) => a.map((v, i) => v - (b[i] ?? 0));
+/** The biggest |dB| from 20 Hz up: what auto scales fit. The graphs start at
+ *  10 Hz, but a high-pass's roll-off below 20 Hz would otherwise zoom
+ *  everything out; it rides the edge instead. */
+const peakFrom20 = (dbs: number[], freqs: number[]) =>
+  dbs.reduce((m, v, i) => (freqs[i] >= 20 && Number.isFinite(v) ? Math.max(m, Math.abs(v)) : m), 0);
 const meanAbs = (xs: number[]) => (xs.length ? xs.reduce((s, x) => s + Math.abs(x), 0) / xs.length : 0);
 
 /** Series colors for multi-node compare — legend, rings, and curves agree. */
@@ -732,8 +737,8 @@ function HistoryTree({
       : [];
   const autoRange = (() => {
     const peaks = [
-      ...(pairDiff ? [Math.max(...pairDiff.map(Math.abs))] : []),
-      ...multiDiffs.filter((d) => d.dbs).map((d) => Math.max(...d.dbs!.map(Math.abs))),
+      ...(pairDiff && curves ? [peakFrom20(pairDiff, curves.freqs)] : []),
+      ...multiDiffs.filter((d) => d.dbs && curves).map((d) => peakFrom20(d.dbs!, curves!.freqs)),
     ];
     const m = peaks.length ? Math.max(...peaks) : 0;
     // 33 = the "±30" chip, with the main graph's edge margin trick.
@@ -2008,7 +2013,7 @@ function PopoutDiff() {
         })()
       : undefined;
   const autoR = (() => {
-    const peaks = diffs.map((d) => Math.max(...d.dbs.map(Math.abs)));
+    const peaks = curves ? diffs.map((d) => peakFrom20(d.dbs, curves.freqs)) : [];
     const m = peaks.length ? Math.max(...peaks) : 0;
     return [3, 6, 12, 18, 33].find((r) => r >= m + 0.4) ?? 33;
   })();
@@ -6340,8 +6345,11 @@ function MainApp() {
 
   const autoFit = useMemo(() => {
     if (!state) return 12;
+    // Fit from 20 Hz up, as before the graph started at 10 Hz: a high-pass's
+    // roll-off below 20 Hz would otherwise zoom everything out (it rides the
+    // edge instead). Filter gains still count wherever they sit.
     const peaks = [
-      ...state.sumDb.map((db) => Math.abs(db - state.preampDb)),
+      ...state.sumDb.filter((_, i) => state.freqs[i] >= 20).map((db) => Math.abs(db - state.preampDb)),
       ...state.filters.filter((f) => f.enabled).map((f) => Math.abs(f.gainDb)),
     ];
     const maxAbs = peaks.length ? Math.max(...peaks) : 0;
