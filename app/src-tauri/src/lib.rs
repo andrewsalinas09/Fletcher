@@ -5993,6 +5993,7 @@ struct HotkeyAction {
 
 /// (id, label, default)
 const HOTKEYS: &[(&str, &str, &str)] = &[
+    ("open_app", "Open Fletcher", "ctrl+shift+KeyO"),
     ("ab_flip", "Flip A/B", "ctrl+shift+KeyA"),
     ("device_cycle", "Next device with APO", "ctrl+shift+KeyT"),
 ];
@@ -6154,6 +6155,7 @@ fn run_hotkey(app: &tauri::AppHandle, id: &str) {
     // Device switches run off the hotkey thread: they may build the notice window.
     let app2 = app.clone();
     match id {
+        "open_app" => show_main_window(app),
         "ab_flip" => {
             ab_flip(app);
             // Never during a blind test: the trial room owns what's shown.

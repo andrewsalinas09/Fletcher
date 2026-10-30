@@ -3456,6 +3456,7 @@ function HotkeyField({
           }
           onClose={() => setOpts(false)}
         >
+          {info.id !== "open_app" && (
           <div className="dev-sect">
             <div className="room-row">
               <div className={`switch ${info.popup ? "on" : ""}`} onClick={() => set({ popup: !info.popup })}>
@@ -3469,6 +3470,7 @@ function HotkeyField({
                 : "Names the device and its preset."}
             </span>
           </div>
+          )}
           <div className="dev-sect">
             <div className="room-row">
               <span
