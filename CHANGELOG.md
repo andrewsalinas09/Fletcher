@@ -2,6 +2,16 @@
 
 Each version's section becomes its GitHub release notes and the "what's new" text in Settings › UPDATES. Write for listeners, not developers.
 
+## 0.6.0
+
+- **Settings for each output device.** Click ⚙ next to a device in the device menu. Pick a preset there and it loads whenever that device becomes your Windows default, however you switched. Volume rises still fade in, and it never switches during a blind test. The same panel shows whether Equalizer APO is on that device and opens APO's device selector. Thanks for the request (#7)!
+- **Hotkeys for your devices.** Ctrl+Shift+T moves to the next device that has Equalizer APO. Give any device its own hotkey from its settings (the next free Ctrl+Shift+1…0, or any combination you like). A small popup names the device and its preset; it never takes focus from a game. Thanks for the request (#10)!
+- **Fletcher follows device switches made anywhere.** Switching in Windows' sound settings, the taskbar or another app now updates the device menu at once, and a song playing in Clip Studio moves to the new device right where it was (#8).
+- **Ctrl+Shift+O opens Fletcher** from the tray or from behind other windows.
+- **Every hotkey has its own settings** (⚙): reset, and whether it shows the popup. The A/B popup is off by default and never appears during a blind test.
+- **Exclusive playback works on more outputs.** Some outputs (S/PDIF, HDMI, some Bluetooth headphones) claim to support a format and then refuse it. Fletcher now finds one they actually play. If there is none, Clip Studio plays through the normal path instead of failing, and the test tone says why.
+- The "APO is now registered" note can be dismissed.
+
 ## 0.5.0
 
 - **Change the A/B hotkey.** In Settings › Hotkeys, click the hotkey and press any combination with Ctrl, Alt or Win, switch it off (your combination is kept for later), or reset it. Handy when Ctrl+Shift+A collides with a game. Thanks for the report (#5)!
