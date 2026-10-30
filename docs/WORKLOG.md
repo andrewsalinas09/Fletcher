@@ -2,6 +2,15 @@
 
 Append-only session journal. Newest entry first.
 
+## 2026-10-29 (devices) — Per-device settings (#7), device follows Windows (#8), device hotkeys + popup (#10)
+
+- **#8 (device menu showed the old device after a switch made in Windows):** the button's name came from `eq_state`, which only reloaded on config edits. `devices::watch_render_devices` registers an `IMMNotificationClient`; a worker thread (`spawn_device_watcher`) debounces it and emits `apo-config-changed`. No polling (TB-40).
+- **#7 (preset per output device):** state `deviceSettings` (MMDevice id → name, preset, hotkey). Whenever the default changes, by any route, `apply_device_preset` runs `preset_switch` (refused mid-trial, fades rises, skipped in a hearing-profile session) and emits `preset-switched` so the UI loads that preset's history. Rename/delete retarget the setting. UI: ⚙ on each device row opens a centered settings panel (`SettingsModal`, shared with hotkey settings; owner wanted the preset palette's look, room for future settings).
+- **#10 (hotkeys to switch device):** device hotkeys are dynamic rows in the hotkey registry (`hotkey_actions`, id `device:<id>`), assigned as the first free Ctrl+Shift+digit (owner picked Shift over Alt; Alt also collides with AltGr typing). `device_cycle` = Ctrl+Shift+T, next device with APO (TB-41: steals the browser's reopen-tab).
+- **Popup:** a small always-on-top window (`?view=osd`) built once, hidden, non-focusable; it shows itself after painting the new text (first version was a fresh window per press and appeared blank while loading). Per-hotkey "Show a popup" option (`hotkeyPopup`), off by default only for A/B, never during a blind test.
+- **Clip Studio follows the device:** a playing track's stream was bound to the old device. `track_follow_device` reopens it via `start_track(resume)`, carrying position, pause, loop, A/B side, bus and level correction (frames rescaled to the new rate); the `started` event says `resumed` so the UI keeps the region. Unplugging the playing device still just stops (noted in TB-40).
+- **Smaller:** "APO is now registered" note gets a dismiss (remembered per device); the device menu dropped "current" (the highlight says it) and keeps names on one line. Hotkey rows: name, switch, field, ⚙; reset (and a device's remove) moved into the hotkey's settings panel. Panels stack, Esc closes the top one.
+
 ## 2026-10-28 (hotkeys + settings text) — Remappable global hotkeys (issue #5); Settings trimmed
 
 - **10 Hz graphs (on main earlier):** EQ graphs and curve grids start at 10 Hz (`CURVE_FMIN`), the lowest Fc. Auto scales still fit from 20 Hz up (`peakFrom20`), or a high-pass's sub-20 Hz roll-off zooms everything out; it rides the edge instead. The blind-test "identical response" check now includes 10–20 Hz.

@@ -208,6 +208,7 @@ const IS_DIFF_WINDOW = new URLSearchParams(window.location.search).get("view") =
 const IS_FILTER_WINDOW = new URLSearchParams(window.location.search).get("view") === "filter";
 const IS_SCOPE_SPEC_WINDOW = new URLSearchParams(window.location.search).get("view") === "scope-spec";
 const IS_SCOPE_FFT_WINDOW = new URLSearchParams(window.location.search).get("view") === "scope-fft";
+const IS_OSD_WINDOW = new URLSearchParams(window.location.search).get("view") === "osd";
 
 type ChainSnap = { enabled: boolean; kind: string; fcHz: number; gainDb: number; q: number }[];
 type HistTreeNode = {
@@ -2080,7 +2081,17 @@ type AbInfo = {
   /** The last flip was measured on the Clip Studio song (ADR-0016). */
   measured: boolean;
 };
-type Device = { id: string; name: string; isDefault: boolean; apo: ApoOnDevice };
+type Device = {
+  id: string;
+  name: string;
+  isDefault: boolean;
+  apo: ApoOnDevice;
+  /** Loads whenever this device becomes the default (#7). */
+  preset: string | null;
+  /** This device's switch hotkey (#10), kept while off. */
+  hotkey: string | null;
+  hotkeyOn: boolean;
+};
 type UpdateStatus = {
   current: string;
   available: { version: string; notes: string | null; date: string | null } | null;
@@ -3217,7 +3228,7 @@ const GAIN_KINDS = new Set(["PK", "LSC", "LS", "HSC", "HS"]);
 
 /** One global hotkey action (GitHub issue #5). `combo` uses KeyboardEvent.code
  *  names ("ctrl+shift+KeyA") and is kept while the hotkey is switched off. */
-type HotkeyInfo = { id: string; label: string; combo: string; enabled: boolean; default: string };
+type HotkeyInfo = { id: string; label: string; combo: string; enabled: boolean; default: string; popup: boolean };
 
 const MOD_CODES = new Set([
   "ControlLeft",
@@ -3273,13 +3284,88 @@ const fmtCombo = (combo: string) => comboParts(combo).join("·");
 /** A remappable hotkey: click to listen, press a combination, done. Esc
  *  cancels. While listening, Fletcher's hotkeys are paused so pressing the old
  *  one doesn't fire it, and no other shortcut in the app sees the keys. */
-function HotkeyField({ info, onChange }: { info: HotkeyInfo; onChange: (list: HotkeyInfo[]) => void }) {
+/** Open settings panels, innermost last: Esc closes only the top one. */
+const modalStack: number[] = [];
+let modalSerial = 0;
+
+/** The centered settings panel (device settings, hotkey settings, …): a
+ *  heading, the thing's name, then one section per setting. Closes on ×, a
+ *  click outside or Esc. One opened from inside another stacks above it. */
+function SettingsModal({
+  heading,
+  title,
+  onClose,
+  children,
+}: {
+  heading: string;
+  title: React.ReactNode;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  const [me] = useState(() => ++modalSerial);
+  const depth = useRef(0);
+  if (!modalStack.includes(me)) {
+    depth.current = modalStack.length;
+    modalStack.push(me);
+  }
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  useEffect(() => {
+    if (!modalStack.includes(me)) modalStack.push(me);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && modalStack[modalStack.length - 1] === me) closeRef.current();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      const i = modalStack.indexOf(me);
+      if (i >= 0) modalStack.splice(i, 1);
+    };
+  }, [me]);
+  const z = 590 + depth.current * 20;
+  return createPortal(
+    <>
+      <div className="hist-backdrop" style={{ zIndex: z }} onClick={onClose} />
+      <div className="palette dev-modal" style={{ zIndex: z + 10 }}>
+        <div className="dev-modal-head">
+          <span className="mono lab-label">{heading}</span>
+          <span className="row-act" title="Close (Esc)" onClick={onClose}>
+            ×
+          </span>
+        </div>
+        <div className="dev-modal-name">{title}</div>
+        {children}
+      </div>
+    </>,
+    document.body,
+  );
+}
+
+function HotkeyField({
+  info,
+  onChange,
+  showLabel = true,
+  extra,
+}: {
+  info: HotkeyInfo;
+  onChange: (list: HotkeyInfo[]) => void;
+  /** Off where the context already names the action (a device's settings). */
+  showLabel?: boolean;
+  /** More actions in its settings, after reset (a device's "remove"). */
+  extra?: React.ReactNode;
+}) {
   const [listening, setListening] = useState(false);
   const [held, setHeld] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [opts, setOpts] = useState(false);
 
-  const set = (patch: { combo?: string; enabled?: boolean }) =>
-    invoke<HotkeyInfo[]>("hotkey_set", { id: info.id, combo: patch.combo ?? null, enabled: patch.enabled ?? null })
+  const set = (patch: { combo?: string; enabled?: boolean; popup?: boolean }) =>
+    invoke<HotkeyInfo[]>("hotkey_set", {
+      id: info.id,
+      combo: patch.combo ?? null,
+      enabled: patch.enabled ?? null,
+      popup: patch.popup ?? null,
+    })
       .then((list) => {
         setError(null);
         onChange(list);
@@ -3329,7 +3415,7 @@ function HotkeyField({ info, onChange }: { info: HotkeyInfo; onChange: (list: Ho
     ));
   return (
     <div className="hk-row">
-      <span className="set-key">{info.label}</span>
+      {showLabel && <span className="set-key">{info.label}</span>}
       <div
         className={`switch ${info.enabled ? "on" : ""}`}
         title={info.enabled ? "On: works from any app" : "Off: your combination is kept for when you switch it back on"}
@@ -3354,12 +3440,50 @@ function HotkeyField({ info, onChange }: { info: HotkeyInfo; onChange: (list: Ho
           caps(comboParts(info.combo))
         )}
       </button>
-      {info.combo !== info.default && (
-        <span className="fe-btn mono" onClick={() => set({ combo: info.default })}>
-          reset
-        </span>
-      )}
+      {/* Everything else lives in its settings, so the row stays one clean line. */}
+      <span className="row-act" title="Settings for this hotkey" onClick={() => setOpts(true)}>
+        ⚙
+      </span>
       {error && <span className="hk-error">{error}</span>}
+      {opts && (
+        <SettingsModal
+          heading="HOTKEY SETTINGS"
+          title={
+            <>
+              <b>{info.label}</b>
+              <span className="hk-caps">{caps(comboParts(info.combo))}</span>
+            </>
+          }
+          onClose={() => setOpts(false)}
+        >
+          <div className="dev-sect">
+            <div className="room-row">
+              <div className={`switch ${info.popup ? "on" : ""}`} onClick={() => set({ popup: !info.popup })}>
+                <div className="knob" />
+              </div>
+              <span className="room-key">Show a popup</span>
+            </div>
+            <span className="dim-sm">
+              {info.id === "ab_flip"
+                ? "Names the side you switched to. Never during a blind test."
+                : "Names the device and its preset."}
+            </span>
+          </div>
+          <div className="dev-sect">
+            <div className="room-row">
+              <span
+                className={`fe-btn mono ${info.combo === info.default ? "disabled" : ""}`}
+                title={`Back to ${fmtCombo(info.default)}`}
+                onClick={() => info.combo !== info.default && set({ combo: info.default })}
+              >
+                reset to {fmtCombo(info.default)}
+              </span>
+              {extra}
+            </div>
+            {error && <span className="hk-error">{error}</span>}
+          </div>
+        </SettingsModal>
+      )}
     </div>
   );
 }
@@ -3724,8 +3848,46 @@ export default function App() {
   if (IS_FILTER_WINDOW) return <PopoutFilter />;
   if (IS_SCOPE_SPEC_WINDOW) return <PopoutScopeSpec />;
   if (IS_SCOPE_FFT_WINDOW) return <PopoutScopeFft />;
+  if (IS_OSD_WINDOW) return <OsdNotice />;
   // eslint-disable-next-line react-hooks/rules-of-hooks
   return <MainApp />;
+}
+
+/** The brief on-screen notice after a device hotkey: which device is now playing
+ *  and its preset. The window can't take focus. It shows itself once the new
+ *  text is painted (never blank); the backend hides it. */
+function OsdNotice() {
+  const [text, setText] = useState<{ title: string; detail: string; n: number } | null>(null);
+  useEffect(() => {
+    const load = () =>
+      invoke<{ title: string; detail: string; on: boolean }>("osd_text")
+        .then((t) => {
+          if (!t.on) return;
+          // A new key remounts the card, so the fade-in plays on every notice.
+          setText((cur) => ({ title: t.title, detail: t.detail, n: (cur?.n ?? 0) + 1 }));
+        })
+        .catch(() => {});
+    load();
+    const u = listen("osd", load);
+    return () => {
+      u.then((f) => f());
+    };
+  }, []);
+  useEffect(() => {
+    // Straight after the commit: a hidden page may never run animation frames.
+    if (!text) return;
+    import("@tauri-apps/api/window").then(({ getCurrentWindow }) => getCurrentWindow().show()).catch(() => {});
+  }, [text]);
+  return (
+    <div className="osd" key={text?.n ?? 0}>
+      {text && (
+        <>
+          <b>{text.title}</b>
+          {text.detail && <span className="dim-sm">{text.detail}</span>}
+        </>
+      )}
+    </div>
+  );
 }
 
 function MainApp() {
@@ -3847,6 +4009,9 @@ function MainApp() {
   const [ab, setAb] = useState<AbInfo>({ side: "a", levelDb: -8, shortfallDb: 0, matched: true, measured: false });
   const [devices, setDevices] = useState<Device[]>([]);
   const [deviceMenu, setDeviceMenu] = useState(false);
+  /** The device whose settings panel is open (null = closed). */
+  const [deviceCfg, setDeviceCfg] = useState<string | null>(null);
+  const cfgDevice = devices.find((d) => d.id === deviceCfg) ?? null;
   const [renaming, setRenaming] = useState<{ from: string; value: string } | null>(null);
   const [aeq, setAeq] = useState("");
   const [aeqResults, setAeqResults] = useState<AutoeqEntry[]>([]);
@@ -4549,6 +4714,8 @@ function MainApp() {
   }, []);
   const abInfo = hotkeyList.find((h) => h.id === "ab_flip");
   const abHotkey = abInfo?.enabled ? abInfo.combo : null;
+  /** The open device settings' hotkey row, if the device has one. */
+  const cfgHotkey = cfgDevice?.hotkey ? hotkeyList.find((h) => h.id === `device:${cfgDevice.id}`) : undefined;
   const [autostart, setAutostart] = useState<boolean | null>(null);
   const [calNoise, setCalNoise] = useState(false);
   const toggleCalNoise = () => {
@@ -5223,11 +5390,37 @@ function MainApp() {
   // TB-32: when the EQ can't be heard on this device, the banner needs to know
   // whether some OTHER device would hear it — so load the list unprompted.
   const apoBroken = !!state && state.apoOnDevice !== "active" && state.apoOnDevice !== "unknown";
+  // An open device menu follows a switch made outside Fletcher (#8).
   useEffect(() => {
-    if (apoBroken) invoke<Device[]>("devices_list").then(setDevices).catch(() => {});
+    if (apoBroken || deviceMenu) invoke<Device[]>("devices_list").then(setDevices).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apoBroken, state?.deviceName]);
 
   const [apoSelectorOpen, setApoSelectorOpen] = useState(false);
+  // The "now registered" note stays true until Windows restarts, so a dismissal
+  // is remembered per device; it's forgotten once the device no longer needs
+  // the restart, so a later registration shows the note again.
+  const [rebootDismissed, setRebootDismissed] = useState<string[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("fletcher.rebootdismissed") ?? "[]");
+    } catch {
+      return [];
+    }
+  });
+  const saveRebootDismissed = (list: string[]) => {
+    setRebootDismissed(list);
+    try {
+      localStorage.setItem("fletcher.rebootdismissed", JSON.stringify(list));
+    } catch {
+      /* the note just comes back next launch */
+    }
+  };
+  useEffect(() => {
+    const dev = state?.deviceName;
+    if (dev && state && !state.apoRebootPending && rebootDismissed.includes(dev))
+      saveRebootDismissed(rebootDismissed.filter((d) => d !== dev));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state?.deviceName, state?.apoRebootPending]);
   const openApoSelector = () => {
     setApoSelectorOpen(true);
     invoke("apo_open_device_selector")
@@ -5265,6 +5458,7 @@ function MainApp() {
     scopeKey: (_p: { key: string; state: string }) => {},
     scopeHello: () => {},
     roomCmd: (_p: { key: string; value: number | string }) => {},
+    presetSwitched: () => {},
   });
   pushRef.current = {
     // Push-based updates from the Rust config watcher — no polling. Ignored
@@ -5285,6 +5479,8 @@ function MainApp() {
       if (err) showNotice(err);
     },
     toolsProgress: (p) => setToolsProg(p),
+    // The new default device's preset was loaded (#7): same as picking it here.
+    presetSwitched: () => presetAction(invoke<EqState>("eq_state")),
     // A scope window closed → its pane comes back inline.
     scopeClosed: (label) => {
       if (label === "scope-spec") setPopped((p) => ({ ...p, spec: false }));
@@ -5345,10 +5541,13 @@ function MainApp() {
           rate: p.rate as number,
           bits: p.bits as number,
         });
-        // A clicked clip carries its region into the fresh session.
+        // A clicked clip carries its region into the fresh session. A session
+        // reopened on a new output device keeps everything as it was.
         const pc = pendingClip.current;
         pendingClip.current = null;
-        if (pc && pc.trackId === id) {
+        if (p.resumed) {
+          // nothing to reset
+        } else if (pc && pc.trackId === id) {
           setIoRegion({ a: pc.tIn, b: pc.tOut });
           setLoopOn(true);
           setActiveClipId(pc.id);
@@ -5400,6 +5599,7 @@ function MainApp() {
       pushRef.current.scopeKey(e.payload),
     );
     const unlistenScopeHello = listen("scope-hello", () => pushRef.current.scopeHello());
+    const unlistenPresetSwitched = listen("preset-switched", () => pushRef.current.presetSwitched());
     const unlistenRoomCmd = listen<{ key: string; value: number | string }>("room-cmd", (e) =>
       pushRef.current.roomCmd(e.payload),
     );
@@ -5407,6 +5607,7 @@ function MainApp() {
       unlistenApoSel.then((f) => f());
       unlistenRoomCmd.then((f) => f());
       unlistenScopeHello.then((f) => f());
+      unlistenPresetSwitched.then((f) => f());
       unlistenScopeClosed.then((f) => f());
       unlistenScopeKey.then((f) => f());
       unlisten.then((f) => f());
@@ -6803,7 +7004,18 @@ function MainApp() {
                       enhancements off
                     </span>
                   )}
-                  {d.isDefault && <span className="dim-sm">current</span>}
+                  {d.hotkey && d.hotkeyOn && <span className="dim-sm mono">{fmtCombo(d.hotkey)}</span>}
+                  <span
+                    className="row-act dev-cfg-btn"
+                    title="Settings for this device"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setDeviceMenu(false);
+                      setDeviceCfg(d.id);
+                    }}
+                  >
+                    ⚙
+                  </span>
                 </div>
               ))}
               {devices.length === 0 && <div className="preset-row">no devices found</div>}
@@ -6811,6 +7023,90 @@ function MainApp() {
           )}
         </span>
       </header>
+
+      {cfgDevice && (
+        <SettingsModal
+          heading="DEVICE SETTINGS"
+          title={
+            <>
+              <b>{cfgDevice.name}</b>
+              {cfgDevice.isDefault && <span className="dim-sm">current</span>}
+              {cfgDevice.apo !== "active" && cfgDevice.apo !== "unknown" && (
+                <span className="dim-sm warn-text">
+                  {cfgDevice.apo === "disabled" ? "enhancements off" : "no APO"}
+                </span>
+              )}
+            </>
+          }
+          onClose={() => setDeviceCfg(null)}
+        >
+              <div className="dev-sect">
+                <span className="room-key">Preset</span>
+                <span className="dim-sm">Loads whenever this device becomes the default, however it was switched.</span>
+                <div className="dev-presets">
+                  {[null, ...presets.presets].map((p) => (
+                    <div
+                      key={p ?? ""}
+                      className={`preset-row ${cfgDevice.preset === p ? "current" : ""}`}
+                      onClick={() =>
+                        invoke<Device[]>("device_set_preset", { id: cfgDevice.id, preset: p })
+                          .then(setDevices)
+                          .catch((err) => showNotice(String(err)))
+                      }
+                    >
+                      {p ?? <span className="dim-sm">keep whatever is playing</span>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="dev-sect">
+                <span className="room-key">Hotkey</span>
+                <span className="dim-sm">Switches to this device from any app.</span>
+                <div className="room-row">
+                  {cfgHotkey ? (
+                    // The same field as Settings › Hotkeys; its ⚙ holds reset and remove.
+                    <HotkeyField
+                      info={cfgHotkey}
+                      showLabel={false}
+                      onChange={(list) => {
+                        setHotkeyList(list);
+                        invoke<Device[]>("devices_list").then(setDevices).catch(() => {});
+                      }}
+                      extra={
+                        <span
+                          className="fe-btn mono"
+                          onClick={() =>
+                            invoke<Device[]>("device_hotkey_remove", { id: cfgDevice.id })
+                              .then((list) => {
+                                setDevices(list);
+                                invoke<HotkeyInfo[]>("hotkeys").then(setHotkeyList).catch(() => {});
+                              })
+                              .catch((err) => showNotice(String(err)))
+                          }
+                        >
+                          remove
+                        </span>
+                      }
+                    />
+                  ) : (
+                    <span
+                      className="fe-btn mono"
+                      onClick={() =>
+                        invoke<Device[]>("device_hotkey_assign", { id: cfgDevice.id })
+                          .then((list) => {
+                            setDevices(list);
+                            invoke<HotkeyInfo[]>("hotkeys").then(setHotkeyList).catch(() => {});
+                          })
+                          .catch((err) => showNotice(String(err)))
+                      }
+                    >
+                      assign
+                    </span>
+                  )}
+                </div>
+              </div>
+        </SettingsModal>
+      )}
 
       {notice && (
         <div className="notice" onClick={() => setNotice(null)}>
@@ -9122,12 +9418,17 @@ function MainApp() {
               </div>
             </div>
           )}
-          {state.apoRebootPending && (
+          {state.apoRebootPending && !rebootDismissed.includes(state.deviceName ?? "") && (
             <div className="tool-banner apo-banner">
               <p>
                 <b>APO is now registered on {state.deviceName ?? "this device"}.</b> The EQ should be audible right away — if
                 it isn't, restart Windows (older APO versions need it).
               </p>
+              <div className="apo-banner-actions">
+                <button onClick={() => saveRebootDismissed([...rebootDismissed, state.deviceName ?? ""])}>
+                  dismiss
+                </button>
+              </div>
             </div>
           )}
           <div className="preset-line">

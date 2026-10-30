@@ -3134,7 +3134,6 @@ fn track_state_now() -> TrackState {
 /// chain and the normal A/B). Decode is cached per (track, rate).
 #[tauri::command]
 async fn track_play(app: tauri::AppHandle, id: i64) -> Result<(), String> {
-    use fletcher_core::playback::OutputMode;
     if TRIAL.lock().unwrap().is_some() {
         return Err("a blind test is running — finish or cancel it first".into());
     }
@@ -3142,8 +3141,42 @@ async fn track_play(app: tauri::AppHandle, id: i64) -> Result<(), String> {
         return Err("a hearing-profile session is running — finish or cancel it first".into());
     }
     stop_cal_noise();
+    tauri::async_runtime::spawn_blocking(move || start_track(app, id, None))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// The default device changed under a playing Clip Studio track: its stream is
+/// bound to the old device, so reopen it on the new one, carrying over where
+/// it was, paused or not, the loop, the A/B side and the level correction.
+/// A blind trial's stream is left alone (it has its own device recovery).
+fn track_follow_device(app: &tauri::AppHandle) {
+    if TRIAL.lock().unwrap().is_some() || profile_running() {
+        return;
+    }
+    let Some((id, shared)) = TRACK
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|s| (s.track_id, s.shared.clone()))
+    else {
+        return;
+    };
+    if let Err(e) = start_track(app.clone(), id, Some(shared)) {
+        eprintln!("fletcher: could not move playback to the new device: {e}");
+    }
+}
+
+/// Blocking body of `track_play`. `resume` = the session being replaced, whose
+/// transport state the new one takes over (`track_follow_device`).
+fn start_track(
+    app: tauri::AppHandle,
+    id: i64,
+    resume: Option<std::sync::Arc<engine::TrackShared>>,
+) -> Result<(), String> {
+    use fletcher_core::playback::OutputMode;
     let prior_done = track_stop_inner();
-    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+    {
         use std::sync::atomic::Ordering::Relaxed;
         use tauri::Emitter;
         // Never overlap streams: wait for the previous session's fade-out
@@ -3231,6 +3264,24 @@ async fn track_play(app: tauri::AppHandle, id: i64) -> Result<(), String> {
         };
 
         let session = engine::TrackSession::new(id, mode, rate, (pcm.len() / 2) as u64, 0);
+        if let Some(old) = &resume {
+            // Frame counts are per rate, and the new device may run another.
+            let k = rate as f64 / old.rate as f64;
+            let total = session.shared.total_frames;
+            let frames =
+                |v: &std::sync::atomic::AtomicU64| ((v.load(Relaxed) as f64 * k) as u64).min(total);
+            let new = &session.shared;
+            new.pos.store(frames(&old.pos), Relaxed);
+            new.loop_a.store(frames(&old.loop_a), Relaxed);
+            new.loop_b.store(frames(&old.loop_b), Relaxed);
+            new.loop_on.store(old.loop_on.load(Relaxed), Relaxed);
+            new.paused.store(old.paused.load(Relaxed), Relaxed);
+            new.side_b.store(old.side_b.load(Relaxed), Relaxed);
+            new.raw_gain_bits
+                .store(old.raw_gain_bits.load(Relaxed), Relaxed);
+            *new.bus.lock().unwrap() = old.bus.lock().unwrap().clone();
+        }
+        let resumed = resume.is_some();
         let (app_start, app_end, app_pos) = (app.clone(), app.clone(), app.clone());
         let stop_end = session.stop.clone();
         let (shared_pos, stop_pos, done_pos) = (
@@ -3249,6 +3300,7 @@ async fn track_play(app: tauri::AppHandle, id: i64) -> Result<(), String> {
                         "mode": if bypass { "bypass" } else { "eq" },
                         "exclusive": exclusive, "gainDb": gain_db,
                         "device": info.device, "rate": info.rate, "bits": info.bits,
+                        "resumed": resumed,
                     }),
                 );
             },
@@ -3287,9 +3339,7 @@ async fn track_play(app: tauri::AppHandle, id: i64) -> Result<(), String> {
         });
         *TRACK.lock().unwrap() = Some(session);
         Ok(())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    }
 }
 
 fn track_toggle_inner() -> bool {
@@ -3710,6 +3760,7 @@ fn preset_rename(from: String, to: String) -> Result<PresetsState, String> {
     if active_preset().as_deref() == Some(from.as_str()) {
         set_active_preset(Some(&to));
     }
+    retarget_device_presets(&from, Some(&to));
     presets_state()
 }
 
@@ -3722,19 +3773,308 @@ struct DeviceDto {
     /// `apo::DeviceApo` for this device — lets the picker steer toward a
     /// device where the EQ is actually audible.
     apo: &'static str,
+    /// The preset that loads whenever this device becomes the default (#7).
+    preset: Option<String>,
+    /// This device's switch hotkey (#10), kept while switched off.
+    hotkey: Option<String>,
+    hotkey_on: bool,
 }
 
 #[tauri::command]
 fn devices_list() -> Vec<DeviceDto> {
     devices::list_render_devices()
         .into_iter()
-        .map(|d| DeviceDto {
-            apo: device_apo(&d.id).as_str(),
-            id: d.id,
-            name: d.name,
-            is_default: d.is_default,
+        .map(|d| {
+            let hk = device_hotkey_id(&d.id);
+            let assigned = device_setting(&d.id, "hotkey").is_some();
+            DeviceDto {
+                apo: device_apo(&d.id).as_str(),
+                preset: device_setting(&d.id, "preset"),
+                hotkey: assigned.then(|| hotkey_choice(&hk)),
+                hotkey_on: assigned && hotkey_enabled(&hk),
+                id: d.id,
+                name: d.name,
+                is_default: d.is_default,
+            }
         })
         .collect()
+}
+
+// ---------------- per-device settings (#7, #10) ----------------
+//
+// state.json "deviceSettings" maps an MMDevice id → { name, preset, hotkey }.
+// The preset loads whenever that device becomes the Windows default, however
+// it got there. "hotkey" is the combination the device was given when its
+// hotkey was assigned (its reset target); the live choice and on/off live with
+// every other hotkey, under the action id "device:<id>". "name" is the last
+// seen name, for labeling a hotkey while the device is unplugged.
+
+fn device_settings() -> serde_json::Map<String, serde_json::Value> {
+    read_state()
+        .get("deviceSettings")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn device_setting(id: &str, key: &str) -> Option<String> {
+    device_settings()
+        .get(id)?
+        .get(key)?
+        .as_str()
+        .map(String::from)
+}
+
+fn set_device_setting(id: &str, key: &str, value: Option<&str>) {
+    let mut all = device_settings();
+    let entry = all
+        .entry(id.to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    match value {
+        Some(v) => entry[key] = serde_json::json!(v),
+        None => {
+            if let Some(o) = entry.as_object_mut() {
+                o.remove(key);
+            }
+        }
+    }
+    write_state_field("deviceSettings", serde_json::Value::Object(all));
+}
+
+fn remember_device_name(id: &str) {
+    if let Some(d) = devices::list_render_devices()
+        .into_iter()
+        .find(|d| d.id == id)
+    {
+        set_device_setting(id, "name", Some(&d.name));
+    }
+}
+
+fn device_hotkey_id(id: &str) -> String {
+    format!("device:{id}")
+}
+
+/// Follow a preset rename (`to` = Some) or deletion (None) in every device's setting.
+fn retarget_device_presets(from: &str, to: Option<&str>) {
+    let mut all = device_settings();
+    let mut changed = false;
+    for v in all.values_mut() {
+        if v.get("preset").and_then(|p| p.as_str()) == Some(from) {
+            match (to, v.as_object_mut()) {
+                (Some(t), _) => v["preset"] = serde_json::json!(t),
+                (None, Some(o)) => {
+                    o.remove("preset");
+                }
+                _ => {}
+            }
+            changed = true;
+        }
+    }
+    if changed {
+        write_state_field("deviceSettings", serde_json::Value::Object(all));
+    }
+}
+
+#[tauri::command]
+fn device_set_preset(id: String, preset: Option<String>) -> Vec<DeviceDto> {
+    remember_device_name(&id);
+    set_device_setting(&id, "preset", preset.as_deref());
+    devices_list()
+}
+
+/// Give a device the first free Ctrl+Shift+digit (1…9, then 0). A digit another
+/// app already holds is skipped. Remappable afterwards in Settings › Hotkeys.
+#[tauri::command]
+fn device_hotkey_assign(app: tauri::AppHandle, id: String) -> Result<Vec<DeviceDto>, String> {
+    let hk = device_hotkey_id(&id);
+    let taken: Vec<_> = hotkey_actions()
+        .iter()
+        .filter(|a| a.id != hk)
+        .filter_map(|a| hotkey_combo(&a.id))
+        .filter_map(|c| parse_combo(&c).ok())
+        .collect();
+    let live = !HOTKEYS_PAUSED.load(std::sync::atomic::Ordering::Relaxed);
+    if let Some(old) = hotkey_combo(&hk).filter(|_| live) {
+        unregister_hotkey(&app, &old);
+    }
+    for digit in "1234567890".chars() {
+        let combo = format!("ctrl+shift+Digit{digit}");
+        if taken.contains(&parse_combo(&combo)?) {
+            continue;
+        }
+        // Registering is the real test: another app may hold the combination.
+        if live && register_hotkey(&app, hk.clone(), &combo).is_err() {
+            continue;
+        }
+        remember_device_name(&id);
+        set_device_setting(&id, "hotkey", Some(&combo));
+        store_hotkey(&hk, &combo, true);
+        return Ok(devices_list());
+    }
+    Err("Ctrl+Shift+1 to Ctrl+Shift+0 are all in use; free one in Settings › Hotkeys".into())
+}
+
+#[tauri::command]
+fn device_hotkey_remove(app: tauri::AppHandle, id: String) -> Vec<DeviceDto> {
+    let hk = device_hotkey_id(&id);
+    if !HOTKEYS_PAUSED.load(std::sync::atomic::Ordering::Relaxed) {
+        if let Some(c) = hotkey_combo(&hk) {
+            unregister_hotkey(&app, &c);
+        }
+    }
+    forget_hotkey(&hk);
+    set_device_setting(&id, "hotkey", None);
+    devices_list()
+}
+
+/// The default device changed (any route): load its preset, if it has one and
+/// nothing is using the EQ for a test. The fade rules apply as for any switch.
+fn apply_device_preset(app: &tauri::AppHandle, id: &str) {
+    use tauri::Emitter;
+    let Some(p) = device_setting(id, "preset") else {
+        return;
+    };
+    if active_preset().as_deref() == Some(p.as_str()) || profile_running() {
+        return;
+    }
+    if preset_switch(Some(p.clone())).is_ok() {
+        let _ = app.emit("preset-switched", p);
+    }
+}
+
+/// The hotkeys' switch: make `id` the default and, if the hotkey that asked
+/// (`via`) has its popup on, say so on screen.
+fn switch_to_device(app: &tauri::AppHandle, id: &str, via: &str) {
+    let popup = hotkey_popup(via);
+    let say = |title: &str, detail: &str| {
+        if popup {
+            show_osd(app, title, detail)
+        }
+    };
+    let Some(d) = devices::list_render_devices()
+        .into_iter()
+        .find(|d| d.id == id)
+    else {
+        let name = device_setting(id, "name").unwrap_or_else(|| "That device".into());
+        return say(&name, "isn't connected");
+    };
+    if !d.is_default {
+        if let Err(e) = devices::set_default_render_device(id) {
+            return say(&d.name, &e);
+        }
+    }
+    let detail = if device_apo(id) != apo::DeviceApo::Active {
+        "Equalizer APO isn't on this device".to_string()
+    } else {
+        match device_setting(id, "preset").or_else(active_preset) {
+            Some(p) => p,
+            None => "no preset".to_string(),
+        }
+    };
+    say(&d.name, &detail);
+}
+
+/// Ctrl+Shift+T: the next playback device that has Equalizer APO, in Windows'
+/// order, wrapping around.
+fn cycle_device(app: &tauri::AppHandle) {
+    let list: Vec<_> = devices::list_render_devices()
+        .into_iter()
+        .filter(|d| device_apo(&d.id) == apo::DeviceApo::Active)
+        .collect();
+    let next = match list.iter().position(|d| d.is_default) {
+        Some(i) => list.get((i + 1) % list.len()),
+        None => list.first(),
+    };
+    match next {
+        Some(d) => switch_to_device(app, &d.id.clone(), "device_cycle"),
+        None if hotkey_popup("device_cycle") => show_osd(app, "No device has Equalizer APO", ""),
+        None => {}
+    }
+}
+
+// The on-screen notice: a small always-on-top window that can't take focus
+// (a game keeps its keyboard), shown for a moment after a hotkey switch. It's
+// built once, hidden, and shows ITSELF after rendering the new text, so it
+// never appears blank while its page loads.
+static OSD_TEXT: std::sync::Mutex<(String, String)> =
+    std::sync::Mutex::new((String::new(), String::new()));
+static OSD_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// A notice is due: a page that finishes loading late still shows it.
+static OSD_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[derive(Serialize)]
+struct OsdText {
+    title: String,
+    detail: String,
+    on: bool,
+}
+
+#[tauri::command]
+fn osd_text() -> OsdText {
+    let (title, detail) = OSD_TEXT.lock().unwrap().clone();
+    OsdText {
+        title,
+        detail,
+        on: OSD_ON.load(std::sync::atomic::Ordering::SeqCst),
+    }
+}
+
+/// Call off the main thread: building a window from a hotkey handler deadlocks.
+fn show_osd(app: &tauri::AppHandle, title: &str, detail: &str) {
+    use std::sync::atomic::Ordering::SeqCst;
+    use tauri::{Emitter, Manager};
+    *OSD_TEXT.lock().unwrap() = (title.to_string(), detail.to_string());
+    let generation = OSD_GEN.fetch_add(1, SeqCst) + 1;
+    OSD_ON.store(true, SeqCst);
+    let (w, h) = (340.0, 64.0);
+    let spot = app.primary_monitor().ok().flatten().map(|m| {
+        let s = m.scale_factor();
+        let size = m.size().to_logical::<f64>(s);
+        let pos = m.position().to_logical::<f64>(s);
+        (
+            pos.x + (size.width - w) / 2.0,
+            pos.y + size.height - h - 120.0,
+        )
+    });
+    match app.get_webview_window("osd") {
+        Some(win) => {
+            if let Some((x, y)) = spot {
+                let _ = win.set_position(tauri::LogicalPosition::new(x, y));
+            }
+            let _ = app.emit_to("osd", "osd", ());
+        }
+        None => {
+            let mut b = tauri::WebviewWindowBuilder::new(
+                app,
+                "osd",
+                tauri::WebviewUrl::App("index.html?view=osd".into()),
+            )
+            .title("Fletcher")
+            .inner_size(w, h)
+            .decorations(false)
+            .resizable(false)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .visible(false)
+            .focusable(false)
+            .focused(false)
+            .background_color(tauri::window::Color(0xf2, 0xef, 0xe9, 0xff));
+            if let Some((x, y)) = spot {
+                b = b.position(x, y);
+            }
+            let _ = b.build();
+        }
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(1800));
+        if OSD_GEN.load(SeqCst) == generation {
+            OSD_ON.store(false, SeqCst);
+            if let Some(w) = app.get_webview_window("osd") {
+                let _ = w.hide();
+            }
+        }
+    });
 }
 
 /// Devices this process has seen WITHOUT APO. A device that was Missing and is
@@ -5241,6 +5581,7 @@ fn abx_sessions() -> Vec<serde_json::Value> {
 #[tauri::command]
 fn preset_delete(name: String) -> Result<EqState, String> {
     store()?.delete(&name).map_err(|e| e.to_string())?;
+    retarget_device_presets(&name, None);
     if active_preset().as_deref() == Some(name.as_str()) {
         set_active_preset(None);
         activate_chain(&[])?;
@@ -5447,6 +5788,40 @@ fn spawn_config_watcher(handle: tauri::AppHandle) {
     });
 }
 
+/// Issue #8: the default playback device can change outside Fletcher (Windows
+/// sound settings, another switcher, unplugging). The EQ state carries the
+/// device name and its APO status, so the UI reloads it on the same event a
+/// config edit sends. A new default device also gets its preset (#7). The
+/// work happens here, not in the Windows callback, which must return quickly.
+fn spawn_device_watcher(handle: tauri::AppHandle) {
+    use tauri::Emitter;
+    std::thread::spawn(move || {
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let watch = devices::watch_render_devices(move || {
+            let _ = tx.send(());
+        });
+        if let Err(e) = watch {
+            eprintln!("fletcher: {e}");
+            return;
+        }
+        let mut last = devices::default_render_device_id();
+        while rx.recv().is_ok() {
+            // One switch reports several changes; handle them as one.
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            while rx.try_recv().is_ok() {}
+            let now = devices::default_render_device_id();
+            if now != last {
+                last = now.clone();
+                if let Some(id) = &now {
+                    apply_device_preset(&handle, id);
+                }
+                track_follow_device(&handle);
+            }
+            let _ = handle.emit("apo-config-changed", ());
+        }
+    });
+}
+
 /// The outside path changed: rewrite what's playing at its new plan. A running
 /// SYSTEM-audio trial gets its current audition re-applied (both sides are
 /// planned against the same path, so the pair stays matched); clip trials and
@@ -5607,19 +5982,38 @@ fn set_scope_shortcuts(app: &tauri::AppHandle, label: &str, enable: bool) {
 // switching back on restores it. Combinations use the browser's KeyboardEvent.code
 // names (ctrl+shift+KeyA), which the shortcut plugin parses directly, so the
 // remapping UI can store exactly what it captured. Add a row to HOTKEYS (and
-// a case in `run_hotkey`) for each new action.
+// a case in `run_hotkey`) for each new action. Each device given a hotkey adds
+// a row of its own, "device:<id>" (#10).
 
 struct HotkeyAction {
-    id: &'static str,
-    label: &'static str,
-    default: &'static str,
+    id: String,
+    label: String,
+    default: String,
 }
 
-const HOTKEYS: &[HotkeyAction] = &[HotkeyAction {
-    id: "ab_flip",
-    label: "Flip A/B",
-    default: "ctrl+shift+KeyA",
-}];
+/// (id, label, default)
+const HOTKEYS: &[(&str, &str, &str)] = &[
+    ("ab_flip", "Flip A/B", "ctrl+shift+KeyA"),
+    ("device_cycle", "Next device with APO", "ctrl+shift+KeyT"),
+];
+
+fn hotkey_actions() -> Vec<HotkeyAction> {
+    let builtin = HOTKEYS.iter().map(|(id, label, default)| HotkeyAction {
+        id: id.to_string(),
+        label: label.to_string(),
+        default: default.to_string(),
+    });
+    let per_device = device_settings().into_iter().filter_map(|(id, s)| {
+        let default = s.get("hotkey")?.as_str()?.to_string();
+        let name = s.get("name").and_then(|n| n.as_str()).unwrap_or("a device");
+        Some(HotkeyAction {
+            id: device_hotkey_id(&id),
+            label: format!("Switch to {name}"),
+            default,
+        })
+    });
+    builtin.chain(per_device).collect()
+}
 
 /// System-wide editing shortcuts a global hotkey would steal from every app.
 const RESERVED_COMBOS: &[&str] = &[
@@ -5636,26 +6030,91 @@ const RESERVED_COMBOS: &[&str] = &[
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct HotkeyInfo {
-    id: &'static str,
-    label: &'static str,
+    id: String,
+    label: String,
     /// The chosen combination (kept while switched off).
     combo: String,
     enabled: bool,
-    default: &'static str,
+    default: String,
+    /// Show the on-screen popup when it fires.
+    popup: bool,
+}
+
+/// Whether an action shows the on-screen popup. Off by default only for the
+/// A/B flip: a popup naming the side would spoil listening without looking.
+fn hotkey_popup(id: &str) -> bool {
+    read_state()
+        .get("hotkeyPopup")
+        .and_then(|m| m.get(id))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(id != "ab_flip")
+}
+
+fn set_hotkey_popup(id: &str, on: bool) {
+    let mut map = read_state()
+        .get("hotkeyPopup")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    map[id] = serde_json::json!(on);
+    write_state_field("hotkeyPopup", map);
 }
 
 /// The chosen combination for an action: stored, else the default.
 fn hotkey_choice(id: &str) -> String {
-    let default = HOTKEYS
-        .iter()
-        .find(|a| a.id == id)
-        .map_or("", |a| a.default);
-    read_state()
+    let stored = read_state()
         .get("hotkeys")
         .and_then(|h| h.get(id))
         .and_then(|v| v.as_str())
-        .unwrap_or(default)
-        .to_string()
+        .map(String::from);
+    stored.unwrap_or_else(|| {
+        hotkey_actions()
+            .into_iter()
+            .find(|a| a.id == id)
+            .map_or_else(String::new, |a| a.default)
+    })
+}
+
+/// Save an action's combination and on/off.
+fn store_hotkey(id: &str, combo: &str, on: bool) {
+    let state = read_state();
+    let mut map = state
+        .get("hotkeys")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    map[id] = serde_json::Value::from(combo);
+    write_state_field("hotkeys", map);
+    let mut off = hotkeys_off();
+    off.retain(|x| x != id);
+    if !on {
+        off.push(id.to_string());
+    }
+    write_state_field("hotkeysOff", serde_json::json!(off));
+}
+
+/// Drop an action's saved combination and on/off (a device's hotkey removed).
+fn forget_hotkey(id: &str) {
+    let state = read_state();
+    if let Some(mut map) = state.get("hotkeys").cloned() {
+        if let Some(o) = map.as_object_mut() {
+            o.remove(id);
+        }
+        write_state_field("hotkeys", map);
+    }
+    let mut off = hotkeys_off();
+    off.retain(|x| x != id);
+    write_state_field("hotkeysOff", serde_json::json!(off));
+}
+
+fn hotkeys_off() -> Vec<String> {
+    read_state()
+        .get("hotkeysOff")
+        .and_then(|v| v.as_array())
+        .map(|ids| {
+            ids.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn hotkey_enabled(id: &str) -> bool {
@@ -5678,21 +6137,47 @@ fn hotkey_combo(id: &str) -> Option<String> {
 }
 
 fn hotkey_infos() -> Vec<HotkeyInfo> {
-    HOTKEYS
-        .iter()
+    hotkey_actions()
+        .into_iter()
         .map(|a| HotkeyInfo {
+            combo: hotkey_choice(&a.id),
+            enabled: hotkey_enabled(&a.id),
+            popup: hotkey_popup(&a.id),
             id: a.id,
             label: a.label,
-            combo: hotkey_choice(a.id),
-            enabled: hotkey_enabled(a.id),
             default: a.default,
         })
         .collect()
 }
 
 fn run_hotkey(app: &tauri::AppHandle, id: &str) {
-    if id == "ab_flip" {
-        ab_flip(app)
+    // Device switches run off the hotkey thread: they may build the notice window.
+    let app2 = app.clone();
+    match id {
+        "ab_flip" => {
+            ab_flip(app);
+            // Never during a blind test: the trial room owns what's shown.
+            if hotkey_popup("ab_flip") && TRIAL.lock().unwrap().is_none() {
+                std::thread::spawn(move || {
+                    let (title, detail) = if ab_side() == "b" {
+                        ("B".to_string(), "Flat".to_string())
+                    } else {
+                        let preset = active_preset().unwrap_or_else(|| "your EQ".into());
+                        ("A".to_string(), preset)
+                    };
+                    show_osd(&app2, &title, &detail);
+                });
+            }
+        }
+        "device_cycle" => {
+            std::thread::spawn(move || cycle_device(&app2));
+        }
+        _ => {
+            if let Some(dev) = id.strip_prefix("device:") {
+                let (dev, via) = (dev.to_string(), id.to_string());
+                std::thread::spawn(move || switch_to_device(&app2, &dev, &via));
+            }
+        }
     }
 }
 
@@ -5728,13 +6213,13 @@ fn pretty_combo(combo: &str) -> String {
 }
 
 /// Register one action's combination. Fails when another app holds it.
-fn register_hotkey(app: &tauri::AppHandle, id: &'static str, combo: &str) -> Result<(), String> {
+fn register_hotkey(app: &tauri::AppHandle, id: String, combo: &str) -> Result<(), String> {
     use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
     let shortcut = parse_combo(combo)?;
     app.global_shortcut()
         .on_shortcut(shortcut, move |app, _shortcut, event| {
             if event.state == ShortcutState::Pressed {
-                run_hotkey(app, id);
+                run_hotkey(app, &id);
             }
         })
         .map_err(|_| format!("{} is already used by another app", pretty_combo(combo)))
@@ -5763,9 +6248,9 @@ fn tray_flip_text() -> String {
 static HOTKEYS_PAUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn register_all_hotkeys(app: &tauri::AppHandle) {
-    for a in HOTKEYS {
-        if let Some(combo) = hotkey_combo(a.id) {
-            if let Err(e) = register_hotkey(app, a.id, &combo) {
+    for a in hotkey_actions() {
+        if let Some(combo) = hotkey_combo(&a.id) {
+            if let Err(e) = register_hotkey(app, a.id.clone(), &combo) {
                 eprintln!("fletcher: hotkey {}: {e}", a.id);
             }
         }
@@ -5790,15 +6275,20 @@ fn hotkey_set(
     id: String,
     combo: Option<String>,
     enabled: Option<bool>,
+    popup: Option<bool>,
 ) -> Result<Vec<HotkeyInfo>, String> {
-    let action = HOTKEYS
+    let actions = hotkey_actions();
+    let action = actions
         .iter()
         .find(|a| a.id == id)
         .ok_or_else(|| format!("unknown hotkey {id}"))?;
-    let old = hotkey_combo(action.id);
+    if let Some(on) = popup {
+        set_hotkey_popup(&action.id, on);
+    }
+    let old = hotkey_combo(&action.id);
     let picked = combo.is_some();
-    let choice = combo.unwrap_or_else(|| hotkey_choice(action.id));
-    let on = enabled.unwrap_or_else(|| hotkey_enabled(action.id));
+    let choice = combo.unwrap_or_else(|| hotkey_choice(&action.id));
+    let on = enabled.unwrap_or_else(|| hotkey_enabled(&action.id));
     // Check a newly picked combination even while switched off, so an invalid
     // one is refused when chosen, not later when switching back on.
     let check = (on || picked).then(|| choice.clone());
@@ -5824,8 +6314,8 @@ fn hotkey_set(
                 pretty_combo(c)
             ));
         }
-        for other in HOTKEYS.iter().filter(|a| a.id != action.id) {
-            if hotkey_combo(other.id)
+        for other in actions.iter().filter(|a| a.id != action.id) {
+            if hotkey_combo(&other.id)
                 .is_some_and(|o| parse_combo(&o).map(|s| s == wanted).unwrap_or(false))
             {
                 return Err(format!("{} is already {}", pretty_combo(c), other.label));
@@ -5838,35 +6328,15 @@ fn hotkey_set(
             unregister_hotkey(&app, o);
         }
         if let Some(c) = &combo {
-            if let Err(e) = register_hotkey(&app, action.id, c) {
+            if let Err(e) = register_hotkey(&app, action.id.clone(), c) {
                 if let Some(o) = &old {
-                    let _ = register_hotkey(&app, action.id, o);
+                    let _ = register_hotkey(&app, action.id.clone(), o);
                 }
                 return Err(e);
             }
         }
     }
-    let state = read_state();
-    let mut map = state
-        .get("hotkeys")
-        .cloned()
-        .unwrap_or_else(|| serde_json::json!({}));
-    map[action.id] = serde_json::Value::from(choice);
-    write_state_field("hotkeys", map);
-    let mut off: Vec<String> = state
-        .get("hotkeysOff")
-        .and_then(|v| v.as_array())
-        .map(|ids| {
-            ids.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-    off.retain(|x| x != action.id);
-    if !on {
-        off.push(action.id.to_string());
-    }
-    write_state_field("hotkeysOff", serde_json::json!(off));
+    store_hotkey(&action.id, &choice, on);
     if action.id == "ab_flip" {
         if let Some(item) = TRAY_FLIP.lock().unwrap().as_ref() {
             let _ = item.set_text(tray_flip_text());
@@ -5884,8 +6354,8 @@ fn hotkeys_pause(app: tauri::AppHandle, paused: bool) {
         return;
     }
     if paused {
-        for a in HOTKEYS {
-            if let Some(c) = hotkey_combo(a.id) {
+        for a in hotkey_actions() {
+            if let Some(c) = hotkey_combo(&a.id) {
                 unregister_hotkey(&app, &c);
             }
         }
@@ -5914,6 +6384,7 @@ pub fn run() {
         ))
         .setup(|app| {
             spawn_config_watcher(app.handle().clone());
+            spawn_device_watcher(app.handle().clone());
             let _ = setup_tray(app);
             setup_hotkey(app);
             // Make the config reflect the stored side deterministically at launch.
@@ -5982,6 +6453,10 @@ pub fn run() {
             ab_set,
             devices_list,
             device_set_default,
+            device_set_preset,
+            device_hotkey_assign,
+            device_hotkey_remove,
+            osd_text,
             apo_open_device_selector,
             updates::update_check,
             updates::update_install,

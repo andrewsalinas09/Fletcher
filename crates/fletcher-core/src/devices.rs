@@ -107,6 +107,70 @@ pub fn list_render_devices() -> Vec<RenderDevice> {
         .collect()
 }
 
+/// Calls `on_change` whenever the Windows default playback device changes or a
+/// device is plugged in, unplugged, enabled or disabled, however it happened
+/// (Fletcher, the Windows sound settings, another switcher). Registered for the
+/// rest of the process. Joins the MTA, so call it from a worker thread, never
+/// the UI thread. `on_change` runs on a Windows audio thread and must return
+/// quickly without calling back into the device enumerator.
+pub fn watch_render_devices(on_change: impl Fn() + Send + Sync + 'static) -> Result<(), String> {
+    use windows::Win32::Media::Audio::{
+        IMMDeviceEnumerator, IMMNotificationClient, MMDeviceEnumerator,
+    };
+    let _ = wasapi::initialize_mta();
+    let enumerator: IMMDeviceEnumerator =
+        unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
+            .map_err(|e| format!("device enumerator unavailable: {e}"))?;
+    let client: IMMNotificationClient = DeviceWatch(Box::new(on_change)).into();
+    unsafe { enumerator.RegisterEndpointNotificationCallback(&client) }
+        .map_err(|e| format!("could not watch devices: {e}"))?;
+    // Never unregistered: both must outlive every notification.
+    std::mem::forget(client);
+    std::mem::forget(enumerator);
+    Ok(())
+}
+
+#[windows::core::implement(windows::Win32::Media::Audio::IMMNotificationClient)]
+struct DeviceWatch(Box<dyn Fn() + Send + Sync>);
+
+#[allow(non_snake_case)]
+impl windows::Win32::Media::Audio::IMMNotificationClient_Impl for DeviceWatch_Impl {
+    fn OnDeviceStateChanged(
+        &self,
+        _id: &PCWSTR,
+        _state: windows::Win32::Media::Audio::DEVICE_STATE,
+    ) -> windows::core::Result<()> {
+        (self.0)();
+        Ok(())
+    }
+    fn OnDeviceAdded(&self, _id: &PCWSTR) -> windows::core::Result<()> {
+        Ok(())
+    }
+    fn OnDeviceRemoved(&self, _id: &PCWSTR) -> windows::core::Result<()> {
+        Ok(())
+    }
+    fn OnDefaultDeviceChanged(
+        &self,
+        flow: windows::Win32::Media::Audio::EDataFlow,
+        role: windows::Win32::Media::Audio::ERole,
+        _id: &PCWSTR,
+    ) -> windows::core::Result<()> {
+        // Windows reports each role separately; the console role is "the default".
+        use windows::Win32::Media::Audio::{eConsole, eRender};
+        if flow == eRender && role == eConsole {
+            (self.0)();
+        }
+        Ok(())
+    }
+    fn OnPropertyValueChanged(
+        &self,
+        _id: &PCWSTR,
+        _key: &windows::Win32::Foundation::PROPERTYKEY,
+    ) -> windows::core::Result<()> {
+        Ok(())
+    }
+}
+
 // The PolicyConfig COM class. Vtable order matters; earlier methods are
 // declared as opaque stubs we never call.
 const CLSID_POLICY_CONFIG: GUID = GUID::from_u128(0x870af99c_171d_4f9e_af0d_e63df40c2bc9);

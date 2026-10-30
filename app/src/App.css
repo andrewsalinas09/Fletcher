@@ -126,6 +126,104 @@ nav {
   min-width: 320px;
 }
 
+/* A device's settings (#7, #10): ⚙ in the device menu opens a palette-style
+   panel, one section per setting, room to grow. */
+.dev-cfg-btn {
+  margin-left: auto;
+}
+
+/* Hotkey settings: the combination's keycaps beside its name. */
+.hk-caps {
+  display: inline-flex;
+  gap: 3px;
+  align-self: center;
+}
+
+.fe-btn.disabled,
+.fe-btn.disabled:hover {
+  opacity: 0.4;
+  cursor: default;
+  border-color: var(--line-mid);
+  color: var(--dim);
+}
+
+/* "Headphones (WH-1000XM4)" never splits; the menu widens instead. */
+.device-menu .preset-row > span {
+  white-space: nowrap;
+}
+
+.dev-modal {
+  width: 440px;
+  padding: 14px 18px 18px;
+  gap: 16px;
+}
+
+.dev-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.dev-modal-name {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 16px;
+}
+
+.dev-modal-name b {
+  font-weight: 500;
+}
+
+.dev-sect {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+}
+
+.dev-sect:has(.dev-presets) {
+  flex: 1 1 auto;
+}
+
+.dev-presets {
+  border: 1px solid var(--line-mid);
+  overflow-y: auto;
+  max-height: 260px;
+}
+
+.dev-presets .preset-row:last-child {
+  border-bottom: none;
+}
+
+/* The on-screen notice after a device hotkey: its own small window. */
+.osd {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  padding: 0 18px;
+  background: var(--paper);
+  border: 1px solid var(--ink);
+  border-left: 4px solid var(--boost);
+  animation: osd-in 0.12s ease-out;
+}
+
+.osd b {
+  font-size: 15px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@keyframes osd-in {
+  from {
+    opacity: 0;
+  }
+}
+
 /* ---------- preset line ---------- */
 
 .preset-line {
