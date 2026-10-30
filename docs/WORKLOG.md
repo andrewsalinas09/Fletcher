@@ -2,6 +2,10 @@
 
 Append-only session journal. Newest entry first.
 
+## 2026-10-30 (A/B hold) — Hold-to-compare for the A/B hotkey
+
+- **Hold to compare** (Flip A/B's hotkey settings): held, the hotkey switches; let go, it switches back. Two modes (state `abHold`): "hold for flat" rests on your EQ, "hold for your EQ" rests on flat. Choosing a mode moves to its resting side at once, so the first hold is heard. The shortcut plugin already reports key release (it polls the main key every 50 ms after `WM_HOTKEY`, registered with `MOD_NOREPEAT`), so `run_hotkey` now gets press and release; only the A/B hold mode uses release. `ab_flip`'s side change is factored into `ab_go`. Blind tests keep tap-to-cycle (TB-43). The tray item still toggles.
+
 ## 2026-10-29 (devices) — Per-device settings (#7), device follows Windows (#8), device hotkeys + popup (#10)
 
 - **#8 (device menu showed the old device after a switch made in Windows):** the button's name came from `eq_state`, which only reloaded on config edits. `devices::watch_render_devices` registers an `IMMNotificationClient`; a worker thread (`spawn_device_watcher`) debounces it and emits `apo-config-changed`. No polling (TB-40).

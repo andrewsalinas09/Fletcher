@@ -43,7 +43,7 @@ subsystem owns one folder.
 
 | Path | Contents | Format |
 |---|---|---|
-| `state.json` | active preset, A/B side, reference level, hotkeys (`hotkeys`, `hotkeysOff`, `hotkeyPopup`), per-device settings (`deviceSettings`) | JSON |
+| `state.json` | active preset, A/B side, reference level, hotkeys (`hotkeys`, `hotkeysOff`, `hotkeyPopup`, A/B hold mode `abHold`), per-device settings (`deviceSettings`) | JSON |
 | `presets/<name>.txt` | EQ chains | APO config syntax (portable, Peace/AutoEQ-compatible) |
 | `history/<preset>.json` | undo graphs, one tree per preset (survive restarts; export/import = this file) | JSON `{version, current, nodes[]}` with full snapshots |
 | `sessions/<id>.json` | ABX session records — labeled trial logs, provenance | JSON |

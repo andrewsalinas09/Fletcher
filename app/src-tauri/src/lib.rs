@@ -3899,7 +3899,7 @@ fn device_hotkey_assign(
         // The device's row must exist for `hotkey_set` to validate and register it.
         remember_device_name(&id);
         set_device_setting(&id, "hotkey", Some(&c));
-        return match hotkey_set(app, hk.clone(), Some(c), Some(true), None) {
+        return match hotkey_set(app, hk.clone(), Some(c), Some(true), None, None) {
             Ok(_) => Ok(devices_list()),
             Err(e) => {
                 set_device_setting(&id, "hotkey", None);
@@ -4216,17 +4216,20 @@ fn ab_flip(app: &tauri::AppHandle) {
             return;
         }
     }
-    let next = if ab_side() == "a" { "b" } else { "a" };
+    ab_go(app, if ab_side() == "a" { "b" } else { "a" });
+}
+
+/// Move to one A/B side outside a trial; emits `ab-changed`. False if it
+/// didn't move.
+fn ab_go(app: &tauri::AppHandle, next: &str) -> bool {
+    use tauri::Emitter;
     // Third branch: an exclusive track session flips inside the engine.
-    if track_engine_side_set(next) {
+    if track_engine_side_set(next) || apply_side(next).is_ok() {
         set_ab_side(next);
         let _ = app.emit("ab-changed", next);
-        return;
+        return true;
     }
-    if apply_side(next).is_ok() {
-        set_ab_side(next);
-        let _ = app.emit("ab-changed", next);
-    }
+    false
 }
 
 // ---------------- the trial room engine (ABX + preference) ----------------
@@ -6060,6 +6063,27 @@ struct HotkeyInfo {
     default: String,
     /// Show the on-screen popup when it fires.
     popup: bool,
+    /// The A/B flip only: "to_flat" / "from_flat" while held, null for a toggle.
+    hold: Option<&'static str>,
+}
+
+/// The A/B hotkey's hold mode (state.json "abHold"). Held, it switches; let
+/// go, it switches back. "to_flat" rests on your EQ and holds to flat;
+/// "from_flat" rests on flat and holds to your EQ. None: each press toggles.
+fn ab_hold() -> Option<&'static str> {
+    match read_state().get("abHold").and_then(|v| v.as_str()) {
+        Some("to_flat") => Some("to_flat"),
+        Some("from_flat") => Some("from_flat"),
+        _ => None,
+    }
+}
+
+/// The A/B side to be on while the hotkey is held (or not) in a hold mode.
+fn ab_hold_side(mode: &str, pressed: bool) -> &'static str {
+    match (mode == "to_flat", pressed) {
+        (true, true) | (false, false) => "b",
+        _ => "a",
+    }
 }
 
 /// Whether an action shows the on-screen popup. Off by default only for the
@@ -6165,6 +6189,7 @@ fn hotkey_infos() -> Vec<HotkeyInfo> {
             combo: hotkey_choice(&a.id),
             enabled: hotkey_enabled(&a.id),
             popup: hotkey_popup(&a.id),
+            hold: if a.id == "ab_flip" { ab_hold() } else { None },
             id: a.id,
             label: a.label,
             default: a.default,
@@ -6172,15 +6197,31 @@ fn hotkey_infos() -> Vec<HotkeyInfo> {
         .collect()
 }
 
-fn run_hotkey(app: &tauri::AppHandle, id: &str) {
+/// `pressed` is false for a key release, which only the A/B hold mode uses.
+fn run_hotkey(app: &tauri::AppHandle, id: &str, pressed: bool) {
     // Device switches run off the hotkey thread: they may build the notice window.
     let app2 = app.clone();
+    if !pressed && id != "ab_flip" {
+        return;
+    }
     match id {
         "open_app" => show_main_window(app),
         "ab_flip" => {
-            ab_flip(app);
+            // A blind test keeps tap-to-cycle: the hold modes name sides.
+            let trial = TRIAL.lock().unwrap().is_some();
+            let moved = match ab_hold() {
+                Some(mode) if !trial => {
+                    let side = ab_hold_side(mode, pressed);
+                    ab_side() != side && ab_go(app, side)
+                }
+                _ if pressed => {
+                    ab_flip(app);
+                    true
+                }
+                _ => false,
+            };
             // Never during a blind test: the trial room owns what's shown.
-            if hotkey_popup("ab_flip") && TRIAL.lock().unwrap().is_none() {
+            if moved && hotkey_popup("ab_flip") && TRIAL.lock().unwrap().is_none() {
                 std::thread::spawn(move || {
                     let (title, detail) = if ab_side() == "b" {
                         ("B".to_string(), "Flat".to_string())
@@ -6241,9 +6282,7 @@ fn register_hotkey(app: &tauri::AppHandle, id: String, combo: &str) -> Result<()
     let shortcut = parse_combo(combo)?;
     app.global_shortcut()
         .on_shortcut(shortcut, move |app, _shortcut, event| {
-            if event.state == ShortcutState::Pressed {
-                run_hotkey(app, &id);
-            }
+            run_hotkey(app, &id, event.state == ShortcutState::Pressed);
         })
         .map_err(|_| format!("{} is already used by another app", pretty_combo(combo)))
 }
@@ -6299,6 +6338,7 @@ fn hotkey_set(
     combo: Option<String>,
     enabled: Option<bool>,
     popup: Option<bool>,
+    hold: Option<String>,
 ) -> Result<Vec<HotkeyInfo>, String> {
     let actions = hotkey_actions();
     let action = actions
@@ -6307,6 +6347,17 @@ fn hotkey_set(
         .ok_or_else(|| format!("unknown hotkey {id}"))?;
     if let Some(on) = popup {
         set_hotkey_popup(&action.id, on);
+    }
+    // "to_flat" / "from_flat" / "off"; a mode starts on its resting side, so
+    // the first hold is heard.
+    if let Some(mode) = hold.filter(|_| action.id == "ab_flip") {
+        let mode = matches!(mode.as_str(), "to_flat" | "from_flat").then_some(mode);
+        write_state_field("abHold", serde_json::json!(mode));
+        if let Some(m) = ab_hold() {
+            if TRIAL.lock().unwrap().is_none() && ab_side() != ab_hold_side(m, false) {
+                ab_go(&app, ab_hold_side(m, false));
+            }
+        }
     }
     let old = hotkey_combo(&action.id);
     let picked = combo.is_some();

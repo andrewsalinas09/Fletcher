@@ -3228,7 +3228,16 @@ const GAIN_KINDS = new Set(["PK", "LSC", "LS", "HSC", "HS"]);
 
 /** One global hotkey action (GitHub issue #5). `combo` uses KeyboardEvent.code
  *  names ("ctrl+shift+KeyA") and is kept while the hotkey is switched off. */
-type HotkeyInfo = { id: string; label: string; combo: string; enabled: boolean; default: string; popup: boolean };
+type HotkeyInfo = {
+  id: string;
+  label: string;
+  combo: string;
+  enabled: boolean;
+  default: string;
+  popup: boolean;
+  /** The A/B flip only: held, it switches; let go, it switches back. */
+  hold: "to_flat" | "from_flat" | null;
+};
 
 const MOD_CODES = new Set([
   "ControlLeft",
@@ -3454,12 +3463,13 @@ function HotkeyField({
   const [error, setError] = useState<string | null>(null);
   const [opts, setOpts] = useState(false);
 
-  const set = (patch: { combo?: string; enabled?: boolean; popup?: boolean }) =>
+  const set = (patch: { combo?: string; enabled?: boolean; popup?: boolean; hold?: string }) =>
     invoke<HotkeyInfo[]>("hotkey_set", {
       id: info.id,
       combo: patch.combo ?? null,
       enabled: patch.enabled ?? null,
       popup: patch.popup ?? null,
+      hold: patch.hold ?? null,
     })
       .then((list) => {
         setError(null);
@@ -3526,6 +3536,47 @@ function HotkeyField({
                 : "Names the device and its preset."}
             </span>
           </div>
+          )}
+          {info.id === "ab_flip" && (
+            <div className="dev-sect">
+              <div className="room-row">
+                <div
+                  className={`switch ${info.hold ? "on" : ""}`}
+                  onClick={() => set({ hold: info.hold ? "off" : "to_flat" })}
+                >
+                  <div className="knob" />
+                </div>
+                <span className="room-key">Hold to compare</span>
+              </div>
+              <span className="dim-sm">
+                Hold the hotkey to switch, let go to switch back. Blind tests still switch on each press.
+              </span>
+              {info.hold && (
+                <>
+                  <div className="room-row">
+                    <div className="seg seg-sm">
+                      <span
+                        className={`seg-opt ${info.hold === "to_flat" ? "on" : ""}`}
+                        onClick={() => set({ hold: "to_flat" })}
+                      >
+                        hold for flat
+                      </span>
+                      <span
+                        className={`seg-opt ${info.hold === "from_flat" ? "on" : ""}`}
+                        onClick={() => set({ hold: "from_flat" })}
+                      >
+                        hold for your EQ
+                      </span>
+                    </div>
+                  </div>
+                  <span className="dim-sm">
+                    {info.hold === "to_flat"
+                      ? "You hear your EQ; holding plays flat."
+                      : "You hear flat; holding plays your EQ."}
+                  </span>
+                </>
+              )}
+            </div>
           )}
           <div className="dev-sect">
             <div className="room-row">
