@@ -3882,11 +3882,32 @@ fn device_set_preset(id: String, preset: Option<String>) -> Vec<DeviceDto> {
     devices_list()
 }
 
-/// Give a device the first free Ctrl+Shift+digit (1…9, then 0). A digit another
-/// app already holds is skipped. Remappable afterwards in Settings › Hotkeys.
+/// `device_hotkey_assign`'s answer when every digit is taken: the UI then asks
+/// for a combination of the user's own.
+const NO_FREE_DIGIT: &str = "no free Ctrl+Shift+digit";
+
+/// Give a device a hotkey: `combo` if given (checked like any remap), else the
+/// first free Ctrl+Shift+digit (1…9, then 0), skipping digits another app holds.
 #[tauri::command]
-fn device_hotkey_assign(app: tauri::AppHandle, id: String) -> Result<Vec<DeviceDto>, String> {
+fn device_hotkey_assign(
+    app: tauri::AppHandle,
+    id: String,
+    combo: Option<String>,
+) -> Result<Vec<DeviceDto>, String> {
     let hk = device_hotkey_id(&id);
+    if let Some(c) = combo {
+        // The device's row must exist for `hotkey_set` to validate and register it.
+        remember_device_name(&id);
+        set_device_setting(&id, "hotkey", Some(&c));
+        return match hotkey_set(app, hk.clone(), Some(c), Some(true), None) {
+            Ok(_) => Ok(devices_list()),
+            Err(e) => {
+                set_device_setting(&id, "hotkey", None);
+                forget_hotkey(&hk);
+                Err(e)
+            }
+        };
+    }
     let taken: Vec<_> = hotkey_actions()
         .iter()
         .filter(|a| a.id != hk)
@@ -3911,7 +3932,7 @@ fn device_hotkey_assign(app: tauri::AppHandle, id: String) -> Result<Vec<DeviceD
         store_hotkey(&hk, &combo, true);
         return Ok(devices_list());
     }
-    Err("Ctrl+Shift+1 to Ctrl+Shift+0 are all in use; free one in Settings › Hotkeys".into())
+    Err(NO_FREE_DIGIT.into())
 }
 
 #[tauri::command]

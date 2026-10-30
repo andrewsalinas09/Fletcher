@@ -3284,6 +3284,102 @@ const fmtCombo = (combo: string) => comboParts(combo).join("·");
 /** A remappable hotkey: click to listen, press a combination, done. Esc
  *  cancels. While listening, Fletcher's hotkeys are paused so pressing the old
  *  one doesn't fire it, and no other shortcut in the app sees the keys. */
+/** Key capture for choosing a combination: while `listening`, Fletcher's
+ *  hotkeys are paused (pressing the old one doesn't fire it) and no other
+ *  shortcut in the app sees the keys. Esc alone cancels. Returns the modifiers
+ *  held so far, for the live keycaps. */
+function useComboCapture(listening: boolean, stop: () => void, onCombo: (combo: string) => void) {
+  const [held, setHeld] = useState<string[]>([]);
+  const onComboRef = useRef(onCombo);
+  onComboRef.current = onCombo;
+  const stopRef = useRef(stop);
+  stopRef.current = stop;
+  useEffect(() => {
+    if (!listening) return;
+    invoke("hotkeys_pause", { paused: true }).catch(() => {});
+    const mods = (e: KeyboardEvent) =>
+      [e.ctrlKey && "ctrl", e.altKey && "alt", e.shiftKey && "shift", e.metaKey && "super"].filter(
+        Boolean,
+      ) as string[];
+    const end = () => stopRef.current();
+    const down = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const m = mods(e);
+      if (e.code === "Escape" && m.length === 0) return end();
+      if (MOD_CODES.has(e.code)) return setHeld(m);
+      end();
+      onComboRef.current([...m, e.code].join("+"));
+    };
+    const up = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setHeld(mods(e));
+    };
+    window.addEventListener("keydown", down, true);
+    window.addEventListener("keyup", up, true);
+    window.addEventListener("blur", end);
+    return () => {
+      window.removeEventListener("keydown", down, true);
+      window.removeEventListener("keyup", up, true);
+      window.removeEventListener("blur", end);
+      setHeld([]);
+      invoke("hotkeys_pause", { paused: false }).catch(() => {});
+    };
+  }, [listening]);
+  return held;
+}
+
+const keycaps = (parts: string[]) =>
+  parts.map((p, n) => (
+    <span key={n} className="kbd-cap mono">
+      {p}
+    </span>
+  ));
+
+/** A device without a hotkey: "assign" takes the next free Ctrl+Shift+digit;
+ *  once all ten are taken it asks for a combination instead. */
+function DeviceHotkeyAssign({ id, onDone }: { id: string; onDone: (list: Device[]) => void }) {
+  const [listening, setListening] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const assign = (combo: string | null) =>
+    invoke<Device[]>("device_hotkey_assign", { id, combo })
+      .then((list) => {
+        setError(null);
+        onDone(list);
+      })
+      .catch((e) => {
+        if (combo === null && String(e) === NO_FREE_DIGIT) setListening(true);
+        else setError(String(e));
+      });
+  const held = useComboCapture(listening, () => setListening(false), (c) => assign(c));
+  return (
+    <div className="hk-row">
+      {listening ? (
+        <>
+          <button
+            className="hk-field listening"
+            onClick={() => setListening(false)}
+            title="Press a key combination (Esc to cancel)"
+          >
+            {keycaps(held.map((m) => comboParts(m)[0]))}
+            <span className="hk-prompt">{held.length ? "+ a key…" : "press a combination…"}</span>
+          </button>
+          <span className="dim-sm">Ctrl+Shift+1 to 0 are taken</span>
+        </>
+      ) : (
+        <span className="fe-btn mono" onClick={() => assign(null)}>
+          assign
+        </span>
+      )}
+      {error && <span className="hk-error">{error}</span>}
+    </div>
+  );
+}
+
+/** `device_hotkey_assign`'s "every digit is taken" (lib.rs NO_FREE_DIGIT). */
+const NO_FREE_DIGIT = "no free Ctrl+Shift+digit";
+
 /** Open settings panels, innermost last: Esc closes only the top one. */
 const modalStack: number[] = [];
 let modalSerial = 0;
@@ -3355,7 +3451,6 @@ function HotkeyField({
   extra?: React.ReactNode;
 }) {
   const [listening, setListening] = useState(false);
-  const [held, setHeld] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [opts, setOpts] = useState(false);
 
@@ -3372,47 +3467,8 @@ function HotkeyField({
       })
       .catch((e) => setError(String(e)));
 
-  useEffect(() => {
-    if (!listening) return;
-    invoke("hotkeys_pause", { paused: true }).catch(() => {});
-    const mods = (e: KeyboardEvent) =>
-      [e.ctrlKey && "ctrl", e.altKey && "alt", e.shiftKey && "shift", e.metaKey && "super"].filter(
-        Boolean,
-      ) as string[];
-    const stop = () => setListening(false);
-    const down = (e: KeyboardEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const m = mods(e);
-      if (e.code === "Escape" && m.length === 0) return stop();
-      if (MOD_CODES.has(e.code)) return setHeld(m);
-      stop();
-      set({ combo: [...m, e.code].join("+") });
-    };
-    const up = (e: KeyboardEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      setHeld(mods(e));
-    };
-    window.addEventListener("keydown", down, true);
-    window.addEventListener("keyup", up, true);
-    window.addEventListener("blur", stop);
-    return () => {
-      window.removeEventListener("keydown", down, true);
-      window.removeEventListener("keyup", up, true);
-      window.removeEventListener("blur", stop);
-      setHeld([]);
-      invoke("hotkeys_pause", { paused: false }).catch(() => {});
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [listening]);
-
-  const caps = (parts: string[]) =>
-    parts.map((p, n) => (
-      <span key={n} className="kbd-cap mono">
-        {p}
-      </span>
-    ));
+  const held = useComboCapture(listening, () => setListening(false), (combo) => set({ combo }));
+  const caps = keycaps;
   return (
     <div className="hk-row">
       {showLabel && <span className="set-key">{info.label}</span>}
@@ -7091,19 +7147,13 @@ function MainApp() {
                       }
                     />
                   ) : (
-                    <span
-                      className="fe-btn mono"
-                      onClick={() =>
-                        invoke<Device[]>("device_hotkey_assign", { id: cfgDevice.id })
-                          .then((list) => {
-                            setDevices(list);
-                            invoke<HotkeyInfo[]>("hotkeys").then(setHotkeyList).catch(() => {});
-                          })
-                          .catch((err) => showNotice(String(err)))
-                      }
-                    >
-                      assign
-                    </span>
+                    <DeviceHotkeyAssign
+                      id={cfgDevice.id}
+                      onDone={(list) => {
+                        setDevices(list);
+                        invoke<HotkeyInfo[]>("hotkeys").then(setHotkeyList).catch(() => {});
+                      }}
+                    />
                   )}
                 </div>
               </div>
