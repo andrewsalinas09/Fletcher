@@ -5,9 +5,11 @@
 //! must stay live there, Q-16) and the future config-blank fallback.
 //!
 //! Grown from `examples/spike_bypass.rs`. Two of its learnings are
-//! load-bearing and preserved exactly: the format candidate ladder probed via
-//! `is_supported_exclusive_with_quirks`, and the aligned-period retry that
-//! MUST re-acquire the IAudioClient before re-initializing.
+//! load-bearing: the format candidate ladder, and the aligned-period retry that
+//! MUST re-acquire the IAudioClient before re-initializing. A third came from
+//! issue #9: a format the device CLAIMS (`IsFormatSupported`) may still be
+//! refused at `Initialize` (some Bluetooth stacks, S/PDIF, HDMI), so a format
+//! only counts once it opens (`open_exclusive`).
 //!
 //! Safety (TB-20): in exclusive mode this stream is the only volume control
 //! in the system — every stream opens silent and ramps to its target gain.
@@ -31,8 +33,9 @@ pub enum OutputMode {
 pub enum PlaybackError {
     /// COM/device enumeration failed.
     Device(String),
-    /// No candidate format was accepted in exclusive mode.
-    NoFormat,
+    /// The device opens no candidate format in exclusive mode (it may still
+    /// claim some). Carries the last refusal, for the curious.
+    NoFormat(Option<String>),
     /// Stream initialization failed (even after the aligned-period retry).
     Init(String),
     /// Failure while streaming (event timeout, write error).
@@ -43,9 +46,10 @@ impl std::fmt::Display for PlaybackError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             PlaybackError::Device(e) => write!(f, "audio device error: {e}"),
-            PlaybackError::NoFormat => write!(
+            PlaybackError::NoFormat(_) => write!(
                 f,
-                "the device accepted none of the candidate formats in exclusive mode"
+                "this device doesn't allow exclusive playback (many Bluetooth, \
+                 S/PDIF and HDMI outputs don't)"
             ),
             PlaybackError::Init(e) => write!(f, "could not open the audio stream: {e}"),
             PlaybackError::Stream(e) => write!(f, "audio stream failed: {e}"),
@@ -151,8 +155,69 @@ fn exclusive_candidates() -> [WaveFormat; 4] {
     ]
 }
 
-/// Probe which sample rate `mode` would negotiate, without initializing a
-/// stream — callers prepare PCM at the right rate before opening (TB-07).
+/// AUDCLNT_E_DEVICE_IN_USE: another exclusive stream (often our own, about to
+/// be handed off) holds the device. Says nothing about the format.
+const DEVICE_IN_USE: u32 = 0x8889_000A;
+
+fn is_device_in_use(e: &WasapiError) -> bool {
+    matches!(e, WasapiError::Windows(w) if w.code().0 as u32 == DEVICE_IN_USE)
+}
+
+/// What `open_exclusive` found.
+enum Opened {
+    /// An initialized (never started) client on a format the device opens.
+    Ready(AudioClient, WaveFormat),
+    /// Another exclusive stream holds the device: the first format it claims,
+    /// untested.
+    Busy(WaveFormat),
+}
+
+/// Initialize an exclusive client on the first candidate format the device
+/// actually OPENS (#9: a claimed format can still be refused). For each format
+/// it claims, try the default period, then a 128-byte-aligned one, each on a
+/// fresh client (a failed one can't be re-initialized). Never started, so
+/// probing this way is silent.
+fn open_exclusive(device: &Device) -> Result<Opened, PlaybackError> {
+    let dev = |e: WasapiError| PlaybackError::Device(e.to_string());
+    let mut last = None;
+    let mut first_claimed = None;
+    for format in exclusive_candidates() {
+        let probe = device.get_iaudioclient().map_err(dev)?;
+        if probe.is_supported_exclusive_with_quirks(&format).is_err() {
+            continue;
+        }
+        first_claimed.get_or_insert_with(|| format.clone());
+        let (def_period, min_period) = probe.get_device_period().map_err(dev)?;
+        let mut periods = vec![def_period];
+        if let Ok(aligned) =
+            probe.calculate_aligned_period_near(3 * min_period / 2, Some(128), &format)
+        {
+            periods.push(aligned);
+        }
+        for period_hns in periods {
+            let mut client = device.get_iaudioclient().map_err(dev)?;
+            match client.initialize_client(
+                &format,
+                &Direction::Render,
+                &StreamMode::EventsExclusive { period_hns },
+            ) {
+                Ok(()) => return Ok(Opened::Ready(client, format)),
+                Err(e) if is_device_in_use(&e) => {
+                    return first_claimed
+                        .map(Opened::Busy)
+                        .ok_or_else(|| PlaybackError::Init(e.to_string()));
+                }
+                Err(e) => last = Some(e.to_string()),
+            }
+        }
+    }
+    Err(PlaybackError::NoFormat(last))
+}
+
+/// Probe which sample rate `mode` would negotiate — callers prepare PCM at the
+/// right rate before opening (TB-07). Exclusive opens the stream for real (and
+/// drops it unstarted, so nothing sounds); if another exclusive stream holds
+/// the device, it trusts the device's claim instead.
 pub fn probe_rate(mode: OutputMode) -> Result<u32, PlaybackError> {
     let _ = initialize_mta();
     let dev = |e: String| PlaybackError::Device(e);
@@ -162,12 +227,9 @@ pub fn probe_rate(mode: OutputMode) -> Result<u32, PlaybackError> {
             let device = enumerator
                 .get_default_device(&Direction::Render)
                 .map_err(|e| dev(e.to_string()))?;
-            let audio_client = device.get_iaudioclient().map_err(|e| dev(e.to_string()))?;
-            exclusive_candidates()
-                .iter()
-                .find(|f| audio_client.is_supported_exclusive_with_quirks(f).is_ok())
-                .map(|f| f.get_samplespersec())
-                .ok_or(PlaybackError::NoFormat)
+            match open_exclusive(&device)? {
+                Opened::Ready(_, format) | Opened::Busy(format) => Ok(format.get_samplespersec()),
+            }
         }
         // Shared mode autoconverts; we always feed it f32 @ 48 kHz.
         OutputMode::Shared => Ok(48000),
@@ -194,27 +256,18 @@ pub fn play(
         .get_default_device(&Direction::Render)
         .map_err(|e| dev(e.to_string()))?;
     let device_name = device.get_friendlyname().unwrap_or_else(|_| "?".into());
-    let mut audio_client = device.get_iaudioclient().map_err(|e| dev(e.to_string()))?;
-
-    let (format, stream_mode) = match mode {
-        OutputMode::Exclusive => {
-            let candidates = exclusive_candidates();
-            let format = candidates
-                .iter()
-                .find(|f| audio_client.is_supported_exclusive_with_quirks(f).is_ok())
-                .ok_or(PlaybackError::NoFormat)?
-                .clone();
-            let (def_period, _) = audio_client
-                .get_device_period()
-                .map_err(|e| dev(e.to_string()))?;
-            (
-                format,
-                StreamMode::EventsExclusive {
-                    period_hns: def_period,
-                },
-            )
-        }
+    let (audio_client, format) = match mode {
+        OutputMode::Exclusive => match open_exclusive(&device)? {
+            Opened::Ready(client, format) => (client, format),
+            // Busy at the moment of opening: say so rather than guess.
+            Opened::Busy(_) => {
+                return Err(PlaybackError::Init(
+                    "another app is using the device exclusively".into(),
+                ));
+            }
+        },
         OutputMode::Shared => {
+            let mut audio_client = device.get_iaudioclient().map_err(|e| dev(e.to_string()))?;
             let format = WaveFormat::new(32, 32, &SampleType::Float, 48000, 2, None);
             let needs_convert = !matches!(
                 audio_client.is_supported(&format, &ShareMode::Shared),
@@ -223,43 +276,19 @@ pub fn play(
             let (def_period, _) = audio_client
                 .get_device_period()
                 .map_err(|e| dev(e.to_string()))?;
-            (
-                format,
-                StreamMode::EventsShared {
-                    autoconvert: needs_convert,
-                    buffer_duration_hns: def_period,
-                },
-            )
-        }
-    };
-
-    if let Err(e) = audio_client.initialize_client(&format, &Direction::Render, &stream_mode) {
-        if mode == OutputMode::Exclusive {
-            // Unaligned-buffer failure: retry once with an aligned period.
-            // The client re-acquisition is load-bearing — a failed
-            // IAudioClient cannot be re-initialized.
-            let (_, min_period) = audio_client
-                .get_device_period()
-                .map_err(|e2| dev(e2.to_string()))?;
-            let aligned = audio_client
-                .calculate_aligned_period_near(3 * min_period / 2, Some(128), &format)
-                .map_err(|e2| PlaybackError::Init(format!("{e} / align: {e2}")))?;
-            audio_client = device
-                .get_iaudioclient()
-                .map_err(|e2| dev(e2.to_string()))?;
             audio_client
                 .initialize_client(
                     &format,
                     &Direction::Render,
-                    &StreamMode::EventsExclusive {
-                        period_hns: aligned,
+                    &StreamMode::EventsShared {
+                        autoconvert: needs_convert,
+                        buffer_duration_hns: def_period,
                     },
                 )
-                .map_err(|e2| PlaybackError::Init(format!("{e} / retry: {e2}")))?;
-        } else {
-            return Err(PlaybackError::Init(e.to_string()));
+                .map_err(|e| PlaybackError::Init(e.to_string()))?;
+            (audio_client, format)
         }
-    }
+    };
 
     let h_event = audio_client
         .set_get_eventhandle()

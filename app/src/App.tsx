@@ -5453,6 +5453,12 @@ function MainApp() {
     if (apoBroken || deviceMenu) invoke<Device[]>("devices_list").then(setDevices).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apoBroken, state?.deviceName]);
+  // Open device settings follow every reload: APO's device selector closing
+  // re-pushes state, and the panel's APO line must show the new answer.
+  useEffect(() => {
+    if (deviceCfg) invoke<Device[]>("devices_list").then(setDevices).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deviceCfg ? state : null]);
 
   const [apoSelectorOpen, setApoSelectorOpen] = useState(false);
   // The "now registered" note stays true until Windows restarts, so a dismissal
@@ -7115,6 +7121,23 @@ function MainApp() {
                       {p ?? <span className="dim-sm">keep whatever is playing</span>}
                     </div>
                   ))}
+                </div>
+              </div>
+              <div className="dev-sect">
+                <span className="room-key">Equalizer APO</span>
+                <span className={`dim-sm ${cfgDevice.apo === "active" || cfgDevice.apo === "unknown" ? "" : "warn-text"}`}>
+                  {cfgDevice.apo === "active"
+                    ? "Installed on this device: the EQ applies here."
+                    : cfgDevice.apo === "disabled"
+                      ? "Windows' “Disable all enhancements” is on for this device: the EQ can't apply here."
+                      : cfgDevice.apo === "missing"
+                        ? "Not installed on this device: the EQ can't apply here."
+                        : "Couldn't read whether APO is on this device."}
+                </span>
+                <div className="room-row">
+                  <button onClick={openApoSelector} disabled={apoSelectorOpen}>
+                    {apoSelectorOpen ? "waiting for APO's device selector…" : "open APO's device selector"}
+                  </button>
                 </div>
               </div>
               <div className="dev-sect">
