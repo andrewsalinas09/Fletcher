@@ -1138,7 +1138,7 @@ dependencies = [
 
 [[package]]
 name = "fletcher-app"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "base64 0.22.1",
  "ebur128",
@@ -1161,7 +1161,7 @@ dependencies = [
 
 [[package]]
 name = "fletcher-core"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "ebur128",
  "wasapi",

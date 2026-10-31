@@ -39,6 +39,13 @@ Click ⤢ on any filter for a larger editor: its own curve with your whole EQ be
   <img src="docs/images/filter-editor.png" alt="The filter editor open over the EQ graph: a peaking filter's curve with the full EQ dashed behind it, Fc, gain and Q sliders, and a grid of all twelve filter types drawn as small response previews" width="900">
 </p>
 
+### A separate EQ for each ear
+Ears and headphones aren't perfectly symmetric. Turn on per-ear editing in Settings and every preset gets its own left and right curves, starting out identical. Edit one ear at a time, show both on one graph, or put them side by side, with the other ear shown faintly for reference. Each ear keeps its own undo history, and A/B comparisons and blind tests use both ears as they are.
+
+<p align="center">
+  <img src="docs/images/per-ear.png" alt="Split view: the left ear's EQ curve in black and the right ear's in crimson on two graphs side by side, each with the other ear shown faintly behind it, above the right ear's filter strip" width="900">
+</p>
+
 ### 5,000+ headphone corrections, one search away
 Type a headphone name and pick from the [AutoEQ](https://github.com/jaakkopasanen/AutoEq) database. The correction imports as your own preset, ready to tweak. You can also import Peace presets or paste Equalizer APO filter lines.
 

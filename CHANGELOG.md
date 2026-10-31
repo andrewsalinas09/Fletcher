@@ -2,6 +2,14 @@
 
 Each version's section becomes its GitHub release notes and the "what's new" text in Settings › UPDATES. Write for listeners, not developers.
 
+## 0.7.0
+
+- **A separate EQ for each ear.** Turn on Settings › EARS › Edit each ear separately, and every preset gets its own left and right curves, starting out identical. In the EQ page's ⚙, show one ear at a time, both on one graph, or the two side by side, and turn on "Enable ghost" to see the other ear faintly. Each ear keeps its own undo history. A/B, blind tests and history previews play both ears as they are, and stay level-matched across both together. Join the ears again from ⚙ or from Settings, keeping either side.
+- **B is for listening only.** While A/B is on B (Flat), editing pauses with a note to switch back to A. Before, adding or pasting a filter on B could replace your preset with Flat plus that one filter.
+- **Copying from Peace or a config file with separate left and right sections keeps them separate**, instead of merging both sides into one chain.
+- Renaming a preset keeps its undo history.
+- Pasting filters adds a step to the undo history again.
+
 ## 0.6.1
 
 - **Hold to compare.** In the A/B hotkey's settings (⚙ next to Flip A/B in Settings › Hotkeys), turn on "Hold to compare": hold the hotkey to switch, let go to switch back. Choose "hold for flat" to hear your EQ and hold for flat, or "hold for your EQ" to hear flat and hold for your EQ. Blind tests still switch on each press.
