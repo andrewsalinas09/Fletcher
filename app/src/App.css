@@ -13,6 +13,8 @@
   --boost: #c85a13;
   --boost-dark: #e89a5f;
   --cut: #3f6d9e;
+  /* Cut text on a dark (selected) cell. */
+  --cut-dark: #9db8d2;
   --ok: #3d7d43;
   color-scheme: light;
 }
@@ -939,7 +941,7 @@ button.ghost {
 }
 
 .cell-gain.cut.on-dark {
-  color: #9db8d2;
+  color: var(--cut-dark);
 }
 
 .cell-fc {
@@ -3365,4 +3367,125 @@ button.ghost {
   fill: none;
   stroke: var(--ok);
   stroke-width: 2.5;
+}
+
+/* ---------- per-ear EQ (Q-28): black is the left ear, crimson the right ---------- */
+:root {
+  /* The normal ink. Tried and dropped live: indigo, a bluer black, and teal
+     cuts so the left ear could be blue (Q-28). */
+  --ear-left: var(--ink);
+  /* A cool crimson, as muted as --boost/--cut/--ok but far from the boost
+     orange in hue, so a right-ear curve never reads as "a boost". */
+  --ear-right: #b4283f;
+}
+
+.sum-curve.ear-left {
+  stroke: var(--ear-left);
+}
+
+.sum-curve.ear-right {
+  stroke: var(--ear-right);
+}
+
+/* The other ear's curve: solid in Both, faint as the ghost. */
+.ear-curve {
+  fill: none;
+  stroke-width: 2.4;
+  pointer-events: none;
+}
+
+.ear-curve.ear-left {
+  stroke: var(--ear-left);
+}
+
+.ear-curve.ear-right {
+  stroke: var(--ear-right);
+}
+
+.ear-curve.faint {
+  stroke-width: 1.8;
+  opacity: 0.22;
+}
+
+/* Whose filters the strip shows: that ear's color, faintly, underneath. */
+.strip.ear-left {
+  background: color-mix(in srgb, var(--ear-left) 5%, var(--panel));
+}
+
+.strip.ear-right {
+  background: color-mix(in srgb, var(--ear-right) 9%, var(--panel));
+}
+
+/* Top-left of the graph: which ear this is, or (in Both) which one you edit. */
+.ear-tag {
+  position: absolute;
+  top: 7px;
+  left: 48px;
+  z-index: 5;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  pointer-events: none;
+}
+
+.ear-tag.ear-left {
+  color: var(--ear-left);
+}
+
+.ear-tag.ear-right {
+  color: var(--ear-right);
+}
+
+.ear-pick {
+  position: absolute;
+  top: 5px;
+  left: 48px;
+  z-index: 5;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 9.5px;
+  padding: 1px 4px;
+  background: var(--paper);
+  color: var(--ink);
+  border: 1px solid var(--line-mid);
+}
+
+/* Split: one graph per ear, side by side; click the other to edit it. */
+.graph-solo,
+.graph-half {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  position: relative;
+}
+
+.graph-half + .graph-half {
+  border-left: 1px solid var(--line-strong);
+}
+
+.graph-half.idle {
+  cursor: pointer;
+}
+
+.graph-half.idle:hover .plot-bg {
+  fill: var(--panel-alt);
+}
+
+.graph-half.active.ear-left {
+  box-shadow: inset 0 -3px 0 color-mix(in srgb, var(--ear-left) 40%, transparent);
+}
+
+.graph-half.active.ear-right {
+  box-shadow: inset 0 -3px 0 color-mix(in srgb, var(--ear-right) 55%, transparent);
+}
+
+.graph-half .handle.static {
+  cursor: inherit;
+  pointer-events: none;
+}
+
+/* The EQ ⚙ menu's ear controls, until per-ear editing is on in Settings. */
+.seg-opt.disabled,
+.switch.disabled {
+  opacity: 0.4;
+  cursor: default;
 }

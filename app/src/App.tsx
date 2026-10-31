@@ -12,7 +12,31 @@ type EqFilter = {
   q: number;
   responseDb: number[];
   sourceFile: string;
+  /** The ears it plays on (ADR-0017): "none" = a Channel: selection naming only other positions. */
+  channel?: "both" | "left" | "right" | "none";
 };
+
+type Ear = "left" | "right";
+/** A chain as the backend takes it: `right` is a split chain's right ear,
+ *  null = `filters` plays on both. */
+type EarChains = { filters: ChainSnap; right: ChainSnap | null };
+const otherEar = (e: Ear): Ear => (e === "left" ? "right" : "left");
+/** How the EQ page shows a split preset (Q-28). */
+type EarView = "left" | "right" | "both" | "split";
+
+/** One ear of the backend state: that ear's filters and summed curve. With a
+ *  split preset, every view and edit on the EQ page works on this, exactly as
+ *  on an unsplit preset; only the writer adds the other ear back (Q-28). An
+ *  unsplit preset passes through untouched. */
+function projectEar(s: EqState, ear: Ear): EqState {
+  if (!s.split) return s;
+  const other = otherEar(ear);
+  return {
+    ...s,
+    filters: s.filters.filter((f) => f.channel !== other),
+    sumDb: ear === "right" ? (s.sumDbRight ?? s.sumDb) : s.sumDb,
+  };
+}
 
 /** Whether Equalizer APO processes a device at all (TB-32). */
 type ApoOnDevice = "active" | "missing" | "disabled" | "unknown";
@@ -27,7 +51,15 @@ type EqState = {
   /** Fletcher's own auto preamp alone. */
   ownPreampDb: number;
   freqs: number[];
+  /** The left ear's summed curve (both ears' unless they differ). */
   sumDb: number[];
+  /** The right ear's, only when it differs from the left. */
+  sumDbRight?: number[] | null;
+  /** The active preset has a chain per ear (ADR-0017). */
+  split?: boolean;
+  /** Its two chains when split: each ear's truth, whatever fletcher.txt
+   *  holds right now (A/B side B, a preview). */
+  ears?: { filters: ChainSnap; right: ChainSnap | null; differ: boolean } | null;
   filters: EqFilter[];
   sourceFiles: string[];
   includes: string[];
@@ -103,7 +135,7 @@ function pathFrom(
 }
 
 function TypeGlyph({ kind, boost, dark }: { kind: string; boost: boolean; dark?: boolean }) {
-  const color = boost ? (dark ? "var(--boost-dark)" : "var(--boost)") : dark ? "#9db8d2" : "var(--cut)";
+  const color = boost ? (dark ? "var(--boost-dark)" : "var(--boost)") : dark ? "var(--cut-dark)" : "var(--cut)";
   const d = (() => {
     switch (kind) {
       case "LSC":
@@ -140,7 +172,7 @@ function GainGauge({ gainDb, dark }: { gainDb: number; dark?: boolean }) {
   const sign = boost ? 1 : -1;
   const tip = `${(11 + sign * 8 * Math.sin(theta)).toFixed(2)} ${(11 - 8 * Math.cos(theta)).toFixed(2)}`;
   const fill = boost ? `M11 3 A8 8 0 0 1 ${tip}` : `M${tip} A8 8 0 0 1 11 3`;
-  const color = boost ? (dark ? "var(--boost-dark)" : "var(--boost)") : dark ? "#9db8d2" : "var(--cut)";
+  const color = boost ? (dark ? "var(--boost-dark)" : "var(--boost)") : dark ? "var(--cut-dark)" : "var(--cut)";
   return (
     <svg width="26" height="26" viewBox="0 0 22 22" fill="none">
       <line x1="11" y1="1.5" x2="11" y2="4" stroke={dark ? "#55503f" : "var(--line-strong)"} strokeWidth="1.2" />
@@ -1887,13 +1919,30 @@ function PopoutScopeFft() {
   const { sess, pos } = useTrackFeed();
   const [eq, setEq] = useState<{ freqs: number[]; sumDb: number[]; preampDb: number } | null>(null);
   useEffect(() => {
+    // The ear the main window edits (Q-28): it keeps it in localStorage,
+    // which this window shares, and a `storage` event says when it changes.
+    const activeEar = (): Ear => {
+      try {
+        return localStorage.getItem("fletcher.ear") === "right" ? "right" : "left";
+      } catch {
+        return "left";
+      }
+    };
     const load = () =>
       invoke<EqState>("eq_state")
-        .then((s) => setEq({ freqs: s.freqs, sumDb: s.sumDb, preampDb: s.preampDb }))
+        .then((s) => {
+          const p = projectEar(s, activeEar());
+          setEq({ freqs: p.freqs, sumDb: p.sumDb, preampDb: p.preampDb });
+        })
         .catch(() => {});
     load();
     const u = listen("apo-config-changed", load);
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === "fletcher.ear") load();
+    };
+    window.addEventListener("storage", onStorage);
     return () => {
+      window.removeEventListener("storage", onStorage);
       u.then((f) => f());
     };
   }, []);
@@ -2129,6 +2178,8 @@ type SettingsState = {
   trimMinDb: number;
   trimMaxDb: number;
   levelMatching: boolean;
+  /** "Edit each ear separately" (Q-28). */
+  perEar: boolean;
   apoInstallPath: string | null;
   apoConfigPath: string | null;
 };
@@ -2147,6 +2198,9 @@ type AbxResult = {
   bName?: string;
   aChain?: ChainSnap;
   bChain?: ChainSnap;
+  /** The right ears of split contenders (ADR-0017); absent = one chain for both. */
+  aChainRight?: ChainSnap;
+  bChainRight?: ChainSnap;
   referenceDb?: number;
   levelMatched?: boolean;
   trials: number;
@@ -2462,7 +2516,7 @@ type ClipRow = {
   createdMs: number;
 };
 
-/** Band tags color the library (artboard: lows = cut-blue, highs = boost-orange). */
+/** Band tags color the library (artboard: lows = blue, highs = boost-orange). */
 const clipDotColor = (tags: string[]) =>
   tags.includes("lows")
     ? "#3f6d9e"
@@ -4104,13 +4158,70 @@ function MainApp() {
   const [gsize, setGsize] = useState({ w: GW, h: GH });
   const stateRef = useRef<EqState | null>(null);
   stateRef.current = state;
+  // Per-ear EQ (Q-28). `raw` is the backend's full state, both ears; `state`
+  // is the active ear of it (`projectEar`), which everything else edits.
+  const [raw, setRaw] = useState<EqState | null>(null);
+  const rawRef = useRef<EqState | null>(null);
+  const readPref = <T extends string>(key: string, ok: readonly T[], dflt: T): T => {
+    try {
+      const v = localStorage.getItem(key);
+      return ok.includes(v as T) ? (v as T) : dflt;
+    } catch {
+      return dflt;
+    }
+  };
+  const writePref = (key: string, v: string) => {
+    try {
+      localStorage.setItem(key, v);
+    } catch {
+      /* per-viewer nicety only */
+    }
+  };
+  // A Left or Right view decides the ear; Both and Split keep the last one picked.
+  const [ear, setEarState] = useState<Ear>(() => {
+    const v = readPref("fletcher.earview", ["left", "right", "both", "split"] as const, "left");
+    return v === "left" || v === "right" ? v : readPref("fletcher.ear", ["left", "right"] as const, "left");
+  });
+  const earRef = useRef<Ear>(ear);
+  earRef.current = ear;
+  const [earView, setEarViewState] = useState<EarView>(() =>
+    readPref("fletcher.earview", ["left", "right", "both", "split"] as const, "left"),
+  );
+  const [ghost, setGhostState] = useState(() => readPref("fletcher.ghost", ["on", "off"] as const, "off") === "on");
+  const setGhost = (on: boolean) => {
+    setGhostState(on);
+    writePref("fletcher.ghost", on ? "on" : "off");
+  };
+  /** Take a state from the backend: keep both ears, show the active one. */
+  const adopt = (s: EqState) => {
+    rawRef.current = s;
+    setRaw(s);
+    setState(projectEar(s, earRef.current));
+  };
+  /** One ear's chain as the preset has it. From the preset, not fletcher.txt:
+   *  on side B or mid-preview the file doesn't hold the other ear, and a write
+   *  built from it would empty that ear. */
+  const earSnap = (s: EqState, e: Ear): ChainSnap => {
+    if (s.split && s.ears) return e === "right" ? (s.ears.right ?? s.ears.filters) : s.ears.filters;
+    return s.filters
+      .filter((f) => f.sourceFile === OWN_FILE)
+      .map(({ enabled, kind, fcHz, gainDb, q }) => ({ enabled, kind, fcHz, gainDb, q }));
+  };
+  /** A chain for `e` (default: the active ear), as the backend's (filters,
+   *  right) pair: the other ear keeps what it has now. Unsplit: one chain. */
+  const withOtherEar = (mine: ChainSnap, e: Ear = earRef.current): { filters: ChainSnap; right: ChainSnap | null } => {
+    const r = rawRef.current;
+    if (!r?.split) return { filters: mine, right: null };
+    const other = earSnap(r, otherEar(e));
+    return e === "left" ? { filters: mine, right: other } : { filters: other, right: mine };
+  };
   const dragging = useRef(false);
   const pushTimer = useRef<number | null>(null);
 
   const refresh = () =>
     invoke<EqState>("eq_state")
       .then((s) => {
-        setState(s);
+        adopt(s);
         setError(null);
       })
       .catch((e) => setError(String(e)));
@@ -4173,7 +4284,7 @@ function MainApp() {
         skipped: { line: number; text: string; reason: string }[];
         state: EqState;
       }>("rew_import", { path });
-      setState(r.state);
+      adopt(r.state);
       refreshPresets();
       loadOrInitHistory(r.preset, snapOf(r.state.filters));
       setMenuOpen(false);
@@ -4194,11 +4305,11 @@ function MainApp() {
     setImporting(true);
     invoke<EqState>("autoeq_import", { name: entry.name, path: entry.path })
       .then((s) => {
-        setState(s);
+        adopt(s);
         refreshPresets();
         invoke<PresetsState>("presets_state")
-          .then((p) => loadOrInitHistory(p.active ?? "chain", snapOf(s.filters)))
-          .catch(() => initHistory(snapOf(s.filters)));
+          .then((p) => loadOrInitHistory(p.active ?? "chain", snapOf(projectEar(s, earRef.current).filters)))
+          .catch(() => initHistory(snapOf(projectEar(s, earRef.current).filters)));
         setMenuOpen(false);
         setAeq("");
         setAeqResults([]);
@@ -4224,7 +4335,7 @@ function MainApp() {
     const ro = new ResizeObserver(measure);
     ro.observe(panel);
     return () => ro.disconnect();
-  }, [view, state != null]);
+  }, [view, state != null, !!raw?.split && earView === "split"]);
   const viewModeRef = useRef(view);
   viewModeRef.current = view;
   const [library, setLibrary] = useState<LibraryState | null>(null);
@@ -4917,7 +5028,7 @@ function MainApp() {
     if (settings && !(await confirmLouder(db - settings.referenceDb))) return;
     invoke<EqState>("set_reference_db", { db })
       .then((s) => {
-        setState(s);
+        adopt(s);
         loadSettings();
         refreshPresets();
       })
@@ -4931,7 +5042,7 @@ function MainApp() {
     if (!(await confirmLouder(clamped - settings.preampTrimDb))) return;
     invoke<EqState>("set_preamp_trim", { db: clamped })
       .then((s) => {
-        setState(s);
+        adopt(s);
         loadSettings();
         refreshPresets();
       })
@@ -4941,7 +5052,7 @@ function MainApp() {
     if (!settings) return;
     invoke<EqState>("set_level_matching", { on: !settings.levelMatching })
       .then((s) => {
-        setState(s);
+        adopt(s);
         loadSettings();
         refreshPresets();
       })
@@ -5023,18 +5134,29 @@ function MainApp() {
     }
   };
 
-  const resolveContender = async (c: Contender): Promise<{ chain: ChainSnap; name: string }> => {
+  /** `right`: a split preset's right ear (ADR-0017); absent = both ears. */
+  const resolveContender = async (c: Contender): Promise<{ chain: ChainSnap; right?: ChainSnap; name: string }> => {
     switch (c.kind) {
       case "flat":
         return { chain: [], name: "Flat" };
       case "active":
-        return { chain: ownSnap(), name: presetsRef.current.active ?? "Current chain" };
-      case "preset":
-        return { chain: await invoke<ChainSnap>("preset_chain", { name: c.name }), name: c.name };
+      {
+        // Both ears of the preset as it plays now (a split preset is not one chain).
+        const r = rawRef.current;
+        const name = presetsRef.current.active ?? "Current chain";
+        if (r?.split) return { chain: earSnap(r, "left"), right: earSnap(r, "right"), name };
+        return { chain: ownSnap(), name };
+      }
+      case "preset": {
+        const p = await invoke<{ filters: ChainSnap; right: ChainSnap | null }>("preset_chain", { name: c.name });
+        return { chain: p.filters, right: p.right ?? undefined, name: c.name };
+      }
       case "node": {
         const n = hist.current?.nodes.get(c.id);
         if (!n) throw new Error(`node #${c.id} is gone from the history`);
-        return { chain: n.snap, name: `node #${n.id} · ${n.label}` };
+        // A node is one ear's step; the other ear plays what it has now.
+        const { filters, right } = withOtherEar(n.snap);
+        return { chain: filters, right: right ?? undefined, name: `node #${n.id} · ${n.label}` };
       }
       case "picked":
         return { chain: c.chain, name: c.name };
@@ -5368,6 +5490,8 @@ function MainApp() {
             : { kind: "clips", batteryId: labMaterial },
         a: ra.chain,
         b: rb.chain,
+        aRight: ra.right ?? null,
+        bRight: rb.right ?? null,
         aName: ra.name,
         bName: rb.name,
         stop:
@@ -5412,6 +5536,9 @@ function MainApp() {
           : { kind: "system" },
       a: r.aChain,
       b: r.bChain,
+      // Exactly the ears it recorded (absent = one chain for both).
+      aRight: r.aChainRight ?? null,
+      bRight: r.bChainRight ?? null,
       aName: r.aName,
       bName: r.bName ?? "Flat",
       stop:
@@ -5547,7 +5674,7 @@ function MainApp() {
   const chooseDevice = (id: string) => {
     invoke<EqState>("device_set_default", { id })
       .then((s) => {
-        setState(s);
+        adopt(s);
         setDeviceMenu(false);
       })
       .catch((e) => showNotice(String(e)));
@@ -5739,7 +5866,7 @@ function MainApp() {
     if (side === ab.side) return;
     invoke<EqState>("ab_set", { side })
       .then((s) => {
-        setState(s);
+        adopt(s);
         setAb((cur) => ({ ...cur, side }));
       })
       .catch((e) => showNotice(String(e)));
@@ -5747,13 +5874,13 @@ function MainApp() {
 
   const presetAction = (p: Promise<EqState>) =>
     p.then((s) => {
-      setState(s);
+      adopt(s);
       refreshPresets();
       setMenuOpen(false);
       setNewName("");
       invoke<PresetsState>("presets_state")
-        .then((p) => loadOrInitHistory(p.active ?? "chain", snapOf(s.filters)))
-        .catch(() => initHistory(snapOf(s.filters))); // each preset keeps its own timeline
+        .then((p) => loadOrInitHistory(p.active ?? "chain", snapOf(projectEar(s, earRef.current).filters)))
+        .catch(() => initHistory(snapOf(projectEar(s, earRef.current).filters))); // each preset keeps its own timeline
     }).catch((e) => showNotice(String(e)));
 
   // Root the history at the first loaded state.
@@ -5802,23 +5929,24 @@ function MainApp() {
   /** The newest chain waiting for the throttled write: the timer must send the
    *  LATEST values, not the ones from the call that started it, or the final
    *  position of a drag can be dropped (and the reply then snaps it back). */
-  const pendingPush = useRef<EqFilter[] | null>(null);
+  // Each write carries the ear it was made on, so switching ears with a write
+  // still pending can never put one ear's edit into the other (Q-28).
+  const pendingPush = useRef<{ filters: EqFilter[]; ear: Ear } | null>(null);
   const pushChain = (filters: EqFilter[], immediate = false) => {
-    const send = (fs: EqFilter[]) =>
-      invoke<EqState>("set_fletcher_chain", {
-        filters: fs
-          .filter((f) => f.sourceFile === OWN_FILE)
-          .map(({ enabled, kind, fcHz, gainDb, q }) => ({ enabled, kind, fcHz, gainDb, q })),
-      })
+    const send = (fs: EqFilter[], onEar: Ear) =>
+      invoke<EqState>("set_fletcher_chain", withOtherEar(snapOf(fs), onEar))
         .then((s) => {
+          rawRef.current = s;
+          setRaw(s);
+          const p = projectEar(s, earRef.current);
           // Mid-drag, the response reflects an already-stale position; letting
           // it win snaps the handle back and forth under the cursor. Keep the
           // fresh local values for every filter, take the server's curves.
           const local = stateRef.current;
-          if (dragging.current && local) {
+          if (dragging.current && local && onEar === earRef.current) {
             setState({
-              ...s,
-              filters: s.filters.map((f, i) =>
+              ...p,
+              filters: p.filters.map((f, i) =>
                 local.filters[i]
                   ? {
                       ...f,
@@ -5830,7 +5958,7 @@ function MainApp() {
               ),
             });
           } else {
-            setState(s);
+            setState(p);
           }
         })
         .catch((e) => showNotice(String(e)));
@@ -5838,15 +5966,15 @@ function MainApp() {
       if (pushTimer.current != null) window.clearTimeout(pushTimer.current);
       pushTimer.current = null;
       pendingPush.current = null;
-      send(filters);
+      send(filters, earRef.current);
     } else {
-      pendingPush.current = filters;
+      pendingPush.current = { filters, ear: earRef.current };
       if (pushTimer.current == null) {
         pushTimer.current = window.setTimeout(() => {
           pushTimer.current = null;
           const latest = pendingPush.current;
           pendingPush.current = null;
-          if (latest) send(latest);
+          if (latest) send(latest.filters, latest.ear);
         }, 60);
       }
     }
@@ -5867,6 +5995,8 @@ function MainApp() {
     pinned?: boolean;
   };
   const hist = useRef<{ nodes: Map<number, HistNode>; current: number; next: number } | null>(null);
+  /** Which preset (and, for a split preset, which ear) the tree in `hist` belongs to. */
+  const histOwner = useRef<{ preset: string; ear: Ear | null } | null>(null);
   const [histVersion, setHistVersion] = useState(0);
   const [histOpen, setHistOpen] = useState(false);
   const wheelCommit = useRef<number | null>(null);
@@ -6091,26 +6221,37 @@ function MainApp() {
   /** Level-matched preview of an arbitrary snap; null restores what played
    *  before the first preview. Uses preview_chain — fletcher.txt only, no
    *  preset mutation, no A/B side reset. */
-  const previewRestore = useRef<ChainSnap | null>(null);
-  /** Audition `filters` at the level it plays when compared with `partner`. The
+  const previewRestore = useRef<{ snap: ChainSnap; ear: Ear } | null>(null);
+  /** Audition `a` at the level it plays when compared with `partner`. The
    *  backend says whether that pair CAN be matched; when it can't, say so
    *  rather than imply an honest comparison (ADR-0016, follow-up R6). */
-  const previewPaired = (filters: ChainSnap, partner: ChainSnap | null) =>
-    invoke<boolean>("preview_chain", { filters, partner })
+  const previewPaired = (a: EarChains, partner: EarChains | null) =>
+    invoke<boolean>("preview_chain", {
+      filters: a.filters,
+      right: a.right,
+      partner: partner?.filters ?? null,
+      partnerRight: partner?.right ?? null,
+    })
       .then((matched) => {
         if (!matched)
           showNotice("These two can't be loudness-matched — the boosts are too large in total, so this is louder-vs-quieter.");
       })
       .catch((e) => showNotice(String(e)));
+  /** The active preset as it plays now, both ears. */
+  const currentChains = (): EarChains => withOtherEar(ownSnap());
+  /** A recorded contender: the right ear when it was split, else one chain. */
+  const recorded = (filters: ChainSnap, right?: ChainSnap | null): EarChains => ({ filters, right: right ?? null });
   const previewSnap = (snap: ChainSnap | null, partner?: ChainSnap | null) => {
     if (snap) {
-      if (previewRestore.current == null) previewRestore.current = ownSnap();
-      // With a partner (the node it's compared to), both play at the paired level.
-      previewPaired(snap, partner ?? null);
+      if (previewRestore.current == null) previewRestore.current = { snap: ownSnap(), ear: earRef.current };
+      // A node is one ear's step: the other ear plays what it has now. With a
+      // partner (the node it's compared to), both play at the paired level.
+      previewPaired(withOtherEar(snap), partner ? withOtherEar(partner) : null);
     } else {
       const back = previewRestore.current;
       previewRestore.current = null;
-      if (back) invoke("preview_chain", { filters: back }).catch((e) => showNotice(String(e)));
+      if (back)
+        invoke("preview_chain", withOtherEar(back.snap, back.ear)).catch((e) => showNotice(String(e)));
     }
   };
 
@@ -6131,7 +6272,26 @@ function MainApp() {
     previewRestore.current = null; // the session owns fletcher.txt now
     setHistOpen(false);
     const name = (n: HistNode) => `node #${n.id} · ${n.label}`;
-    startAbx(trialsRef.current, { a: a.snap, b: b.snap, aName: name(a), bName: name(b) });
+    // Nodes are one ear's steps: each plays on its ear, the other ear as now.
+    const [ca, cb] = [withOtherEar(a.snap), withOtherEar(b.snap)];
+    invoke<AbxState>("trial_start", {
+      spec: {
+        protocol: "abx",
+        material: { kind: "system" },
+        a: ca.filters,
+        b: cb.filters,
+        aRight: ca.right,
+        bRight: cb.right,
+        aName: name(a),
+        bName: name(b),
+        stop: { kind: "fixedN", trials: trialsRef.current },
+      },
+    })
+      .then((s) => {
+        setAbx(s);
+        setAbxResult(null);
+      })
+      .catch((e) => showNotice(String(e)));
     import("@tauri-apps/api/window")
       .then(({ getCurrentWindow }) => {
         const w = getCurrentWindow();
@@ -6146,7 +6306,8 @@ function MainApp() {
     if (!n) return;
     // sanitize_name caps at 60 bytes — leave headroom for the auto-suffix.
     const base = `${presetsRef.current.active ?? "chain"} · ${n.label === "start" ? "root" : n.label}`.slice(0, 48);
-    invoke<string>("preset_create_from_chain", { name: base, filters: n.snap })
+    // What a preview of this node plays: it on its ear, the other ear as now.
+    invoke<string>("preset_create_from_chain", { name: base, ...withOtherEar(n.snap) })
       .then((saved) => {
         refreshPresets();
         showNotice(`saved as preset “${saved}” — select it in the preset menu to activate`);
@@ -6206,8 +6367,13 @@ function MainApp() {
   /** Load a preset's saved tree, or root a fresh one. If the live chain has
    *  drifted from the tree's current node, append a "resumed" node. */
   const loadOrInitHistory = (name: string, currentSnap: ChainSnap) => {
-    invoke<string | null>("history_load", { preset: name })
+    // A split preset keeps a tree per ear, like two presets (Q-28).
+    const treeEar = rawRef.current?.split ? earRef.current : null;
+    const owner = { preset: name, ear: treeEar };
+    invoke<string | null>("history_load", { preset: name, ear: treeEar })
       .then((raw) => {
+        // The owner changes together with the tree, never before it.
+        histOwner.current = owner;
         if (raw && installHistory(raw)) {
           const h = hist.current!;
           const nodeSnap = h.nodes.get(h.current)!.snap;
@@ -6231,21 +6397,162 @@ function MainApp() {
           initHistory(currentSnap);
         }
       })
-      .catch(() => initHistory(currentSnap));
+      .catch(() => {
+        histOwner.current = owner;
+        initHistory(currentSnap);
+      });
   };
 
-  // Debounced autosave of the tree, keyed by the active preset.
+  // Debounced autosave of the tree, to the preset (and ear) it was loaded for.
   useEffect(() => {
     if (!hist.current) return;
+    const owner = histOwner.current ?? { preset: presets.active ?? "chain", ear: null };
     const t = window.setTimeout(() => {
       const data = serializeHistory();
       if (data) {
-        invoke("history_save", { preset: presets.active ?? "chain", data }).catch(() => {});
+        invoke("history_save", { preset: owner.preset, ear: owner.ear, data }).catch(() => {});
       }
     }, 400);
     return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [histVersion, presets.active]);
+
+  // ---- per-ear EQ (Q-28): each ear of a split preset is like a preset of its own ----
+  /** Presets with a chain per ear (null = not loaded yet). */
+  const [splitList, setSplitList] = useState<string[] | null>(null);
+  const [joinOpen, setJoinOpen] = useState(false);
+  const [perEarErr, setPerEarErr] = useState<string | null>(null);
+  const loadSplitList = () =>
+    invoke<string[]>("split_presets")
+      .then(setSplitList)
+      .catch(() => {});
+  /** Settings › Edit each ear separately. Off is refused while any preset is
+   *  split; the reason comes with a way to join them. */
+  const togglePerEar = async () => {
+    if (!settings) return;
+    // Off may join the active preset (keeping the left tree): save the tree
+    // first, never after, or a joined preset could get a right tree back.
+    if (settings.perEar) await flushHistory();
+    invoke<SettingsState>("set_per_ear", { on: !settings.perEar })
+      .then((s) => {
+        setSettings(s);
+        setPerEarErr(null);
+        if (!s.perEar) {
+          // Presets whose ears were the same are joined: reload what plays,
+          // and the active preset's one tree.
+          refresh().then(() => {
+            const r = rawRef.current;
+            if (r) loadOrInitHistory(presetsRef.current.active ?? "chain", snapOf(r.filters));
+          });
+        }
+      })
+      .catch((e) => {
+        setPerEarErr(String(e));
+        loadSplitList();
+      });
+  };
+  /** Join a preset's ears, keeping one ear's chain and its history. */
+  const joinPreset = async (name: string, keep: Ear) => {
+    const active = presetsRef.current.active === name;
+    if (active) await flushHistory();
+    try {
+      const s = await invoke<EqState>("chains_split", { name, join: keep });
+      if (active) {
+        adopt(s);
+        // Joined: the kept ear's tree is now the preset's one tree.
+        loadOrInitHistory(name, snapOf(s.filters));
+      }
+      const left = await invoke<string[]>("split_presets");
+      setSplitList(left);
+      if (!left.length) {
+        setJoinOpen(false);
+        setPerEarErr(null);
+      }
+    } catch (e) {
+      showNotice(String(e));
+    }
+  };
+  useEffect(() => {
+    if (view === "settings") loadSplitList();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view]);
+
+  /** Save the tree now (not after the autosave's delay): an ear switch or a
+   *  split is about to replace it, and the backend copies it on a split. */
+  const flushHistory = () => {
+    const owner = histOwner.current;
+    const data = serializeHistory();
+    return owner && data
+      ? invoke("history_save", { preset: owner.preset, ear: owner.ear, data }).catch(() => {})
+      : Promise.resolve();
+  };
+  /** Make `e` the ear the EQ page edits: its filters, curve and history. */
+  const switchEar = (e: Ear) => {
+    if (e === earRef.current) return;
+    void flushHistory();
+    earRef.current = e;
+    setEarState(e);
+    writePref("fletcher.ear", e);
+    const r = rawRef.current;
+    if (!r?.split) return;
+    const p = projectEar(r, e);
+    setState(p);
+    selectOnly(null);
+    setEditor(null);
+    loadOrInitHistory(presetsRef.current.active ?? "chain", snapOf(p.filters));
+  };
+  /** Pick how a split preset is shown. On an unsplit preset this splits it:
+   *  both ears start the same, so nothing audible changes (Q-28). */
+  /** Give the active preset its two ears (both start the same, so nothing
+   *  audible changes), landing on the ear the view asks for. */
+  const splitActive = async (active: string): Promise<boolean> => {
+    await flushHistory();
+    try {
+      const s = await invoke<EqState>("chains_split", { name: active, join: null });
+      rawRef.current = s;
+      setRaw(s);
+      // The left ear keeps the preset's tree file; the right got a copy.
+      histOwner.current = { preset: active, ear: "left" };
+      const want = earRef.current;
+      earRef.current = "left";
+      setEarState("left");
+      setState(projectEar(s, "left"));
+      if (want === "right") switchEar("right");
+      return true;
+    } catch (e) {
+      showNotice(String(e));
+      return false;
+    }
+  };
+  const pickEarView = async (v: EarView) => {
+    if (!settings?.perEar) return;
+    const active = presetsRef.current.active;
+    if (!rawRef.current?.split) {
+      if (!active) {
+        showNotice("pick a preset first: each ear's chain belongs to a preset");
+        return;
+      }
+      if (!(await splitActive(active))) return;
+    }
+    setEarViewState(v);
+    writePref("fletcher.earview", v);
+    if (v === "left" || v === "right") switchEar(v);
+  };
+  // While per-ear editing is on, the active preset always has its two ears:
+  // the view is there as soon as you look, no click needed (owner, Q-28).
+  // Tried once per preset activation, so a refusal (a blind test) can't loop.
+  const autoSplitTried = useRef<string | null>(null);
+  useEffect(() => {
+    const active = presets.active;
+    if (!settings?.perEar) {
+      autoSplitTried.current = null;
+      return;
+    }
+    if (!raw || raw.split || !active || abx || autoSplitTried.current === active) return;
+    autoSplitTried.current = active;
+    void splitActive(active);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings?.perEar, raw?.split, presets.active, abx != null]);
 
   const exportHistory = async () => {
     try {
@@ -6303,10 +6610,11 @@ function MainApp() {
         pinned: n.pinned,
       })),
       current: h.current,
-      name: presets.active ?? "chain",
+      // A split preset's tree is one ear's: say which (the pop-out shows this too).
+      name: `${presets.active ?? "chain"}${histOwner.current?.ear ? ` · ${histOwner.current.ear} ear` : ""}`,
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [histVersion, presets.active]);
+  }, [histVersion, presets.active, ear]);
   const treeDataRef = useRef<HistTreeData | null>(null);
   treeDataRef.current = treeData;
 
@@ -6898,6 +7206,113 @@ function MainApp() {
     return Math.max(py0 + 4, top - 34);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state, yTop, yBot, gsize]);
+
+  // ---- per-ear drawing (Q-28) ----
+  const splitOn = !!raw?.split;
+  const splitView = splitOn && earView === "split";
+  // Joining only means something once the ears differ (the backend decides: `Chains::ears_differ`).
+  const earsDiffer = splitOn && !!raw?.ears?.differ;
+  const EAR_NAME: Record<Ear, string> = { left: "LEFT", right: "RIGHT" };
+  /** An ear's summed curve as drawn (preamp removed, like the main curve). */
+  const earCurve = (e: Ear): number[] | null => {
+    if (!raw?.split) return null;
+    const sum = e === "right" ? (raw.sumDbRight ?? raw.sumDb) : raw.sumDb;
+    return sum.map((db) => db - raw.preampDb);
+  };
+  /** The other ear over this one: solid in Both, faint as the ghost. */
+  const otherEarPath = (shown: Ear, clipId: string) => {
+    if (!splitOn) return null;
+    const both = earView === "both" && !splitView;
+    if (!both && !ghost) return null;
+    const o = otherEar(shown);
+    const c = earCurve(o);
+    return c ? (
+      <path
+        d={pathFrom(raw!.freqs, c, xOf, yOfPinned)}
+        className={`ear-curve ear-${o} ${both ? "" : "faint"}`}
+        clipPath={`url(#${clipId})`}
+      />
+    ) : null;
+  };
+  /** The grid, frame and axis labels every EQ graph shares. */
+  const graphGrid = (clipId: string) => (
+    <>
+      <defs>
+        <clipPath id={clipId}>
+          <rect x={px0} y={py0} width={px1 - px0} height={py1 - py0} />
+        </clipPath>
+      </defs>
+      <rect x={px0} y={py0} width={px1 - px0} height={py1 - py0} className="plot-bg" />
+      {gridSteps.minor.map((db) => (
+        <line key={`n${db}`} x1={px0} x2={px1} y1={yOf(db)} y2={yOf(db)} className="grid-minor" />
+      ))}
+      {gridSteps.major.map((db) => (
+        <line key={`j${db}`} x1={px0} x2={px1} y1={yOf(db)} y2={yOf(db)} className="grid-major" />
+      ))}
+      {FREQ_GRID.map((f) => (
+        <line
+          key={f}
+          x1={xOf(f)}
+          x2={xOf(f)}
+          y1={py0}
+          y2={py1}
+          className={FREQ_LABELS.includes(f) ? "grid-vert" : "grid-vert-minor"}
+        />
+      ))}
+      <line x1={px0} x2={px1} y1={yOf(0)} y2={yOf(0)} className="grid-zero" />
+      <rect x={px0} y={py0} width={px1 - px0} height={py1 - py0} className="plot-frame" />
+    </>
+  );
+  const graphAxis = () => (
+    <g className="axis">
+      {/* Gutter labels: Hz centered under their lines, dB right-aligned to the frame. */}
+      {FREQ_LABELS.map((f) => (
+        <text key={f} x={xOf(f)} y={py1 + 16} textAnchor="middle">
+          {fmtHz(f)}
+        </text>
+      ))}
+      {labelSteps.map((db) => (
+        <text key={db} x={px0 - 7} y={yOf(db) + 3.5} textAnchor="end">
+          {db === 0 ? "0 dB" : fmtGain(db)}
+        </text>
+      ))}
+    </g>
+  );
+  /** Split view: the ear you're not editing, drawn but not editable. A click
+   *  makes it the ear you edit. */
+  const idleEarGraph = (e: Ear) => {
+    if (!raw) return null;
+    const c = earCurve(e);
+    const filters = projectEar(raw, e).filters;
+    return (
+      <div className={`graph-half idle ear-${e}`} onClick={() => switchEar(e)} title={`Edit the ${e} ear`}>
+        <span className={`ear-tag ear-${e}`}>{EAR_NAME[e]}</span>
+        <svg viewBox={`0 0 ${gsize.w} ${gsize.h}`} className="graph">
+          {graphGrid(`eq-plot-${e}`)}
+          {otherEarPath(e, `eq-plot-${e}`)}
+          {c && (
+            <path
+              d={pathFrom(raw.freqs, c, xOf, yOfPinned)}
+              className={`sum-curve ear-${e}`}
+              clipPath={`url(#eq-plot-${e})`}
+            />
+          )}
+          {filters.map((f, i) => (
+            <circle
+              key={i}
+              cx={xOf(f.fcHz)}
+              cy={yOf(f.gainDb)}
+              r={5}
+              className={`handle static ${f.gainDb >= 0 ? "boost" : "cut"} ${
+                f.sourceFile === OWN_FILE ? "editable" : "locked"
+              } ${f.enabled ? "" : "bypassed"}`}
+            />
+          ))}
+          {graphAxis()}
+        </svg>
+      </div>
+    );
+  };
 
   const filterTip = (f: EqFilter) => {
     const info = TYPE_INFO[f.kind] ?? { name: f.kind, desc: "" };
@@ -8182,7 +8597,7 @@ function MainApp() {
                           onClick={() =>
                             r.aChain
                               ? // Paired with B, exactly as the blind trials played them (ADR-0016).
-                                previewPaired(r.aChain, r.bChain ?? [])
+                                previewPaired(recorded(r.aChain, r.aChainRight), recorded(r.bChain ?? [], r.bChainRight))
                               : setSide("a")
                           }
                         >
@@ -8191,7 +8606,10 @@ function MainApp() {
                         <button
                           onClick={() =>
                             r.bChain
-                              ? previewPaired(r.bChain, r.aChain ?? ownSnap())
+                              ? previewPaired(
+                                  recorded(r.bChain, r.bChainRight),
+                                  r.aChain ? recorded(r.aChain, r.aChainRight) : currentChains(),
+                                )
                               : setSide("b")
                           }
                         >
@@ -9327,6 +9745,58 @@ function MainApp() {
             </div>
 
             <div className="set-sect">
+              <span className="mono set-head">EARS</span>
+              <div className="set-row">
+                <span className="set-key">Edit each ear separately</span>
+                <div className={`switch ${settings.perEar ? "on" : ""}`} onClick={togglePerEar}>
+                  <div className="knob" />
+                </div>
+                <span className="set-live dim-sm">
+                  {settings.perEar
+                    ? "on — pick an ear in the EQ page's ⚙"
+                    : "off — every preset plays one chain on both ears"}
+                </span>
+              </div>
+              {(perEarErr || (splitList?.length ?? 0) > 0) && (
+                <div className="set-row">
+                  <span className={perEarErr ? "set-live warn-text" : "set-live dim-sm"}>
+                    {perEarErr ??
+                      `${splitList!.length} preset${splitList!.length === 1 ? " has" : "s have"} different left and right chains`}
+                  </span>
+                  <span className="fe-btn mono" onClick={() => setJoinOpen(true)}>
+                    show them
+                  </span>
+                </div>
+              )}
+              {joinOpen && (
+                <SettingsModal
+                  heading="PRESETS WITH DIFFERENT EARS"
+                  title={<b>Join each preset's ears</b>}
+                  onClose={() => setJoinOpen(false)}
+                >
+                  <div className="dev-sect">
+                    <span className="dim-sm">
+                      Keep one ear's chain for both. Its history comes with it; the other ear's is
+                      dropped.
+                    </span>
+                    {(splitList ?? []).map((name) => (
+                      <div key={name} className="room-row">
+                        <span className="room-key">{name}</span>
+                        <span className="fe-btn mono" onClick={() => joinPreset(name, "left")}>
+                          keep left
+                        </span>
+                        <span className="fe-btn mono" onClick={() => joinPreset(name, "right")}>
+                          keep right
+                        </span>
+                      </div>
+                    ))}
+                    {splitList?.length === 0 && <span className="dim-sm">No preset has different ears.</span>}
+                  </div>
+                </SettingsModal>
+              )}
+            </div>
+
+            <div className="set-sect">
               <span className="mono set-head">REFERENCE</span>
               <div className="set-row">
                 <span className="set-key">Reference loudness</span>
@@ -9836,7 +10306,7 @@ function MainApp() {
                     <div className="hist-backdrop" onClick={() => setHistOpen(false)} />
                     <div className="hist-panel">
                       <div className="hist-head">
-                        <span className="mono hist-title">{`HISTORY — ${presets.active ?? "chain"}`}</span>
+                        <span className="mono hist-title">{`HISTORY — ${presets.active ?? "chain"}${splitOn ? ` · ${ear} ear` : ""}`}</span>
                         <span className="mono dim-sm">{`${histStats.edits} steps${histStats.branches ? ` · ${histStats.branches} branch points` : ""}`}</span>
                         <span className="spacer" />
                         <button onClick={importHistory} title="load a history file — its tree replaces this one and you land on its current node">
@@ -9934,6 +10404,59 @@ function MainApp() {
                   <span className="dim-sm room-note">
                     How the strip is sorted. AutoEQ writes biggest-correction-first — "by importance"
                     shows that. Files on disk are never reordered.
+                  </span>
+                  <span className="mono lab-label">EARS</span>
+                  <div className="room-row">
+                    <span className="room-key">Show</span>
+                    <div className="seg seg-sm">
+                      {(
+                        [
+                          ["left", "Left"],
+                          ["right", "Right"],
+                          ["both", "Both"],
+                          ["split", "Split"],
+                        ] as const
+                      ).map(([v, label]) => (
+                        <span
+                          key={v}
+                          className={`seg-opt ${settings?.perEar && earView === v ? "on" : ""} ${settings?.perEar ? "" : "disabled"}`}
+                          onClick={() => pickEarView(v)}
+                        >
+                          {label}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="room-row">
+                    <div
+                      className={`switch ${ghost ? "on" : ""} ${settings?.perEar ? "" : "disabled"}`}
+                      onClick={() => settings?.perEar && setGhost(!ghost)}
+                    >
+                      <div className="knob" />
+                    </div>
+                    <span className="room-key">Enable ghost</span>
+                  </div>
+                  {earsDiffer && presets.active && (
+                    <div className="room-row">
+                      <span className="room-key">Join ears</span>
+                      {(["left", "right"] as const).map((keep) => (
+                        <span
+                          key={keep}
+                          className="fe-btn mono"
+                          title={`One chain for both ears: the ${keep} ear's, with its history. The ${otherEar(keep)} ear's chain and history are dropped.`}
+                          onClick={() => joinPreset(presets.active!, keep)}
+                        >
+                          keep {keep}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <span className="dim-sm room-note">
+                    {!settings?.perEar
+                      ? "Turn on Settings › EARS › Edit each ear separately, to give each ear its own chain."
+                      : !splitOn
+                        ? "This preset still plays one chain on both ears. Click a view (Left too) to give each ear its own; both start the same."
+                        : "Ghost shows the other ear faintly behind the one you edit."}
                   </span>
                 </div>
               )}
@@ -10048,33 +10571,26 @@ function MainApp() {
                 )}
               </span>
             </div>
+            {splitView && ear === "right" && idleEarGraph("left")}
+            <div className={splitView ? `graph-half active ear-${ear}` : "graph-solo"}>
+            {splitOn &&
+              (earView === "both" && !splitView ? (
+                <select
+                  className="ear-pick"
+                  value={ear}
+                  title="Which ear the filter strip edits"
+                  onChange={(e) => switchEar(e.target.value as Ear)}
+                >
+                  <option value="left">LEFT</option>
+                  <option value="right">RIGHT</option>
+                </select>
+              ) : (
+                <span className={`ear-tag ear-${ear}`}>{EAR_NAME[ear]}</span>
+              ))}
             <svg viewBox={`0 0 ${gsize.w} ${gsize.h}`} className="graph" ref={svgRef}>
               {/* Curves stay inside the plot: a deep chain (a REW import stacking LP + HP)
                   must not paint over the labels in the gutters. */}
-              <defs>
-                <clipPath id="eq-plot-area">
-                  <rect x={px0} y={py0} width={px1 - px0} height={py1 - py0} />
-                </clipPath>
-              </defs>
-              <rect x={px0} y={py0} width={px1 - px0} height={py1 - py0} className="plot-bg" />
-              {gridSteps.minor.map((db) => (
-                <line key={`n${db}`} x1={px0} x2={px1} y1={yOf(db)} y2={yOf(db)} className="grid-minor" />
-              ))}
-              {gridSteps.major.map((db) => (
-                <line key={`j${db}`} x1={px0} x2={px1} y1={yOf(db)} y2={yOf(db)} className="grid-major" />
-              ))}
-              {FREQ_GRID.map((f) => (
-                <line
-                  key={f}
-                  x1={xOf(f)}
-                  x2={xOf(f)}
-                  y1={py0}
-                  y2={py1}
-                  className={FREQ_LABELS.includes(f) ? "grid-vert" : "grid-vert-minor"}
-                />
-              ))}
-              <line x1={px0} x2={px1} y1={yOf(0)} y2={yOf(0)} className="grid-zero" />
-              <rect x={px0} y={py0} width={px1 - px0} height={py1 - py0} className="plot-frame" />
+              {graphGrid("eq-plot-area")}
 
               {[...multiSel].map((si) => {
                 const sf = state.filters[si];
@@ -10087,9 +10603,10 @@ function MainApp() {
                   />
                 ) : null;
               })}
+              {otherEarPath(ear, "eq-plot-area")}
               <path
                 d={pathFrom(state.freqs, state.sumDb.map((db) => db - state.preampDb), xOf, yOfPinned)}
-                className="sum-curve"
+                className={`sum-curve ${splitOn ? `ear-${ear}` : ""}`}
                 clipPath="url(#eq-plot-area)"
               />
 
@@ -10122,23 +10639,13 @@ function MainApp() {
                 </g>
               )}
 
-              <g className="axis">
-                {/* Gutter labels: Hz centered under their lines, dB right-aligned to the frame. */}
-                {FREQ_LABELS.map((f) => (
-                  <text key={f} x={xOf(f)} y={py1 + 16} textAnchor="middle">
-                    {fmtHz(f)}
-                  </text>
-                ))}
-                {labelSteps.map((db) => (
-                  <text key={db} x={px0 - 7} y={yOf(db) + 3.5} textAnchor="end">
-                    {db === 0 ? "0 dB" : fmtGain(db)}
-                  </text>
-                ))}
-              </g>
+              {graphAxis()}
             </svg>
+            </div>
+            {splitView && ear === "left" && idleEarGraph("right")}
           </div>
 
-          <div className="strip">
+          <div className={`strip ${splitOn ? `ear-${ear}` : ""}`}>
             <div className="cell pre">
               <span className="cell-type mono dim-sm">PRE · AUTO</span>
               <GainGauge gainDb={state.ownPreampDb} />

@@ -126,3 +126,31 @@ Remaining open: nested mixes (one level only today), envelopes, and the eventual
 
 ## Q-14 · Tuning × testing fusion mechanics — **Open**
 "Move a slider and it goes through the clips to highlight specific stuff." How literally: does adjusting a bass filter auto-queue the bass-heavy clip? Replay the full battery on demand? A/B against the pre-tweak state per clip, with optional randomized voting? Define the interaction loop so tuning and testing share one engine.
+
+## Q-28 · How per-ear EQ is shown and edited — **v1 shipped 2026-10-30 (ADR-0017); awaiting live verification**
+Owner 2026-10-30: each preset has separate L/R chains, the same by default. Per-ear editing is unlocked in Settings, which adds a button to the main EQ page, "since most people won't use this, it will clutter everything". How it is displayed and shown is the next question.
+Settled by the owner: off by default, unlocked in Settings, one button on the EQ page when unlocked. Nothing else on the EQ page changes for people who never unlock it.
+**Ruled by the owner, 2026-10-30 (to build once the backend review's fixes are in):**
+- **Where:** the EQ page's existing ⚙ ("EQ display options") gets an ear choice: **Left · Right · Both · Split**.
+- **Locked until unlocked:** while per-ear editing is off in Settings, the ear choice is grayed out, with a short note pointing to the Settings switch. Working name for the switch: "Edit each ear separately" (the owner's words: "enable split channel editing or whatever the actual term is").
+- **Ghost:** one more control in ⚙, **"Enable ghost"**, overlays the ear you're not looking at faintly. It's a switch, like every other on/off setting in the app; the owner asked "check box or toggle like everything else?", and the app uses `.switch` throughout.
+  - **Left:** left solid, right faint.
+  - **Right:** right solid, left faint.
+  - **Both:** both solid.
+- **Ear colors:** black (the normal ink) for left, crimson (`#b4283f`) for right, each with a faint version. Tried live and dropped on 2026-10-30: orange right ("+gain is already orange"), indigo left (too close to the cut blue), teal cuts so the left could be blue, and a bluer black. The owner settled on the original ink.
+- **The active ear:** the filter strip shows one ear at a time, and the strip takes on that ear's color as a faint overlay ("the currently active one will have the color under").
+  - **Split** (a view: two graphs, one per ear, one shared strip at the bottom): click the other graph to make its ear active.
+  - **Both** (both curves on one graph): a small dropdown on the left side picks the active ear. It appears only in Both.
+- **Splitting:** while per-ear editing is on, the active preset is split as soon as it's shown, with no click needed (owner, after trying it live: "it should already update"). The ears start out identical, and the view opens on **Left**.
+- **Each ear is like a separate preset, for everything** (the owner: "this shouldn't be that hard as it's no different than two separate presets. Same for everything"). Two histories, one per ear, each behaving exactly like a preset's history does today: the tree, the inspector, the pop-out, the diff, promote, previews. Every feature that takes "a preset's chain" takes "an ear's chain". The pop-outs follow the active ear (rule 10).
+- **One preamp:** the A/B bar and the matched preamp stay one number, since it's one preamp for both ears.
+
+- **An ear is a sub-category of its preset** (the owner: "it's the exact same preset with a sub category. Should make everything very clean and easy"). Same name, same file, same place in the preset menu. Wherever the app addresses a preset, it addresses preset + ear.
+- **Joining, and turning per-ear editing off:**
+  - The Settings switch can't be turned off while any preset's ears differ. Trying says so, with a button that lists those presets. Presets whose ears are still the same are joined by themselves when it turns off (keeping the left ear and its history).
+  - The EQ page's ⚙ also has **Join ears: keep left / keep right** for the active preset, shown only while its ears differ (owner, 2026-10-30). Joined while per-ear editing is on, it stays joined until it's next made active.
+  - The list opens in the shared settings panel (`SettingsModal`), with **keep left** / **keep right** on each preset. Joining keeps that ear's chain and its history.
+  - Once none are split, the switch turns off.
+  - Backend needed: list the split presets, and join a named preset rather than only the active one (`chains_split` takes the active preset today).
+
+**v1 shipped 2026-10-30:** all of the above. The EQ page edits a projection of one ear (`projectEar`); every write adds the other ear back from the preset; each ear has its own history file (`history/right/` for the right). The Lab's "current chain", previews, promote, node-vs-node tests and replay all carry both ears (TB-48). The spectrum pop-out follows the active ear via localStorage. Not yet: live verification, including the pop-outs (rule 10). A history tree picked from ANOTHER preset in the Lab's contender palette is that preset's left ear.

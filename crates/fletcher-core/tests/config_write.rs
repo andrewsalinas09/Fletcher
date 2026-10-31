@@ -151,7 +151,7 @@ fn rendered_fletcher_file_parses_back_to_the_same_chain() {
             q: 0.7,
         },
     ];
-    let text = render_fletcher_file(-3.5, &chain);
+    let text = render_fletcher_file(-3.5, &fletcher_core::config::Chains::linked(chain.to_vec()));
     let doc = ConfigDoc::parse(&text);
     let filters: Vec<_> = doc
         .directives()

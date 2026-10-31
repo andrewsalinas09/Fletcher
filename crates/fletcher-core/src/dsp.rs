@@ -140,41 +140,70 @@ impl BiquadState {
     }
 }
 
-/// A realtime chain: preamp gain + biquad cascade with per-channel state.
+/// What plays on each ear: a chain per channel. Equal lists for a preset
+/// that isn't split (ADR-0017).
+#[derive(Debug, Clone, Default)]
+pub struct StereoSpecs {
+    pub left: Vec<FilterSpec>,
+    pub right: Vec<FilterSpec>,
+}
+
+impl StereoSpecs {
+    /// The same chain on both ears.
+    pub fn both(filters: Vec<FilterSpec>) -> Self {
+        StereoSpecs {
+            right: filters.clone(),
+            left: filters,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.left.is_empty() && self.right.is_empty()
+    }
+}
+
+/// A realtime chain: preamp gain + one biquad cascade per channel.
 /// One instance per bus; stereo frames flow through `process_frame`.
 pub struct ChainProcessor {
-    coeffs: Vec<Biquad>,
-    state: Vec<[BiquadState; 2]>,
+    coeffs: [Vec<Biquad>; 2],
+    state: [Vec<BiquadState>; 2],
     gain: f64,
 }
 
 impl ChainProcessor {
     pub fn new(filters: &[FilterSpec], preamp_db: f64, fs: f64) -> Self {
-        ChainProcessor {
-            coeffs: filters.iter().map(|f| f.biquad(fs)).collect(),
-            state: vec![[BiquadState::default(); 2]; filters.len()],
-            gain: 10f64.powf(preamp_db / 20.0),
-        }
+        Self::new_stereo(&StereoSpecs::both(filters.to_vec()), preamp_db, fs)
+    }
+
+    pub fn new_stereo(specs: &StereoSpecs, preamp_db: f64, fs: f64) -> Self {
+        let mut p = ChainProcessor {
+            coeffs: [Vec::new(), Vec::new()],
+            state: [Vec::new(), Vec::new()],
+            gain: 1.0,
+        };
+        p.set_stereo(specs, preamp_db, fs);
+        p
     }
 
     /// Swap coefficients mid-stream (live edits). Existing per-filter state is
     /// kept where the cascade length allows — a tweak shouldn't reset the tail.
-    pub fn set_chain(&mut self, filters: &[FilterSpec], preamp_db: f64, fs: f64) {
-        self.coeffs = filters.iter().map(|f| f.biquad(fs)).collect();
-        self.state
-            .resize(self.coeffs.len(), [BiquadState::default(); 2]);
+    pub fn set_stereo(&mut self, specs: &StereoSpecs, preamp_db: f64, fs: f64) {
+        for (ch, filters) in [&specs.left, &specs.right].into_iter().enumerate() {
+            self.coeffs[ch] = filters.iter().map(|f| f.biquad(fs)).collect();
+            self.state[ch].resize(filters.len(), BiquadState::default());
+        }
         self.gain = 10f64.powf(preamp_db / 20.0);
     }
 
     #[inline]
     pub fn process_frame(&mut self, l: f64, r: f64) -> (f64, f64) {
-        let mut l = l * self.gain;
-        let mut r = r * self.gain;
-        for (c, st) in self.coeffs.iter().zip(self.state.iter_mut()) {
-            l = st[0].process(c, l);
-            r = st[1].process(c, r);
+        let mut out = [l * self.gain, r * self.gain];
+        for (ch, x) in out.iter_mut().enumerate() {
+            for (c, st) in self.coeffs[ch].iter().zip(self.state[ch].iter_mut()) {
+                *x = st.process(c, *x);
+            }
         }
-        (l, r)
+        (out[0], out[1])
     }
 }
 
@@ -446,10 +475,41 @@ pub fn plan_level(
     matching: bool,
     range: (f64, f64),
 ) -> (f64, f64) {
-    let peak = response_peak_db(filters, fs).max(0.0);
+    let specs = StereoSpecs::both(filters.to_vec());
+    plan_level_stereo(&specs, outside_preamp_db, fs, target_db, matching, range)
+}
+
+/// How much louder pink noise in both ears sounds through each ear's chain
+/// than through nothing: LUFS sums the channels' power, so it's the mean of
+/// the two ears' power gains. Equal chains give `loudness_db` exactly.
+pub fn loudness_stereo_db(specs: &StereoSpecs, fs: f64) -> f64 {
+    let (l, r) = (loudness_db(&specs.left, fs), loudness_db(&specs.right, fs));
+    if l == r {
+        return l;
+    }
+    10.0 * ((10f64.powf(l / 10.0) + 10f64.powf(r / 10.0)) / 2.0).log10()
+}
+
+/// The higher of the two ears' peak gains: the one preamp must keep both
+/// under full scale.
+pub fn response_peak_stereo_db(specs: &StereoSpecs, fs: f64) -> f64 {
+    response_peak_db(&specs.left, fs).max(response_peak_db(&specs.right, fs))
+}
+
+/// `plan_level` for a chain per ear, with one preamp for both: loudness is
+/// the two ears' together, the ceiling the louder ear's peak.
+pub fn plan_level_stereo(
+    specs: &StereoSpecs,
+    outside_preamp_db: f64,
+    fs: f64,
+    target_db: f64,
+    matching: bool,
+    range: (f64, f64),
+) -> (f64, f64) {
+    let peak = response_peak_stereo_db(specs, fs).max(0.0);
     let ceiling = (-(peak * 10.0).ceil() / 10.0 - outside_preamp_db).min(range.1);
     let want = if matching {
-        target_db - loudness_db(filters, fs)
+        target_db - loudness_stereo_db(specs, fs)
     } else {
         target_db
     };
@@ -908,6 +968,60 @@ mod tests {
             close(measured, predicted, 0.1),
             "chain: time {measured:.3} dB vs freq {predicted:.3} dB"
         );
+    }
+
+    #[test]
+    fn a_split_chain_plays_each_ear_its_own() {
+        let boost = vec![spec(Peaking, 1000.0, 6.0, 1.0)];
+        let split = StereoSpecs {
+            left: boost.clone(),
+            right: Vec::new(),
+        };
+        let mut p = ChainProcessor::new_stereo(&split, 0.0, FS);
+        let (mut el, mut er, mut ein) = (0.0, 0.0, 0.0);
+        for i in 0..48_000 {
+            let x = (2.0 * std::f64::consts::PI * 1000.0 * i as f64 / FS).sin();
+            let (l, r) = p.process_frame(x, x);
+            if i >= 4_800 {
+                (el, er, ein) = (el + l * l, er + r * r, ein + x * x);
+            }
+        }
+        assert!(close(10.0 * (el / ein).log10(), 6.0, 0.05));
+        assert!(close(10.0 * (er / ein).log10(), 0.0, 1e-9));
+    }
+
+    #[test]
+    fn stereo_planning_matches_mono_when_linked_and_averages_power_when_split() {
+        let boost = vec![spec(Peaking, 1000.0, 6.0, 1.0)];
+        let range = (-120.0, 12.0);
+        // Linked: the plan the single-chain planner made before ADR-0017,
+        // spelled out independently (`plan_level` now wraps the stereo one).
+        let peak = response_peak_db(&boost, FS).max(0.0);
+        let ceiling = (-(peak * 10.0).ceil() / 10.0).min(range.1);
+        let want = -6.0 - loudness_db(&boost, FS);
+        let before = round_tenth(want.max(range.0).min(ceiling));
+        let (preamp, _) = plan_level_stereo(
+            &StereoSpecs::both(boost.clone()),
+            0.0,
+            FS,
+            -6.0,
+            true,
+            range,
+        );
+        assert_eq!(preamp, before);
+        let one_ear = StereoSpecs {
+            left: boost.clone(),
+            right: Vec::new(),
+        };
+        let mono = loudness_db(&boost, FS);
+        let want = 10.0 * ((10f64.powf(mono / 10.0) + 1.0) / 2.0).log10();
+        assert!(close(loudness_stereo_db(&one_ear, FS), want, 1e-9));
+        // One preamp for both ears: the boosted ear's peak sets the ceiling.
+        assert!(close(
+            response_peak_stereo_db(&one_ear, FS),
+            response_peak_db(&boost, FS),
+            1e-9
+        ));
     }
 
     #[test]

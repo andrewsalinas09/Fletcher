@@ -95,14 +95,15 @@ fn clip_trial_correction_leaves_no_residual_at_the_rail() {
     );
     assert!(matched);
     let pcm = Arc::new(tone(60.0, 0.9999, 4.0));
-    let (la, _) = engine::lufs_peak_through(&pcm, 48000, &a, pa).unwrap();
-    let (lb, peak_b) = engine::lufs_peak_through(&pcm, 48000, &[], pb).unwrap();
+    let (la, _) =
+        engine::lufs_peak_through(&pcm, 48000, &StereoSpecs::both(a.to_vec()), pa).unwrap();
+    let (lb, peak_b) = engine::lufs_peak_through(&pcm, 48000, &StereoSpecs::default(), pb).unwrap();
     let (ta, tb) = measured_trims(la, lb, peak_b, 0.3).unwrap();
     assert!(ta < 0.0, "this case must use A's share of the correction");
     let cfg = engine::BusConfig {
-        specs: a.to_vec(),
+        specs: StereoSpecs::both(a.to_vec()),
         preamp_a_db: pa,
-        specs_b: vec![],
+        specs_b: StereoSpecs::default(),
         preamp_b_db: pb,
         trim_a_db: ta,
         trim_b_db: tb,
@@ -158,7 +159,7 @@ fn paired_system_levels_render_equally_loud_on_pink_noise() {
             .collect(),
     );
     let cfg = engine::BusConfig {
-        specs: a,
+        specs: StereoSpecs::both(a),
         preamp_a_db: pa,
         preamp_b_db: pb,
         matched: true,
@@ -170,11 +171,63 @@ fn paired_system_levels_render_equally_loud_on_pink_noise() {
 }
 
 #[test]
+fn a_split_chain_matches_flat_on_both_ears_together() {
+    // ADR-0017: one preamp for both ears, planned on the two ears' power
+    // together. A boost in the left ear only, matched to Flat, must render
+    // equally loud on pink noise in both ears.
+    let split = StereoSpecs {
+        left: vec![FilterSpec {
+            kind: Peaking,
+            fc_hz: 3000.0,
+            gain_db: 8.0,
+            q: 0.8,
+        }],
+        right: Vec::new(),
+    };
+    let (pa, pb, _, matched) = pair_levels(
+        plan_level_stereo(&split, 0.0, FS, -10.0, true, RANGE),
+        plan_level(&[], 0.0, FS, -10.0, true, RANGE),
+        RANGE,
+    );
+    assert!(matched);
+    let mut noise =
+        fletcher_core::signal::Signal::new(fletcher_core::signal::SignalKind::Pink, 0.25, FS, 7);
+    let pcm: Arc<Vec<f32>> = Arc::new(
+        (0..(20.0 * FS) as usize)
+            .flat_map(|_| {
+                let x = noise.next_sample() as f32;
+                [x, x]
+            })
+            .collect(),
+    );
+    let cfg = engine::BusConfig {
+        specs: split,
+        preamp_a_db: pa,
+        preamp_b_db: pb,
+        matched: true,
+        in_engine_eq: true,
+        ..Default::default()
+    };
+    let out_a = render(&pcm, cfg.clone(), false);
+    let diff = lufs(&out_a) - lufs(&render(&pcm, cfg, true));
+    assert!(diff.abs() < 0.1, "split A vs Flat residual {diff:.3} dB");
+    // And the right ear really is unequalized: only the preamp reaches it.
+    let (l, r): (Vec<f64>, Vec<f64>) = out_a
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|f| (f[0], f[1]))
+        .unzip();
+    let energy = |x: &[f64]| x.iter().map(|v| v * v).sum::<f64>();
+    assert!(energy(&l) > energy(&r) * 1.5);
+}
+
+#[test]
 fn silent_clips_are_refused_not_matched() {
     // Review F9: silence measures −∞ LUFS; the trim must be an error, not NaN.
     let pcm = vec![0.0f32; 288_000];
-    let (la, pa) = engine::lufs_peak_through(&pcm, 48000, &[], -8.0).unwrap();
-    let (lb, pb) = engine::lufs_peak_through(&pcm, 48000, &[], -8.0).unwrap();
+    let (la, pa) = engine::lufs_peak_through(&pcm, 48000, &StereoSpecs::default(), -8.0).unwrap();
+    let (lb, pb) = engine::lufs_peak_through(&pcm, 48000, &StereoSpecs::default(), -8.0).unwrap();
     assert!(!la.is_finite() && !lb.is_finite());
     assert!(measured_trims(la, lb, pb.min(pa), 0.3).is_err());
 }

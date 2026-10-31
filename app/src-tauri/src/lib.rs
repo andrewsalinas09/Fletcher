@@ -1,8 +1,12 @@
 //! Fletcher's Tauri shell: thin command layer over fletcher-core (ADR-0001/0005 —
 //! the UI draws, the core thinks). DTOs live here so the core stays serde-free.
 
-use fletcher_core::config::{render_fletcher_file, ChainFilter, ConfigDoc, FilterKind, Parsed};
-use fletcher_core::dsp::{chain_response_db, log_freqs, loudness_db, FilterSpec};
+use fletcher_core::config::{
+    render_fletcher_file, ChainFilter, Chains, ConfigDoc, FilterKind, Parsed, StereoSel,
+};
+use fletcher_core::dsp::{
+    chain_response_db, log_freqs, loudness_stereo_db, FilterSpec, StereoSpecs,
+};
 use fletcher_core::presets::{sanitize_name, PresetStore};
 use fletcher_core::{apo, devices, dsp, fsx, rew};
 use serde::{Deserialize, Serialize};
@@ -134,7 +138,15 @@ struct EqState {
     /// "auto preamp" and names the outside part separately (TB-31).
     own_preamp_db: f64,
     freqs: Vec<f64>,
+    /// The left ear's summed response (both ears' while they're equal).
     sum_db: Vec<f64>,
+    /// The right ear's, only when it differs from the left (ADR-0017).
+    sum_db_right: Option<Vec<f64>>,
+    /// The active preset has a chain per ear (ADR-0017), whatever fletcher.txt holds now.
+    split: bool,
+    /// The active preset's two chains when it is split: the truth for each ear,
+    /// whatever fletcher.txt holds right now (A/B side B, a preview).
+    ears: Option<ChainsDto>,
     filters: Vec<EqFilter>,
     source_files: Vec<String>,
     /// Every Include in config.txt, contributing or not (external EQs show
@@ -153,7 +165,23 @@ struct EqFilter {
     response_db: Vec<f64>,
     /// Which config file this filter came from; only "fletcher.txt" is editable.
     source_file: String,
+    /// The ears it plays on: "both" | "left" | "right" | "none" (a
+    /// `Channel:` selection naming only other positions, e.g. C or LFE).
+    channel: &'static str,
 }
+
+fn channel_name(sel: StereoSel) -> &'static str {
+    match (sel.left, sel.right) {
+        (true, true) => "both",
+        (true, false) => "left",
+        (false, true) => "right",
+        (false, false) => "none",
+    }
+}
+
+/// One filter line as read: enabled, kind, Fc, gain, Q as written, source file,
+/// the ears its `Channel:` selection reaches.
+type LiveFilter = (bool, FilterKind, f64, f64, Option<f64>, String, StereoSel);
 
 /// The live EQ chain: every filter and preamp reachable from config.txt
 /// (one include level), with computed frequency responses.
@@ -181,18 +209,31 @@ fn eq_state() -> Result<EqState, String> {
 
     let mut preamp_db = 0.0;
     let mut own_preamp_db = 0.0;
+    // Per ear, for the two sums: a one-ear Preamp is a balance.
+    let mut ear_preamp = [0.0, 0.0];
     // q stays an Option: an unwritten Q means something specific to APO (TB-34).
-    let mut filters: Vec<(bool, FilterKind, f64, f64, Option<f64>, String)> = Vec::new();
+    let mut filters: Vec<LiveFilter> = Vec::new();
     let mut source_files = Vec::new();
+    // The active preset owns the ears, not fletcher.txt: on A/B side B (Flat),
+    // or during a preview, the file says nothing about the preset (Q-28).
+    let preset_chains = active_chain();
+    let split = preset_chains.is_split();
+    // Each file's selection starts at both ears: APO doesn't document
+    // whether one made in an included file carries on after it (TB-45).
     for (name, doc) in &docs {
         let mut contributed = false;
-        for d in doc.directives() {
+        let own = name.eq_ignore_ascii_case("fletcher.txt");
+        for (sel, d) in doc.channel_walk() {
             match d {
                 Parsed::Preamp { db } => {
-                    preamp_db += db;
-                    if name.eq_ignore_ascii_case("fletcher.txt") {
-                        own_preamp_db += db;
+                    if sel == StereoSel::BOTH {
+                        preamp_db += db;
+                        if own {
+                            own_preamp_db += db;
+                        }
                     }
+                    ear_preamp[0] += if sel.left { *db } else { 0.0 };
+                    ear_preamp[1] += if sel.right { *db } else { 0.0 };
                     contributed = true;
                 }
                 Parsed::Filter {
@@ -210,6 +251,7 @@ fn eq_state() -> Result<EqState, String> {
                         gain_db.unwrap_or(0.0),
                         *q,
                         name.clone(),
+                        sel,
                     ));
                     contributed = true;
                 }
@@ -226,20 +268,24 @@ fn eq_state() -> Result<EqState, String> {
     // one APO rejects (a Q-less PK) contributes nothing, as in APO.
     let resolved: Vec<Option<FilterSpec>> = filters
         .iter()
-        .map(|&(_, kind, fc_hz, gain_db, q, _)| dsp::apo_resolve(kind, fc_hz, gain_db, q))
+        .map(|&(_, kind, fc_hz, gain_db, q, _, _)| dsp::apo_resolve(kind, fc_hz, gain_db, q))
         .collect();
-    let specs: Vec<FilterSpec> = filters
-        .iter()
-        .zip(&resolved)
-        .filter(|(f, _)| f.0)
-        .filter_map(|(_, r)| *r)
-        .collect();
-    let sum_db = chain_response_db(&specs, preamp_db, FS, &freqs);
+    let ear_specs = |left: bool| -> Vec<FilterSpec> {
+        filters
+            .iter()
+            .zip(&resolved)
+            .filter(|(f, _)| f.0 && if left { f.6.left } else { f.6.right })
+            .filter_map(|(_, r)| *r)
+            .collect()
+    };
+    let sum_db = chain_response_db(&ear_specs(true), ear_preamp[0], FS, &freqs);
+    let sum_right = chain_response_db(&ear_specs(false), ear_preamp[1], FS, &freqs);
+    let sum_db_right = (sum_right != sum_db).then_some(sum_right);
 
     let filter_dtos = filters
         .iter()
         .zip(&resolved)
-        .map(|((enabled, kind, fc_hz, gain_db, q, source), r)| {
+        .map(|((enabled, kind, fc_hz, gain_db, q, source, sel), r)| {
             let biquad = r.map_or(dsp::Biquad::IDENTITY, |r| r.biquad(FS));
             EqFilter {
                 enabled: *enabled,
@@ -251,6 +297,7 @@ fn eq_state() -> Result<EqState, String> {
                     .unwrap_or(std::f64::consts::FRAC_1_SQRT_2),
                 response_db: freqs.iter().map(|&f| biquad.magnitude_db(f, FS)).collect(),
                 source_file: source.clone(),
+                channel: channel_name(*sel),
             }
         })
         .collect();
@@ -265,6 +312,9 @@ fn eq_state() -> Result<EqState, String> {
         own_preamp_db,
         freqs,
         sum_db,
+        sum_db_right,
+        split,
+        ears: split.then(|| dto_chains(&preset_chains)),
         filters: filter_dtos,
         source_files,
         includes,
@@ -301,6 +351,14 @@ fn chain_of(filters: &[FilterIn]) -> Result<Vec<ChainFilter>, String> {
         .collect()
 }
 
+/// `chain_of` for both ears: no `right` = one chain for both.
+fn chains_of(left: &[FilterIn], right: Option<&[FilterIn]>) -> Result<Chains, String> {
+    Ok(Chains {
+        left: chain_of(left)?,
+        right: right.map(chain_of).transpose()?,
+    })
+}
+
 /// The single writer of fletcher.txt. Writes the file, then guarantees
 /// config.txt includes it (ADR-0007) — the wiring is lost whenever APO is
 /// reinstalled/reset or another tool rewrites config.txt, and without it every
@@ -332,12 +390,12 @@ static LAST_WRITTEN_LEVEL: std::sync::Mutex<Option<f64>> = std::sync::Mutex::new
 /// covers every path at once: a typed reference or trim, turning matching off,
 /// a preset switch, leaving a paired comparison, ending a trial. Drops apply
 /// immediately. The lock also serializes writers, so a fade is never interleaved.
-fn write_chain_safely(chain: &[ChainFilter], preamp: f64) -> Result<(), String> {
+fn write_chain_safely(chain: &Chains, preamp: f64) -> Result<(), String> {
     if !preamp.is_finite() {
         return Err("refusing to write a non-finite preamp".into());
     }
     let install = apo::detect().map_err(|e| e.to_string())?;
-    let level = loudness_db(&specs_of(chain), FS) + preamp;
+    let level = loudness_stereo_db(&specs_of(chain), FS) + preamp;
     let mut last = LAST_WRITTEN_LEVEL.lock().unwrap();
     // The first write of a run (whatever the last session left playing)
     // fades in from 12 dB below. A silent chain's −∞ loudness counts the same.
@@ -384,10 +442,20 @@ fn refuse_mid_trial() -> Result<(), String> {
 /// Auto-preamp is computed from the summed response peak (TB-06), the file
 /// is written atomically (TB-11), and APO hot-reloads it. Returns the fresh
 /// merged state.
+///
+/// `right` is the right ear's chain for a split preset (ADR-0017); without it
+/// `filters` plays on both ears. A split preset is never joined by a caller
+/// that just left `right` out: joining is `chains_split`.
 #[tauri::command]
-fn set_fletcher_chain(filters: Vec<FilterIn>) -> Result<EqState, String> {
+fn set_fletcher_chain(
+    filters: Vec<FilterIn>,
+    right: Option<Vec<FilterIn>>,
+) -> Result<EqState, String> {
     refuse_mid_trial()?;
-    let chain = chain_of(&filters)?;
+    if right.is_none() && active_chain().is_split() {
+        return Err("this preset has a chain per ear: send both, or join them first".into());
+    }
+    let chain = chains_of(&filters, right.as_deref())?;
     let specs = specs_of(&chain);
     write_chain_safely(&chain, matched_preamp_full(&specs).0)?;
     push_chain_to_track(&chain);
@@ -404,13 +472,13 @@ fn set_fletcher_chain(filters: Vec<FilterIn>) -> Result<EqState, String> {
 
 /// Rewrite fletcher.txt from a chain (with fresh auto-preamp). Also feeds a
 /// running track session — the tuning loop and the engine share one truth.
-fn activate_chain(chain: &[ChainFilter]) -> Result<(), String> {
+fn activate_chain(chain: &Chains) -> Result<(), String> {
     activate_chain_at(chain, matched_preamp_full(&specs_of(chain)).0)
 }
 
 /// `activate_chain` at an explicit preamp: comparisons pass the PAIRED level
 /// from `matched_pair`, so both sides of an A/B or a blind test match (TB-08).
-fn activate_chain_at(chain: &[ChainFilter], preamp: f64) -> Result<(), String> {
+fn activate_chain_at(chain: &Chains, preamp: f64) -> Result<(), String> {
     write_chain_safely(chain, preamp)?;
     push_chain_to_track(chain);
     Ok(())
@@ -418,18 +486,134 @@ fn activate_chain_at(chain: &[ChainFilter], preamp: f64) -> Result<(), String> {
 
 /// Every filter currently reachable from config.txt, as an ownable chain —
 /// the "duplicate from whatever" source: Peace's filters copy in as editable.
-fn live_chain() -> Result<Vec<ChainFilter>, String> {
+/// Filters that reach one ear only keep to that ear.
+fn live_chain() -> Result<Chains, String> {
     let s = eq_state()?;
-    Ok(s.filters
-        .iter()
-        .map(|f| ChainFilter {
+    let (mut left, mut right, mut split) = (Vec::new(), Vec::new(), false);
+    for f in &s.filters {
+        let filter = ChainFilter {
             enabled: f.enabled,
             kind: FilterKind::from_code(f.kind).unwrap_or(FilterKind::Peaking),
             fc_hz: f.fc_hz,
             gain_db: f.gain_db,
             q: f.q,
-        })
+        };
+        split |= matches!(f.channel, "left" | "right");
+        if matches!(f.channel, "both" | "left") {
+            left.push(filter);
+        }
+        if matches!(f.channel, "both" | "right") {
+            right.push(filter);
+        }
+    }
+    Ok(Chains {
+        left,
+        right: split.then_some(right),
+    })
+}
+
+/// Give a preset (default: the active one) a chain per ear, or join it.
+/// Splitting starts both ears as its current chain, so nothing audible
+/// changes, and the right ear's history starts as a copy of the preset's.
+/// Joining (`join` = "left" or "right") keeps that ear's chain and its history
+/// for the whole preset. Only the active preset is rewritten into fletcher.txt.
+#[tauri::command]
+fn chains_split(name: Option<String>, join: Option<String>) -> Result<EqState, String> {
+    refuse_mid_trial()?;
+    let name = name.or_else(active_preset).ok_or("pick a preset first")?;
+    let st = store()?;
+    let preset = st
+        .load(&name)
+        .ok_or_else(|| format!("preset {name:?} not found"))?;
+    let chain = preset.chains;
+    let (left_hist, right_hist) = (
+        history_file(&name, Some("left"))?,
+        history_file(&name, Some("right"))?,
+    );
+    let chain = match join.as_deref() {
+        None => {
+            if chain.is_split() {
+                return eq_state();
+            }
+            if left_hist.exists() && !right_hist.exists() {
+                if let Some(dir) = right_hist.parent() {
+                    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+                }
+                std::fs::copy(&left_hist, &right_hist).map_err(|e| e.to_string())?;
+            }
+            Chains {
+                right: Some(chain.left.clone()),
+                left: chain.left,
+            }
+        }
+        Some("left") => {
+            let _ = std::fs::remove_file(&right_hist);
+            Chains::linked(chain.left)
+        }
+        Some("right") => {
+            if right_hist.exists() {
+                std::fs::rename(&right_hist, &left_hist).map_err(|e| e.to_string())?;
+            }
+            Chains::linked(chain.right().to_vec())
+        }
+        Some(other) => return Err(format!("unknown ear {other}")),
+    };
+    st.save(&name, preset_preamp(&specs_of(&chain)), &chain)
+        .map_err(|e| e.to_string())?;
+    if active_preset().as_deref() == Some(name.as_str()) {
+        activate_chain(&chain)?;
+        set_ab_side("a");
+    }
+    eq_state()
+}
+
+/// Every split preset whose ears differ: the ones that need a "keep left /
+/// keep right" choice before per-ear editing can be switched off (Q-28).
+/// Split presets whose ears are still the same don't count: switching off
+/// joins those by itself.
+#[tauri::command]
+fn split_presets() -> Result<Vec<String>, String> {
+    let st = store()?;
+    Ok(st
+        .list()
+        .into_iter()
+        .filter(|n| st.load(n).is_some_and(|p| p.chains.ears_differ()))
         .collect())
+}
+
+/// Settings › "Edit each ear separately" (Q-28). Off by default. While on,
+/// the UI splits each preset as it becomes active (both ears start the same).
+fn per_ear() -> bool {
+    read_state()
+        .get("perEar")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
+/// Switching off: refused while any preset's ears differ (the owner picks
+/// which ear each keeps). Presets whose ears are still the same are joined
+/// first, keeping the left ear and its history.
+#[tauri::command]
+fn set_per_ear(on: bool) -> Result<SettingsState, String> {
+    if !on {
+        let differ = split_presets()?;
+        if !differ.is_empty() {
+            return Err(format!(
+                "{} preset{} different left and right chains: join {} first",
+                differ.len(),
+                if differ.len() == 1 { " has" } else { "s have" },
+                if differ.len() == 1 { "it" } else { "them" },
+            ));
+        }
+        let st = store()?;
+        for name in st.list() {
+            if st.load(&name).is_some_and(|p| p.chains.is_split()) {
+                chains_split(Some(name), Some("left".into()))?;
+            }
+        }
+    }
+    write_state_field("perEar", serde_json::json!(on));
+    Ok(settings_state())
 }
 
 #[derive(Serialize)]
@@ -456,9 +640,9 @@ fn preset_switch(name: Option<String>) -> Result<EqState, String> {
             let preset = store()?
                 .load(n)
                 .ok_or_else(|| format!("preset {n:?} not found"))?;
-            activate_chain(&preset.filters)?;
+            activate_chain(&preset.chains)?;
         }
-        None => activate_chain(&[])?,
+        None => activate_chain(&Chains::default())?,
     }
     set_active_preset(name.as_deref());
     set_ab_side("a");
@@ -466,13 +650,30 @@ fn preset_switch(name: Option<String>) -> Result<EqState, String> {
 }
 
 /// A preset's chain WITHOUT activating it — the Lab's contender picker
-/// hands it to trial_start.
+/// hands it to trial_start. A split preset's right ear comes in `right`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChainsDto {
+    filters: Vec<PastedFilter>,
+    right: Option<Vec<PastedFilter>>,
+    /// The two ears differ (`Chains::ears_differ`): the UI's cue to offer a join.
+    differ: bool,
+}
+
+fn dto_chains(chain: &Chains) -> ChainsDto {
+    ChainsDto {
+        filters: dto_chain(&chain.left),
+        right: chain.right.as_deref().map(dto_chain),
+        differ: chain.ears_differ(),
+    }
+}
+
 #[tauri::command]
-fn preset_chain(name: String) -> Result<Vec<PastedFilter>, String> {
+fn preset_chain(name: String) -> Result<ChainsDto, String> {
     let preset = store()?
         .load(&name)
         .ok_or_else(|| format!("preset {name:?} not found"))?;
-    Ok(dto_chain(&preset.filters))
+    Ok(dto_chains(&preset.chains))
 }
 
 /// Create a preset — `from_live` seeds it with everything currently audible
@@ -486,7 +687,11 @@ fn preset_create(name: String, from_live: bool) -> Result<EqState, String> {
     if st.exists(&name) {
         return Err(format!("a preset named {name:?} already exists"));
     }
-    let chain = if from_live { live_chain()? } else { Vec::new() };
+    let chain = if from_live {
+        live_chain()?
+    } else {
+        Chains::default()
+    };
     let specs = specs_of(&chain);
     st.save(&name, preset_preamp(&specs), &chain)
         .map_err(|e| e.to_string())?;
@@ -506,23 +711,19 @@ fn preset_copy_from_source(source: String, name: String) -> Result<PresetsState,
     let install = apo::detect().map_err(|e| e.to_string())?;
     let text = std::fs::read_to_string(install.config_path.join(&source))
         .map_err(|e| format!("cannot read {source}: {e}"))?;
-    let doc = ConfigDoc::parse(&text);
-    let mut preamp = 0.0;
-    let mut chain = Vec::new();
-    for d in doc.directives() {
-        match d {
-            Parsed::Preamp { db } => preamp += db,
-            Parsed::Filter {
-                enabled,
-                kind,
-                fc_hz,
-                gain_db,
-                q,
-                ..
-            } => chain.extend(own_filter(*enabled, *kind, *fc_hz, *gain_db, *q)),
-            _ => {}
-        }
-    }
+    // Per ear: a source with `Channel: L` / `R` sections arrives split
+    // (before ADR-0017 both ears' filters were concatenated into one chain).
+    let (mut preamp, mut chain) = ConfigDoc::parse(&text).chains(|d| match d {
+        Parsed::Filter {
+            enabled,
+            kind,
+            fc_hz,
+            gain_db,
+            q,
+            ..
+        } => own_filter(*enabled, *kind, *fc_hz, *gain_db, *q),
+        _ => None,
+    });
     // Peace empties peace.txt when its EQ is toggled off, but keeps the live
     // chain in its own format — fall back to that so copy works either way.
     if chain.is_empty() && source.eq_ignore_ascii_case("peace.txt") {
@@ -531,7 +732,7 @@ fn preset_copy_from_source(source: String, name: String) -> Result<PresetsState,
         {
             if let Some(import) = fletcher_core::peace::parse_peace(&peace_text) {
                 preamp = import.preamp_db;
-                chain = import.filters;
+                chain = Chains::linked(import.filters);
             }
         }
     }
@@ -558,20 +759,28 @@ fn preset_duplicate(from: String, to: String) -> Result<PresetsState, String> {
     let p = st
         .load(&from)
         .ok_or_else(|| format!("preset {from:?} not found"))?;
-    st.save(&to, p.preamp_db, &p.filters)
+    st.save(&to, p.preamp_db, &p.chains)
         .map_err(|e| e.to_string())?;
     presets_state()
 }
 
 /// The active preset's chain (empty when no preset is active).
-fn active_chain() -> Vec<ChainFilter> {
+fn active_chain() -> Chains {
     active_preset()
         .and_then(|n| store().ok()?.load(&n))
-        .map(|p| p.filters)
+        .map(|p| p.chains)
         .unwrap_or_default()
 }
 
-fn specs_of(chain: &[ChainFilter]) -> Vec<FilterSpec> {
+/// What each ear plays: the enabled filters of its chain.
+fn specs_of(chain: &Chains) -> StereoSpecs {
+    StereoSpecs {
+        left: filter_specs(&chain.left),
+        right: filter_specs(chain.right()),
+    }
+}
+
+fn filter_specs(chain: &[ChainFilter]) -> Vec<FilterSpec> {
     chain
         .iter()
         .filter(|f| f.enabled)
@@ -676,8 +885,8 @@ fn read_outside(file: &std::path::Path, dir: &std::path::Path, top: bool, out: &
 ///   reference (never a jump).
 /// - Never above the clip ceiling (see `dsp::plan_level`).
 /// - shortfall > 0: held below the target by the ceiling. < 0: infeasible.
-fn level_plan(specs: &[FilterSpec], trim: f64, outside: &OutsidePath) -> (f64, f64) {
-    dsp::plan_level(
+fn level_plan(specs: &StereoSpecs, trim: f64, outside: &OutsidePath) -> (f64, f64) {
+    dsp::plan_level_stereo(
         specs,
         outside.ceiling_preamp_db(),
         FS,
@@ -689,14 +898,14 @@ fn level_plan(specs: &[FilterSpec], trim: f64, outside: &OutsidePath) -> (f64, f
 
 /// The plan for what plays through Equalizer APO: this machine's trim and the
 /// outside path.
-fn matched_preamp_full(specs: &[FilterSpec]) -> (f64, f64) {
+fn matched_preamp_full(specs: &StereoSpecs) -> (f64, f64) {
     level_plan(specs, preamp_trim_db(), &outside_path())
 }
 
 /// The plan for the track engine's exclusive path, which bypasses APO
 /// entirely: nothing outside applies there, and the listening level is applied
 /// as stream gain instead (`exclusive_listening_db`), so the bus stays clip-safe.
-fn engine_preamp_full(specs: &[FilterSpec]) -> (f64, f64) {
+fn engine_preamp_full(specs: &StereoSpecs) -> (f64, f64) {
     level_plan(specs, 0.0, &OutsidePath::default())
 }
 
@@ -710,13 +919,13 @@ fn pair_from(plan_a: (f64, f64), plan_b: (f64, f64)) -> (f64, f64, f64, bool) {
 }
 
 /// A pair played through Equalizer APO (system A/B, system-audio trials, previews).
-fn matched_pair(a: &[FilterSpec], b: &[FilterSpec]) -> (f64, f64, f64, bool) {
+fn matched_pair(a: &StereoSpecs, b: &StereoSpecs) -> (f64, f64, f64, bool) {
     let (outside, trim) = (outside_path(), preamp_trim_db());
     pair_from(level_plan(a, trim, &outside), level_plan(b, trim, &outside))
 }
 
 /// A pair played by the track engine (clip trials).
-fn engine_pair(a: &[FilterSpec], b: &[FilterSpec]) -> (f64, f64, f64, bool) {
+fn engine_pair(a: &StereoSpecs, b: &StereoSpecs) -> (f64, f64, f64, bool) {
     pair_from(engine_preamp_full(a), engine_preamp_full(b))
 }
 
@@ -724,7 +933,7 @@ fn engine_pair(a: &[FilterSpec], b: &[FilterSpec]) -> (f64, f64, f64, bool) {
 /// this machine's outside path: both describe this machine's playback, not the
 /// tuning. Baking them in would make an exported preset arrive at someone
 /// else's ears offset by a number that only ever meant something here.
-fn preset_preamp(specs: &[FilterSpec]) -> f64 {
+fn preset_preamp(specs: &StereoSpecs) -> f64 {
     engine_preamp_full(specs).0
 }
 
@@ -758,12 +967,12 @@ fn exclusive_listening_db(flat_preamp_db: f64) -> f64 {
 /// Flat's preamp as `apply_side` writes it for side B: paired with the active
 /// chain, so never above the level Flat plays at in the A/B (follow-up R4).
 fn compared_flat_preamp_db() -> f64 {
-    matched_pair(&specs_of(&active_chain()), &[]).1
+    matched_pair(&specs_of(&active_chain()), &StereoSpecs::default()).1
 }
 
 /// Clip Studio's measured A/B (ADR-0016): the playing session it was measured
 /// in, and the chain it was measured with.
-type StudioMeasured = (std::sync::Weak<engine::TrackShared>, Vec<ChainFilter>);
+type StudioMeasured = (std::sync::Weak<engine::TrackShared>, Chains);
 static STUDIO_MEASURED: std::sync::Mutex<Option<StudioMeasured>> = std::sync::Mutex::new(None);
 
 /// The playing Clip Studio session when APO does the EQ (Through-EQ): the one
@@ -786,7 +995,7 @@ fn studio_through_eq() -> Option<(i64, std::sync::Arc<engine::TrackShared>)> {
 fn studio_measured_diff(
     id: i64,
     shared: &engine::TrackShared,
-    specs: &[FilterSpec],
+    specs: &StereoSpecs,
     pa: f64,
     pb: f64,
 ) -> Option<f64> {
@@ -826,14 +1035,14 @@ fn studio_measured_diff(
         .map(|b| f32::from_le_bytes(*b))
         .collect();
     let (la, _) = engine::lufs_peak_through(&pcm, rate, specs, pa).ok()?;
-    let (lb, _) = engine::lufs_peak_through(&pcm, rate, &[], pb).ok()?;
+    let (lb, _) = engine::lufs_peak_through(&pcm, rate, &StereoSpecs::default(), pb).ok()?;
     let diff = la - lb;
     diff.is_finite().then_some(diff)
 }
 
 /// Whether the A/B now playing was measured: in this very Clip Studio session
 /// (not a replay of the same song), for this chain (not since an edit).
-fn studio_measured_now(chain: &[ChainFilter]) -> bool {
+fn studio_measured_now(chain: &Chains) -> bool {
     let Some((_, playing)) = studio_through_eq() else {
         return false;
     };
@@ -842,7 +1051,7 @@ fn studio_measured_now(chain: &[ChainFilter]) -> bool {
         session
             .upgrade()
             .is_some_and(|s| std::sync::Arc::ptr_eq(&s, &playing))
-            && measured.as_slice() == chain
+            && measured == chain
     })
 }
 
@@ -867,10 +1076,10 @@ fn studio_side_trim_db(diff_a_minus_b: f64, side: &str) -> f64 {
 fn apply_side(side: &str) -> Result<(), String> {
     let chain = active_chain();
     let specs = specs_of(&chain);
-    let (pa, pb, _, matched) = matched_pair(&specs, &[]);
+    let (pa, pb, _, matched) = matched_pair(&specs, &StereoSpecs::default());
     match side {
         // Flat goes to the file only; a running track keeps the active chain.
-        "b" => write_chain_safely(&[], pb)?,
+        "b" => write_chain_safely(&Chains::default(), pb)?,
         _ => activate_chain_at(&chain, pa)?,
     }
     *STUDIO_MEASURED.lock().unwrap() = None;
@@ -1074,6 +1283,8 @@ fn own_filter(
 /// Save an imported chain as a NEW preset (auto-suffixed, never overwriting)
 /// and make it the active, audible one on side A. Returns the preset's name.
 fn import_as_preset(name: &str, preamp: f64, chain: &[ChainFilter]) -> Result<String, String> {
+    // AutoEQ and REW files are one chain for both ears.
+    let chain = &Chains::linked(chain.to_vec());
     let st = store()?;
     let base = sanitize_name(name).ok_or("unusable preset name")?;
     let mut preset_name = base.clone();
@@ -1137,7 +1348,7 @@ fn rew_import(path: String) -> Result<RewImportResult, String> {
         .unwrap_or_else(|| "REW import".into());
     let preset = import_as_preset(
         &stem,
-        preset_preamp(&specs_of(&parsed.filters)),
+        preset_preamp(&StereoSpecs::both(filter_specs(&parsed.filters))),
         &parsed.filters,
     )?;
     Ok(RewImportResult {
@@ -1219,7 +1430,10 @@ fn parse_filters(text: String) -> Vec<PastedFilter> {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ChainCurve {
+    /// The left ear's (both ears' unless the chain is split).
     response_db: Vec<f64>,
+    /// A split chain's right ear.
+    response_db_right: Option<Vec<f64>>,
     matched_preamp_db: f64,
     /// How far the clip ceiling kept this chain below the target. Adding it to
     /// the audible curve makes any two curves' difference the PAIRED difference
@@ -1237,16 +1451,28 @@ struct ChainCurves {
 /// Response curves for arbitrary (non-live) chains, batched — one call serves a
 /// whole history tree. The audible, level-matched difference between chains i
 /// and j is (responseDb_i + matchedPreampDb_i) − (responseDb_j + matchedPreampDb_j).
+///
+/// `rights[i]`, when given, is chain i's right ear (a split chain, ADR-0017).
 #[tauri::command]
-fn chain_curves(chains: Vec<Vec<FilterIn>>) -> Result<ChainCurves, String> {
+fn chain_curves(
+    chains: Vec<Vec<FilterIn>>,
+    rights: Option<Vec<Option<Vec<FilterIn>>>>,
+) -> Result<ChainCurves, String> {
     let freqs = log_freqs(CURVE_FMIN, 20000.0, CURVE_POINTS);
+    let rights = rights.unwrap_or_default();
     let curves = chains
         .iter()
-        .map(|filters| {
-            let specs = specs_of(&chain_of(filters)?);
+        .enumerate()
+        .map(|(i, filters)| {
+            let right = rights.get(i).and_then(|r| r.as_deref());
+            let chain = chains_of(filters, right)?;
+            let specs = specs_of(&chain);
             let (preamp, shortfall) = matched_preamp_full(&specs);
             Ok(ChainCurve {
-                response_db: chain_response_db(&specs, 0.0, FS, &freqs),
+                response_db: chain_response_db(&specs.left, 0.0, FS, &freqs),
+                response_db_right: chain
+                    .is_split()
+                    .then(|| chain_response_db(&specs.right, 0.0, FS, &freqs)),
                 matched_preamp_db: preamp,
                 shortfall_db: shortfall,
             })
@@ -1268,7 +1494,7 @@ struct FilterCurves {
 #[tauri::command]
 fn filter_responses(filters: Vec<FilterIn>) -> Result<FilterCurves, String> {
     let freqs = log_freqs(CURVE_FMIN, 20000.0, CURVE_POINTS);
-    let curves = specs_of(&chain_of(&filters)?)
+    let curves = filter_specs(&chain_of(&filters)?)
         .iter()
         .map(|spec| chain_response_db(std::slice::from_ref(spec), 0.0, FS, &freqs))
         .collect();
@@ -1288,19 +1514,27 @@ fn filter_responses(filters: Vec<FilterIn>) -> Result<FilterCurves, String> {
 /// Returns whether it IS matched: false when equality is impossible (an
 /// infeasible chain), so the UI can say so instead of implying a match
 /// (follow-up R6).
+///
+/// `right` / `partner_right`: the right ears of split chains (ADR-0017).
 #[tauri::command]
-fn preview_chain(filters: Vec<FilterIn>, partner: Option<Vec<FilterIn>>) -> Result<bool, String> {
+fn preview_chain(
+    filters: Vec<FilterIn>,
+    partner: Option<Vec<FilterIn>>,
+    right: Option<Vec<FilterIn>>,
+    partner_right: Option<Vec<FilterIn>>,
+) -> Result<bool, String> {
     if TRIAL.lock().unwrap().is_some() {
         return Err("a blind test is running — finish or cancel it first".into());
     }
     if profile_running() {
         return Err("a hearing-profile session is running — finish or cancel it first".into());
     }
-    let chain = chain_of(&filters)?;
+    let chain = chains_of(&filters, right.as_deref())?;
     let specs = specs_of(&chain);
     let (preamp, matched) = match partner {
         Some(p) => {
-            let (pa, _, _, matched) = matched_pair(&specs, &specs_of(&chain_of(&p)?));
+            let partner = specs_of(&chains_of(&p, partner_right.as_deref())?);
+            let (pa, _, _, matched) = matched_pair(&specs, &partner);
             (pa, matched)
         }
         None => {
@@ -1315,9 +1549,13 @@ fn preview_chain(filters: Vec<FilterIn>, partner: Option<Vec<FilterIn>>) -> Resu
 /// Promote an arbitrary chain (a history node) into a preset. Auto-suffixes on
 /// name collision; does not activate. Returns the name actually used.
 #[tauri::command]
-fn preset_create_from_chain(name: String, filters: Vec<FilterIn>) -> Result<String, String> {
+fn preset_create_from_chain(
+    name: String,
+    filters: Vec<FilterIn>,
+    right: Option<Vec<FilterIn>>,
+) -> Result<String, String> {
     let base = sanitize_name(&name).ok_or("invalid preset name")?;
-    let chain = chain_of(&filters)?;
+    let chain = chains_of(&filters, right.as_deref())?;
     if chain.is_empty() {
         return Err("this node has no filters to save".into());
     }
@@ -1424,7 +1662,10 @@ fn calibration_noise(app: tauri::AppHandle, on: bool) -> Result<(), String> {
     // not whatever is active. A capped preset, or a paired Flat sitting below
     // the reference, would otherwise get the knob set several dB too loud
     // for everything afterwards (review F8).
-    write_chain_safely(&[], matched_preamp_full(&[]).0)?;
+    write_chain_safely(
+        &Chains::default(),
+        matched_preamp_full(&StereoSpecs::default()).0,
+    )?;
     std::thread::spawn(move || {
         use fletcher_core::{playback, signal};
         let mut src = playback::SignalSource::new(
@@ -3056,7 +3297,7 @@ fn track_stop_inner() -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
 /// true-LUFS trim from session start is kept: recomputing per drag-tick is
 /// too slow, and the config preamps already hold both buses near the
 /// reference — the trim is the measured residual.
-fn push_chain_to_track(chain: &[ChainFilter]) {
+fn push_chain_to_track(chain: &Chains) {
     use std::sync::atomic::Ordering::Relaxed;
     // A trial's chains are captured at start — live EQ edits must not
     // mutate what a blind session is playing.
@@ -3232,7 +3473,7 @@ fn start_track(
             .flatten()
         });
         if lufs_flat.is_none() {
-            if let Ok(l) = engine::lufs_through(&pcm, rate, &[], 0.0) {
+            if let Ok(l) = engine::lufs_through(&pcm, rate, &StereoSpecs::default(), 0.0) {
                 if l.is_finite() {
                     lufs_flat = Some(l);
                     if let Ok(conn) = library_db() {
@@ -3636,6 +3877,8 @@ struct SettingsState {
     trim_min_db: f64,
     trim_max_db: f64,
     level_matching: bool,
+    /// "Edit each ear separately" (Q-28).
+    per_ear: bool,
     apo_install_path: Option<String>,
     apo_config_path: Option<String>,
 }
@@ -3657,6 +3900,7 @@ fn settings_state() -> SettingsState {
         trim_min_db: TRIM_MIN_DB,
         trim_max_db: TRIM_MAX_DB,
         level_matching: level_matching(),
+        per_ear: per_ear(),
         apo_install_path: apo.as_ref().map(|i| i.install_path.display().to_string()),
         apo_config_path: apo.as_ref().map(|i| i.config_path.display().to_string()),
     }
@@ -3719,17 +3963,42 @@ fn history_dir() -> PathBuf {
     data_dir().join("history")
 }
 
-#[tauri::command]
-fn history_save(preset: String, data: String) -> Result<(), String> {
-    let name = sanitize_name(&preset).ok_or("bad preset name")?;
-    std::fs::create_dir_all(history_dir()).map_err(|e| e.to_string())?;
-    fsx::write_atomic(&history_dir().join(format!("{name}.json")), &data).map_err(|e| e.to_string())
+/// A preset's history file for one ear (Q-28: each ear has its own tree,
+/// like a preset of its own). The left ear, and every unsplit preset, keeps
+/// the file it always had; the right ear's lives in `history/right/`, a folder
+/// no preset name can collide with.
+fn history_file(preset: &str, ear: Option<&str>) -> Result<PathBuf, String> {
+    let name = sanitize_name(preset).ok_or("bad preset name")?;
+    match ear {
+        None | Some("left") => Ok(history_dir().join(format!("{name}.json"))),
+        Some("right") => Ok(history_dir().join("right").join(format!("{name}.json"))),
+        Some(other) => Err(format!("unknown ear {other}")),
+    }
 }
 
 #[tauri::command]
-fn history_load(preset: String) -> Option<String> {
-    let name = sanitize_name(&preset)?;
-    std::fs::read_to_string(history_dir().join(format!("{name}.json"))).ok()
+fn history_save(preset: String, data: String, ear: Option<String>) -> Result<(), String> {
+    let path = history_file(&preset, ear.as_deref())?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    fsx::write_atomic(&path, &data).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn history_load(preset: String, ear: Option<String>) -> Option<String> {
+    std::fs::read_to_string(history_file(&preset, ear.as_deref()).ok()?).ok()
+}
+
+/// Move both ears' history files along with a renamed preset.
+fn rename_history(from: &str, to: &str) {
+    for ear in ["left", "right"] {
+        if let (Ok(a), Ok(b)) = (history_file(from, Some(ear)), history_file(to, Some(ear))) {
+            if a.exists() && !b.exists() {
+                let _ = std::fs::rename(a, b);
+            }
+        }
+    }
 }
 
 /// Write a history file to a user-chosen path (export via save dialog).
@@ -3754,13 +4023,14 @@ fn preset_rename(from: String, to: String) -> Result<PresetsState, String> {
         return Err(format!("a preset named {to:?} already exists"));
     }
     let p = st.load(&from).ok_or("could not read preset")?;
-    st.save(&to, p.preamp_db, &p.filters)
+    st.save(&to, p.preamp_db, &p.chains)
         .map_err(|e| e.to_string())?;
     st.delete(&from).map_err(|e| e.to_string())?;
     if active_preset().as_deref() == Some(from.as_str()) {
         set_active_preset(Some(&to));
     }
     retarget_device_presets(&from, Some(&to));
+    rename_history(&from, &to);
     presets_state()
 }
 
@@ -4174,7 +4444,7 @@ struct AbInfo {
 #[tauri::command]
 fn ab_info() -> AbInfo {
     let chain = active_chain();
-    let (_, _, shortfall_db, matched) = matched_pair(&specs_of(&chain), &[]);
+    let (_, _, shortfall_db, matched) = matched_pair(&specs_of(&chain), &StereoSpecs::default());
     AbInfo {
         side: ab_side(),
         level_db: round_tenth(reference_db().min(0.0) + preamp_trim_db() - shortfall_db),
@@ -4318,8 +4588,8 @@ struct TrialSession {
     /// level-matched (config path: shared matched-preamp write; clips path:
     /// matched preamps + measured trim), so A and B land at the reference
     /// loudness by construction.
-    a: Vec<ChainFilter>,
-    b: Vec<ChainFilter>,
+    a: Chains,
+    b: Chains,
     /// ABX: trial t's X is A.  Pref: trial t's slot "1" is A.
     assignments: Vec<bool>,
     /// ABX: user said "X is A".  Pref: user picked slot "1".
@@ -4510,6 +4780,9 @@ struct TrialSpec {
     material: Option<MaterialSpec>,
     a: Option<Vec<FilterIn>>,
     b: Option<Vec<FilterIn>>,
+    /// The right ears of split contenders (ADR-0017).
+    a_right: Option<Vec<FilterIn>>,
+    b_right: Option<Vec<FilterIn>>,
     a_name: Option<String>,
     b_name: Option<String>,
     stop: Option<StopSpec>,
@@ -4555,27 +4828,28 @@ fn shuffle<T>(v: &mut [T], rng: &mut fletcher_core::stats::Xorshift) {
 }
 
 /// Resolve chains + names for a trial (both explicit, or active-vs-flat).
+/// `chains` = [a, a's right ear, b, b's right ear].
 fn trial_chains(
-    a: Option<Vec<FilterIn>>,
-    b: Option<Vec<FilterIn>>,
+    chains: [Option<Vec<FilterIn>>; 4],
     a_name: Option<String>,
     b_name: Option<String>,
-) -> Result<(Vec<ChainFilter>, Vec<ChainFilter>, String, String), String> {
+) -> Result<(Chains, Chains, String, String), String> {
+    let [a, a_right, b, b_right] = chains;
     match (a, b) {
         (Some(a), Some(b)) => Ok((
-            chain_of(&a)?,
-            chain_of(&b)?,
+            chains_of(&a, a_right.as_deref())?,
+            chains_of(&b, b_right.as_deref())?,
             a_name.unwrap_or_else(|| "A".into()),
             b_name.unwrap_or_else(|| "B".into()),
         )),
         (None, None) => {
             let chain = active_chain();
-            if chain.iter().filter(|f| f.enabled).count() == 0 {
+            if !chain.any_enabled() {
                 return Err("activate a preset with at least one enabled filter first — A and B would sound identical".into());
             }
             Ok((
                 chain,
-                Vec::new(),
+                Chains::default(),
                 active_preset().unwrap_or_else(|| "Fletcher chain".into()),
                 "Flat".into(),
             ))
@@ -4586,8 +4860,8 @@ fn trial_chains(
 
 /// The contender chains + honesty snapshot a spawn needs.
 struct TrialChains<'a> {
-    a: &'a [ChainFilter],
-    b: &'a [ChainFilter],
+    a: &'a Chains,
+    b: &'a Chains,
     level_matched: bool,
 }
 
@@ -4706,8 +4980,11 @@ fn trial_start_inner(app: &tauri::AppHandle, spec: TrialSpec) -> Result<TrialSta
             }
         }
     };
-    let (chain_a, chain_b, name_a, name_b) =
-        trial_chains(spec.a, spec.b, spec.a_name, spec.b_name)?;
+    let (chain_a, chain_b, name_a, name_b) = trial_chains(
+        [spec.a, spec.a_right, spec.b, spec.b_right],
+        spec.a_name,
+        spec.b_name,
+    )?;
     // Two chains that level-match to the same response leave nothing to test.
     // Comparing responses, not filter lists, catches differently-written but
     // audibly identical chains.
@@ -4715,9 +4992,13 @@ fn trial_start_inner(app: &tauri::AppHandle, spec: TrialSpec) -> Result<TrialSta
         let freqs = log_freqs(CURVE_FMIN, 20000.0, CURVE_POINTS);
         let (sa, sb) = (specs_of(&chain_a), specs_of(&chain_b));
         let (pa, pb, _, _) = matched_pair(&sa, &sb);
-        let ra = chain_response_db(&sa, pa, FS, &freqs);
-        let rb = chain_response_db(&sb, pb, FS, &freqs);
-        if ra.iter().zip(&rb).all(|(x, y)| (x - y).abs() < 0.05) {
+        // Both ears: a split preset may differ from its partner in one only.
+        let same = |a: &[FilterSpec], b: &[FilterSpec]| {
+            let ra = chain_response_db(a, pa, FS, &freqs);
+            let rb = chain_response_db(b, pb, FS, &freqs);
+            ra.iter().zip(&rb).all(|(x, y)| (x - y).abs() < 0.05)
+        };
+        if same(&sa.left, &sb.left) && same(&sa.right, &sb.right) {
             return Err(
                 "A and B level-match to the same response — there is no difference to test".into(),
             );
@@ -4838,8 +5119,8 @@ fn trial_start_inner(app: &tauri::AppHandle, spec: TrialSpec) -> Result<TrialSta
 /// assignment (iid per trial regardless of material order), and grouping
 /// minimizes exclusive open/close churn — the flakiest driver operation.
 fn trial_build_clips_material(
-    chain_a: &[ChainFilter],
-    chain_b: &[ChainFilter],
+    chain_a: &Chains,
+    chain_b: &Chains,
     battery_id: Option<i64>,
     clip_ids: Option<Vec<i64>>,
     track_ids: Option<Vec<i64>>,
@@ -4973,7 +5254,9 @@ fn trial_build_clips_material(
     // The same level Clip Studio plays at: songs at SONG_NORM_LUFS, then the
     // listening level the shared path would apply (exclusive output skips it).
     let target = SONG_NORM_LUFS
-        + exclusive_listening_db(level_plan(&[], preamp_trim_db(), &outside_path()).0);
+        + exclusive_listening_db(
+            level_plan(&StereoSpecs::default(), preamp_trim_db(), &outside_path()).0,
+        );
     let mut measured: std::collections::HashMap<i64, TrialClip> = std::collections::HashMap::new();
     let mut track_gain: std::collections::HashMap<i64, f64> = std::collections::HashMap::new();
     let mut track_ids: Vec<i64> = Vec::new();
@@ -5083,6 +5366,8 @@ fn abx_start(
             material: Some(MaterialSpec::System),
             a,
             b,
+            a_right: None,
+            b_right: None,
             a_name,
             b_name,
             stop: Some(StopSpec::FixedN { trials }),
@@ -5134,6 +5419,11 @@ struct TrialResult {
     /// were matched to — a session replays meaningfully years later.
     a_chain: Vec<PastedFilter>,
     b_chain: Vec<PastedFilter>,
+    /// The right ears of split contenders; absent = the chain played on both.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    a_chain_right: Option<Vec<PastedFilter>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    b_chain_right: Option<Vec<PastedFilter>>,
     reference_db: f64,
     level_matched: bool,
     /// How the two sides were levelled (ADR-0016), so a result can be judged
@@ -5276,8 +5566,10 @@ fn trial_result_of(
         protocol: if is_abx { "abx" } else { "pref" },
         a_name: session.a_name.clone(),
         b_name: session.b_name.clone(),
-        a_chain: dto_chain(&session.a),
-        b_chain: dto_chain(&session.b),
+        a_chain: dto_chain(&session.a.left),
+        b_chain: dto_chain(&session.b.left),
+        a_chain_right: session.a.right.as_deref().map(dto_chain),
+        b_chain_right: session.b.right.as_deref().map(dto_chain),
         reference_db: reference_db(),
         level_matched: session.level_matched,
         pair_below_db: match session.material {
@@ -5608,7 +5900,7 @@ fn preset_delete(name: String) -> Result<EqState, String> {
     retarget_device_presets(&name, None);
     if active_preset().as_deref() == Some(name.as_str()) {
         set_active_preset(None);
-        activate_chain(&[])?;
+        activate_chain(&Chains::default())?;
     }
     eq_state()
 }
@@ -6544,6 +6836,9 @@ pub fn run() {
             trial_finish_early,
             trial_resume,
             preset_chain,
+            chains_split,
+            split_presets,
+            set_per_ear,
             profile_start,
             profile_set_level,
             profile_accept_level,

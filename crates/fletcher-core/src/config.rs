@@ -211,14 +211,140 @@ pub struct ChainFilter {
     pub q: f64,
 }
 
-/// Render the complete fletcher.txt for a chain. Fletcher fully owns this
-/// file (ADR-0007), so it is regenerated, never edited in place.
-pub fn render_fletcher_file(preamp_db: f64, filters: &[ChainFilter]) -> String {
-    let mut doc = ConfigDoc::parse("");
-    doc.push_line("# Written by Fletcher. Hand edits will be overwritten.");
-    if preamp_db != 0.0 {
-        doc.push_line(&format_preamp(preamp_db));
+/// Fletcher's chain for each ear (ADR-0017). `right: None` is the usual case,
+/// one chain for both ears, written exactly as before. `Some` is a split
+/// preset: its own left and right lists, which stay split even while equal.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Chains {
+    pub left: Vec<ChainFilter>,
+    pub right: Option<Vec<ChainFilter>>,
+}
+
+impl Chains {
+    pub fn linked(filters: Vec<ChainFilter>) -> Self {
+        Chains {
+            left: filters,
+            right: None,
+        }
     }
+
+    /// The right ear's chain (the left one while linked).
+    pub fn right(&self) -> &[ChainFilter] {
+        self.right.as_deref().unwrap_or(&self.left)
+    }
+
+    pub fn is_split(&self) -> bool {
+        self.right.is_some()
+    }
+
+    /// Split, and the two ears' chains are not the same: the only case where
+    /// joining discards anything (Q-28).
+    pub fn ears_differ(&self) -> bool {
+        self.right.as_ref().is_some_and(|r| *r != self.left)
+    }
+
+    /// No filters in either ear.
+    pub fn is_empty(&self) -> bool {
+        self.left.is_empty() && self.right().is_empty()
+    }
+
+    /// Whether any filter is on, in either ear.
+    pub fn any_enabled(&self) -> bool {
+        self.left.iter().chain(self.right()).any(|f| f.enabled)
+    }
+}
+
+/// Which of a stereo device's two channels a `Channel:` selection reaches.
+/// Other positions (C, LFE, RL, …) reach neither. Read leniently: APO
+/// documents uppercase names, numbers counted from 1, and "all".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StereoSel {
+    pub left: bool,
+    pub right: bool,
+}
+
+impl StereoSel {
+    pub const BOTH: StereoSel = StereoSel {
+        left: true,
+        right: true,
+    };
+
+    pub fn parse(spec: &str) -> Self {
+        let mut sel = StereoSel {
+            left: false,
+            right: false,
+        };
+        for tok in spec.split_whitespace() {
+            match tok.to_ascii_uppercase().as_str() {
+                "ALL" => return StereoSel::BOTH,
+                "L" | "1" => sel.left = true,
+                "R" | "2" => sel.right = true,
+                _ => {}
+            }
+        }
+        sel
+    }
+}
+
+impl ConfigDoc {
+    /// Every Preamp and Filter directive with the channel selection it falls
+    /// under, in order. The selection starts at both ears.
+    pub fn channel_walk(&self) -> impl Iterator<Item = (StereoSel, &Parsed)> {
+        let mut sel = StereoSel::BOTH;
+        self.directives().filter_map(move |d| match d {
+            Parsed::Channel { spec } => {
+                sel = StereoSel::parse(spec);
+                None
+            }
+            Parsed::Preamp { .. } | Parsed::Filter { .. } => Some((sel, d)),
+            _ => None,
+        })
+    }
+
+    /// The file's filters as Fletcher chains, built by `own` from each Filter
+    /// line (None skips it), plus the preamp both ears get. Split when a
+    /// `Channel:` line selects one ear (`selects_one_ear`). Preamps on one ear only (a balance) are
+    /// dropped: a preset's preamp is advisory and recomputed (ADR-0017).
+    pub fn chains(&self, mut own: impl FnMut(&Parsed) -> Option<ChainFilter>) -> (f64, Chains) {
+        let (mut preamp, mut left, mut right) = (0.0, vec![], vec![]);
+        for (sel, d) in self.channel_walk() {
+            match d {
+                Parsed::Preamp { db } if sel == StereoSel::BOTH => preamp += db,
+                Parsed::Filter { .. } => {
+                    let Some(f) = own(d) else { continue };
+                    if sel.left {
+                        left.push(f);
+                    }
+                    if sel.right {
+                        right.push(f);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let chains = Chains {
+            left,
+            right: self.selects_one_ear().then_some(right),
+        };
+        (preamp, chains)
+    }
+
+    /// Whether any `Channel:` line selects exactly one of the two ears: what
+    /// makes a file split. Decided by the selections, not by where filters
+    /// landed, so a split preset with no filters yet stays split, and a section
+    /// for other positions only (C, LFE) doesn't split anything.
+    pub fn selects_one_ear(&self) -> bool {
+        self.directives().any(|d| match d {
+            Parsed::Channel { spec } => {
+                let sel = StereoSel::parse(spec);
+                sel.left != sel.right
+            }
+            _ => false,
+        })
+    }
+}
+
+fn push_filters(doc: &mut ConfigDoc, filters: &[ChainFilter]) {
     for (i, f) in filters.iter().enumerate() {
         doc.push_line(&format_filter(
             Some(i as u32 + 1),
@@ -228,6 +354,36 @@ pub fn render_fletcher_file(preamp_db: f64, filters: &[ChainFilter]) -> String {
             Some(f.gain_db),
             Some(f.q),
         ));
+    }
+}
+
+/// Render the complete fletcher.txt for a chain. Fletcher fully owns this
+/// file (ADR-0007), so it is regenerated, never edited in place. A split
+/// chain goes under `Channel: L` / `Channel: R` and ends on `Channel: all`:
+/// APO doesn't document whether a selection made in an included file outlives
+/// it, so lines after the Include must not depend on it (TB-45).
+pub fn render_fletcher_file(preamp_db: f64, chains: &Chains) -> String {
+    let mut doc = ConfigDoc::parse("");
+    doc.push_line("# Written by Fletcher. Hand edits will be overwritten.");
+    // A split file picks both ears before its preamp. Otherwise a parent
+    // `Channel: L` before our Include would put the preamp (and every fade
+    // step) on the left only, while the right ear's filters still play
+    // unattenuated (TB-45).
+    if chains.is_split() {
+        doc.push_line("Channel: all");
+    }
+    if preamp_db != 0.0 {
+        doc.push_line(&format_preamp(preamp_db));
+    }
+    match &chains.right {
+        None => push_filters(&mut doc, &chains.left),
+        Some(right) => {
+            doc.push_line("Channel: L");
+            push_filters(&mut doc, &chains.left);
+            doc.push_line("Channel: R");
+            push_filters(&mut doc, right);
+            doc.push_line("Channel: all");
+        }
     }
     doc.to_string()
 }

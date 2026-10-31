@@ -2,6 +2,25 @@
 
 Append-only session journal. Newest entry first.
 
+## 2026-10-30 (per-ear UI) — Q-28 v1: each ear like a preset of its own
+
+- **Owner's model:** an ear is a sub-category of its preset, "no different than two separate presets. Same for everything." That made the build one idea: the EQ page works on a projection of the active ear (`projectEar`: that ear's filters and summed curve). The graph, strip, drags, filter editor and undo graph are unchanged; only the writer adds the other ear back (`withOtherEar`).
+- **⚙ (EQ display options):** EARS: Left · Right · Both · Split, plus "Enable ghost" (a switch, like every other on/off). Grayed out until Settings › EARS › Edit each ear separately is on. Picking a view on an unsplit preset splits it (ears equal, opens on Left). Left black (ink) and right crimson `#b4283f` (`--ear-left` / `--ear-right`; orange, indigo, a bluer black and teal cuts were tried live and dropped); the strip is tinted with the active ear's color. Both: both curves solid, with a small dropdown top-left choosing the edited ear. Split: two graphs side by side; the idle one is drawn read-only, and a click makes it the edited ear.
+- **History per ear:** `history/right/<preset>.json` (a folder no preset name can collide with); the left ear keeps the preset's file. Splitting copies the tree to the right. Joining keeps the chosen ear's tree. A tree saves only to the preset and ear it was loaded for (`histOwner`, TB-50). Renaming a preset now moves its history files (it didn't before).
+- **Settings:** the switch can't turn off while presets are split. It says so, and "show them" opens the shared settings panel with keep left / keep right per preset (`split_presets`, `chains_split(name, join)`).
+- **Two traps found while building:** the other ear must come from the preset, not fletcher.txt (side B and previews hold something else; TB-49, `eq_state.ears`). And a pending drag write must remember its ear (TB-50).
+- **TB-48 closed:** "current chain", previews and restore, promote, node-vs-node tests and replay all carry both ears.
+- **Not verified live yet.** Owner to exercise: splitting, each view, ghost, editing each ear, undo per ear, A/B on a split preset, joining from Settings, and the pop-outs (history, filter editor, spectrum; rule 10).
+
+## 2026-10-30 (per-ear EQ) — Backend for a chain per ear (ADR-0017); UI open (Q-28)
+
+- **Owner direction:** the next major feature. Each preset has separate L/R chains, the same by default; per-ear editing is unlocked in Settings and then adds one button to the EQ page. Display is the next question (Q-28).
+- **Model and file:** `config::Chains { left, right: Option }`. Unsplit presets are byte-identical on disk; split ones are `Channel: L` / `Channel: R` sections ending on `Channel: all` (TB-45: APO doesn't document whether a selection outlives an Include; research note `apo-channel-selection.md`). `ConfigDoc::chains` reads `Channel:` leniently. That fixed a silent merge: copying a per-ear source used to concatenate both ears into one chain.
+- **Levels:** one preamp for both ears; `dsp::plan_level_stereo` plans on the two ears' power together and the louder ear's peak. Linked chains give the old numbers exactly. Rendered test: a left-only boost matched to Flat measures within 0.1 dB on pink noise, with the right ear untouched.
+- **Everywhere:** engine buses process per channel, LUFS measurement follows, blind tests take `aRight`/`bRight` and records keep them, history curves/previews/promote take optional right ears, `eq_state` tags each filter's ears and adds `sumDbRight`/`split`. New `chains_split` (split or join). `set_fletcher_chain` refuses a split preset without `right` (TB-47), since today's UI would merge the ears. The Lab now passes a split preset's right ear through; the "active" contender still sends one chain.
+- **Review (same day):** fixed an empty split preset turning linked on reload, a C/LFE-only section forcing a split (split is now decided by a one-ear `Channel:` line, `selects_one_ear`), and a split file now selects both ears before its preamp (a parent `Channel: L` could have confined the preamp and fades to one ear, TB-45). Replaced a circular planner test. UI paths that still send one chain with a split preset active: TB-48.
+- **Not done:** any UI (Q-28), balance (TB-46), live APO verification of a split file.
+
 ## 2026-10-30 (A/B hold) — Hold-to-compare for the A/B hotkey
 
 - **Hold to compare** (Flip A/B's hotkey settings): held, the hotkey switches; let go, it switches back. Two modes (state `abHold`): "hold for flat" rests on your EQ, "hold for your EQ" rests on flat. Choosing a mode moves to its resting side at once, so the first hold is heard. The shortcut plugin already reports key release (it polls the main key every 50 ms after `WM_HOTKEY`, registered with `MOD_NOREPEAT`), so `run_hotkey` now gets press and release; only the A/B hold mode uses release. `ab_flip`'s side change is factored into `ab_go`. Blind tests keep tap-to-cycle (TB-43). The tray item still toggles.

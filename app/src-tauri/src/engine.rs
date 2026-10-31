@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use fletcher_core::dsp::{ChainProcessor, FilterSpec};
+use fletcher_core::dsp::{ChainProcessor, StereoSpecs};
 use fletcher_core::playback::{self, OutputMode, Source};
 
 /// Scrub feel, user-tunable from Clip Studio's room settings (f64 bit
@@ -28,11 +28,11 @@ pub const SCRUB_MAX_RANGE: (f64, f64) = (0.5, 64.0);
 #[derive(Clone, Default)]
 pub struct BusConfig {
     /// Bus A: the user's chain (enabled filters only) + its matched preamp.
-    pub specs: Vec<FilterSpec>,
+    pub specs: StereoSpecs,
     pub preamp_a_db: f64,
     /// Bus B's chain — empty = flat (the default, and every pre-trial path).
     /// Blind clip trials put an arbitrary contender here.
-    pub specs_b: Vec<FilterSpec>,
+    pub specs_b: StereoSpecs,
     /// Bus B's matched preamp, plus the true-LUFS trim measured against
     /// bus A on this exact material (ADR-0003: track mode measures).
     pub preamp_b_db: f64,
@@ -133,8 +133,8 @@ impl TrackSource {
         self.seen_gen = gen;
         let cfg = self.shared.bus.lock().unwrap().clone();
         self.in_engine_eq = cfg.in_engine_eq;
-        self.bus_a.set_chain(&cfg.specs, cfg.preamp_a_db, fs);
-        self.bus_b.set_chain(&cfg.specs_b, cfg.preamp_b_db, fs);
+        self.bus_a.set_stereo(&cfg.specs, cfg.preamp_a_db, fs);
+        self.bus_b.set_stereo(&cfg.specs_b, cfg.preamp_b_db, fs);
         let (ta, tb) = if cfg.matched {
             (cfg.trim_a_db, cfg.trim_b_db)
         } else {
@@ -261,7 +261,7 @@ impl Source for TrackSource {
 pub fn lufs_through(
     pcm: &[f32],
     rate: u32,
-    specs: &[FilterSpec],
+    specs: &StereoSpecs,
     preamp_db: f64,
 ) -> Result<f64, String> {
     lufs_peak_through(pcm, rate, specs, preamp_db).map(|(lufs, _)| lufs)
@@ -273,10 +273,10 @@ pub fn lufs_through(
 pub fn lufs_peak_through(
     pcm: &[f32],
     rate: u32,
-    specs: &[FilterSpec],
+    specs: &StereoSpecs,
     preamp_db: f64,
 ) -> Result<(f64, f64), String> {
-    let mut chain = ChainProcessor::new(specs, preamp_db, rate as f64);
+    let mut chain = ChainProcessor::new_stereo(specs, preamp_db, rate as f64);
     let mut meter =
         ebur128::EbuR128::new(2, rate, ebur128::Mode::I).map_err(|e| format!("ebur128: {e:?}"))?;
     let mut peak = 0f64;
