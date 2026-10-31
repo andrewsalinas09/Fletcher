@@ -894,6 +894,11 @@ button.ghost {
   cursor: default;
 }
 
+/* Side B is for listening only (TB-54). */
+.cell.add.disabled {
+  opacity: 0.35;
+}
+
 .cell.off {
   opacity: 0.45;
 }

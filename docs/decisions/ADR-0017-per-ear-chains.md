@@ -1,6 +1,6 @@
 # ADR-0017: A preset can have a chain per ear; one preamp keeps both matched
 
-- **Status:** Accepted (backend). The UI is open: Q-28.
+- **Status:** Accepted. The UI is Q-28 (v1 built 2026-10-30, shipping in 0.7.0).
 - **Date:** 2026-10-30
 - **Source:** Owner, 2026-10-30: "this is the next major feature update. Start by making it work in the backend. … each preset has separate L/R, default to the same, and you can unlock it in settings to add a button to the main EQ page, since most people won't use this and it would clutter everything." FEATURES.md has listed per-channel EQ since the first scoping session.
 
@@ -18,7 +18,7 @@ Equalizer APO applies `Filter:` and `Preamp:` lines to the channels named by the
    - `eq_state` tags each filter with the ears it reaches, and adds `sumDbRight` (only when it differs) and `split`.
 5. **Commands:**
    - `chains_split` splits the active preset (both ears start as its chain, so nothing audible changes) or joins it (keeping one named ear's chain).
-   - `set_fletcher_chain(filters, right)` refuses to write a split preset without `right`, so an older caller can never silently merge two ears into one.
+   - `set_fletcher_chain(filters, right, preset, ear)` applies an edit to the named preset's saved chains, replacing only the named ear. It drops an edit for a preset that is no longer active, and refuses a split preset sent as one chain, so a caller can never silently merge two ears into one.
 
 ## Why
 - **`Option` instead of two always-present lists:** nearly everyone uses one chain. Unsplit presets stay byte-identical on disk, readable by Peace and by hand, and every existing caller keeps working unchanged.

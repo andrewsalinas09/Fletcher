@@ -4054,7 +4054,7 @@ function OsdNotice() {
 }
 
 function MainApp() {
-  const [state, setState] = useState<EqState | null>(null);
+  const [state, setStateRaw] = useState<EqState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [, setSelected] = useState<number | null>(null);
   const [multiSel, setMultiSel] = useState<ReadonlySet<number>>(new Set());
@@ -4158,6 +4158,14 @@ function MainApp() {
   const [gsize, setGsize] = useState({ w: GW, h: GH });
   const stateRef = useRef<EqState | null>(null);
   stateRef.current = state;
+  /** Set the EQ state AND its ref at once. Edits record their history step
+   *  from the ref on a timeout; after an `await` (paste reads the clipboard)
+   *  React may not have rendered by then, and a ref only updated on render
+   *  made the step look like "no change", so it was never recorded. */
+  const setState = (s: EqState | null) => {
+    stateRef.current = s;
+    setStateRaw(s);
+  };
   // Per-ear EQ (Q-28). `raw` is the backend's full state, both ears; `state`
   // is the active ear of it (`projectEar`), which everything else edits.
   const [raw, setRaw] = useState<EqState | null>(null);
@@ -4198,11 +4206,12 @@ function MainApp() {
     setRaw(s);
     setState(projectEar(s, earRef.current));
   };
-  /** One ear's chain as the preset has it. From the preset, not fletcher.txt:
-   *  on side B or mid-preview the file doesn't hold the other ear, and a write
-   *  built from it would empty that ear. */
+  /** One ear's chain as the PRESET has it (its saved file), never what's
+   *  playing: on side B, or mid-preview, fletcher.txt holds something else.
+   *  The one source for history roots and for "the other ear". Without a
+   *  preset, the live chain is all there is. */
   const earSnap = (s: EqState, e: Ear): ChainSnap => {
-    if (s.split && s.ears) return e === "right" ? (s.ears.right ?? s.ears.filters) : s.ears.filters;
+    if (s.ears) return e === "right" ? (s.ears.right ?? s.ears.filters) : s.ears.filters;
     return s.filters
       .filter((f) => f.sourceFile === OWN_FILE)
       .map(({ enabled, kind, fcHz, gainDb, q }) => ({ enabled, kind, fcHz, gainDb, q }));
@@ -4227,6 +4236,16 @@ function MainApp() {
       .catch((e) => setError(String(e)));
 
   const [ab, setAb] = useState<AbInfo>({ side: "a", levelDb: -8, shortfallDb: 0, matched: true, measured: false });
+  const abRef = useRef(ab);
+  abRef.current = ab;
+  /** On side B the EQ page shows Flat, not the preset, and an edit is built
+   *  from what's shown: it would be saved over the preset (TB-54). So B is
+   *  for listening only. True = refused (and says why). */
+  const editBlocked = () => {
+    if (abRef.current.side !== "b") return false;
+    showNotice("You're hearing B (Flat). Switch to A to edit.");
+    return true;
+  };
   const [devices, setDevices] = useState<Device[]>([]);
   const [deviceMenu, setDeviceMenu] = useState(false);
   /** The device whose settings panel is open (null = closed). */
@@ -4244,8 +4263,13 @@ function MainApp() {
       setRenaming(null);
       return;
     }
-    invoke<PresetsState>("preset_rename", { from: renaming.from, to })
+    const from = renaming.from;
+    invoke<PresetsState>("preset_rename", { from, to })
       .then((p) => {
+        // The backend moved the history files; the tree in memory follows,
+        // or its saves would keep going to the old name.
+        const owner = histOwner.current;
+        if (owner?.preset === from) histOwner.current = { ...owner, preset: to };
         setPresets(p);
         setRenaming(null);
       })
@@ -4286,7 +4310,7 @@ function MainApp() {
       }>("rew_import", { path });
       adopt(r.state);
       refreshPresets();
-      loadOrInitHistory(r.preset, snapOf(r.state.filters));
+      loadOrInitHistory(r.preset, earSnap(r.state, earRef.current));
       setMenuOpen(false);
       const head = `imported ${r.imported} filter${r.imported === 1 ? "" : "s"} from REW as “${r.preset}”`;
       showNotice(
@@ -4308,8 +4332,8 @@ function MainApp() {
         adopt(s);
         refreshPresets();
         invoke<PresetsState>("presets_state")
-          .then((p) => loadOrInitHistory(p.active ?? "chain", snapOf(projectEar(s, earRef.current).filters)))
-          .catch(() => initHistory(snapOf(projectEar(s, earRef.current).filters)));
+          .then((p) => loadOrInitHistory(p.active ?? "chain", earSnap(s, earRef.current)))
+          .catch(() => initHistory(earSnap(s, earRef.current)));
         setMenuOpen(false);
         setAeq("");
         setAeqResults([]);
@@ -5145,7 +5169,7 @@ function MainApp() {
         const r = rawRef.current;
         const name = presetsRef.current.active ?? "Current chain";
         if (r?.split) return { chain: earSnap(r, "left"), right: earSnap(r, "right"), name };
-        return { chain: ownSnap(), name };
+        return { chain: r ? earSnap(r, "left") : ownSnap(), name };
       }
       case "preset": {
         const p = await invoke<{ filters: ChainSnap; right: ChainSnap | null }>("preset_chain", { name: c.name });
@@ -5879,16 +5903,16 @@ function MainApp() {
       setMenuOpen(false);
       setNewName("");
       invoke<PresetsState>("presets_state")
-        .then((p) => loadOrInitHistory(p.active ?? "chain", snapOf(projectEar(s, earRef.current).filters)))
-        .catch(() => initHistory(snapOf(projectEar(s, earRef.current).filters))); // each preset keeps its own timeline
+        .then((p) => loadOrInitHistory(p.active ?? "chain", earSnap(s, earRef.current)))
+        .catch(() => initHistory(earSnap(s, earRef.current))); // each preset keeps its own timeline
     }).catch((e) => showNotice(String(e)));
 
   // Root the history at the first loaded state.
   useEffect(() => {
     if (state && !hist.current) {
       invoke<PresetsState>("presets_state")
-        .then((p) => loadOrInitHistory(p.active ?? "chain", snapOf(state.filters)))
-        .catch(() => initHistory(snapOf(state.filters)));
+        .then((p) => loadOrInitHistory(p.active ?? "chain", earSnap(rawRef.current ?? state, earRef.current)))
+        .catch(() => initHistory(earSnap(rawRef.current ?? state, earRef.current)));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state != null]);
@@ -5929,12 +5953,27 @@ function MainApp() {
   /** The newest chain waiting for the throttled write: the timer must send the
    *  LATEST values, not the ones from the call that started it, or the final
    *  position of a drag can be dropped (and the reply then snaps it back). */
-  // Each write carries the ear it was made on, so switching ears with a write
-  // still pending can never put one ear's edit into the other (Q-28).
-  const pendingPush = useRef<{ filters: EqFilter[]; ear: Ear } | null>(null);
+  // Every write names what it edits: the preset it was made on and the ear
+  // (Q-28, 0.7.0 review). The backend applies it to that preset's SAVED
+  // chains, replacing only that ear, and drops it if the preset is no longer
+  // active. So nothing in flight can land on the wrong preset or ear, and the
+  // other ear is never rebuilt here from a possibly stale copy.
+  type Push = { filters: EqFilter[]; ear: Ear; preset: string | null };
+  const pendingPush = useRef<Push | null>(null);
   const pushChain = (filters: EqFilter[], immediate = false) => {
-    const send = (fs: EqFilter[], onEar: Ear) =>
-      invoke<EqState>("set_fletcher_chain", withOtherEar(snapOf(fs), onEar))
+    // The net under every edit path (pop-outs, keys, the filter editor): on
+    // side B nothing is written, and the screen goes back to what plays.
+    if (editBlocked()) {
+      void refresh();
+      return;
+    }
+    const send = (w: Push) =>
+      invoke<EqState>("set_fletcher_chain", {
+        filters: snapOf(w.filters),
+        right: null,
+        preset: w.preset,
+        ear: w.ear,
+      })
         .then((s) => {
           rawRef.current = s;
           setRaw(s);
@@ -5943,7 +5982,7 @@ function MainApp() {
           // it win snaps the handle back and forth under the cursor. Keep the
           // fresh local values for every filter, take the server's curves.
           const local = stateRef.current;
-          if (dragging.current && local && onEar === earRef.current) {
+          if (dragging.current && local && w.ear === earRef.current) {
             setState({
               ...p,
               filters: p.filters.map((f, i) =>
@@ -5962,19 +6001,31 @@ function MainApp() {
           }
         })
         .catch((e) => showNotice(String(e)));
-    if (immediate) {
+    const stopTimer = () => {
       if (pushTimer.current != null) window.clearTimeout(pushTimer.current);
       pushTimer.current = null;
+    };
+    const mine: Push = { filters, ear: earRef.current, preset: presetsRef.current.active };
+    // A pending edit for another preset or ear is an edit of its own: send it
+    // now rather than let this one replace it.
+    const pending = pendingPush.current;
+    if (pending && (pending.ear !== mine.ear || pending.preset !== mine.preset)) {
       pendingPush.current = null;
-      send(filters, earRef.current);
+      stopTimer();
+      send(pending);
+    }
+    if (immediate) {
+      stopTimer();
+      pendingPush.current = null;
+      send(mine);
     } else {
-      pendingPush.current = { filters, ear: earRef.current };
+      pendingPush.current = mine;
       if (pushTimer.current == null) {
         pushTimer.current = window.setTimeout(() => {
           pushTimer.current = null;
           const latest = pendingPush.current;
           pendingPush.current = null;
-          if (latest) send(latest.filters, latest.ear);
+          if (latest) send(latest);
         }, 60);
       }
     }
@@ -6100,6 +6151,8 @@ function MainApp() {
 
   /** Move along the existing rail without re-laying it. */
   const moveTo = (id: number) => {
+    // Undo/redo would write the step and silently land on A (TB-54).
+    if (editBlocked()) return;
     const h = hist.current;
     const node = h?.nodes.get(id);
     if (!h || !node) return;
@@ -6117,6 +6170,7 @@ function MainApp() {
 
   /** A deliberate jump (click): move AND re-lay the rail through this node. */
   const jumpTo = (id: number) => {
+    if (editBlocked()) return;
     buildRail(id);
     moveTo(id);
   };
@@ -6237,8 +6291,11 @@ function MainApp() {
           showNotice("These two can't be loudness-matched — the boosts are too large in total, so this is louder-vs-quieter.");
       })
       .catch((e) => showNotice(String(e)));
-  /** The active preset as it plays now, both ears. */
-  const currentChains = (): EarChains => withOtherEar(ownSnap());
+  /** The active preset as saved, both ears (not what side B or a preview plays). */
+  const currentChains = (): EarChains => {
+    const r = rawRef.current;
+    return r ? { filters: earSnap(r, "left"), right: r.split ? earSnap(r, "right") : null } : withOtherEar(ownSnap());
+  };
   /** A recorded contender: the right ear when it was split, else one chain. */
   const recorded = (filters: ChainSnap, right?: ChainSnap | null): EarChains => ({ filters, right: right ?? null });
   const previewSnap = (snap: ChainSnap | null, partner?: ChainSnap | null) => {
@@ -6370,8 +6427,12 @@ function MainApp() {
     // A split preset keeps a tree per ear, like two presets (Q-28).
     const treeEar = rawRef.current?.split ? earRef.current : null;
     const owner = { preset: name, ear: treeEar };
+    // Only the newest load installs: an older one answering late (a preset
+    // switch racing a split, an ear switch) must not put its tree back.
+    const gen = ++histLoadGen.current;
     invoke<string | null>("history_load", { preset: name, ear: treeEar })
       .then((raw) => {
+        if (gen !== histLoadGen.current) return;
         // The owner changes together with the tree, never before it.
         histOwner.current = owner;
         if (raw && installHistory(raw)) {
@@ -6398,22 +6459,32 @@ function MainApp() {
         }
       })
       .catch(() => {
+        if (gen !== histLoadGen.current) return;
         histOwner.current = owner;
         initHistory(currentSnap);
       });
   };
+  const histLoadGen = useRef(0);
 
   // Debounced autosave of the tree, to the preset (and ear) it was loaded for.
+  // No owner = a split, join or load is replacing the tree: nothing to save.
+  const autosaveTimer = useRef<number | null>(null);
+  const cancelAutosave = () => {
+    if (autosaveTimer.current != null) window.clearTimeout(autosaveTimer.current);
+    autosaveTimer.current = null;
+  };
   useEffect(() => {
     if (!hist.current) return;
-    const owner = histOwner.current ?? { preset: presets.active ?? "chain", ear: null };
-    const t = window.setTimeout(() => {
+    const owner = histOwner.current;
+    if (!owner) return;
+    autosaveTimer.current = window.setTimeout(() => {
+      autosaveTimer.current = null;
       const data = serializeHistory();
       if (data) {
         invoke("history_save", { preset: owner.preset, ear: owner.ear, data }).catch(() => {});
       }
     }, 400);
-    return () => window.clearTimeout(t);
+    return cancelAutosave;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [histVersion, presets.active]);
 
@@ -6439,10 +6510,11 @@ function MainApp() {
         setPerEarErr(null);
         if (!s.perEar) {
           // Presets whose ears were the same are joined: reload what plays,
-          // and the active preset's one tree.
+          // and the active preset's one tree (owning nothing until then).
+          histOwner.current = null;
           refresh().then(() => {
             const r = rawRef.current;
-            if (r) loadOrInitHistory(presetsRef.current.active ?? "chain", snapOf(r.filters));
+            if (r) loadOrInitHistory(presetsRef.current.active ?? "chain", earSnap(r, earRef.current));
           });
         }
       })
@@ -6458,15 +6530,21 @@ function MainApp() {
     try {
       const s = await invoke<EqState>("chains_split", { name, join: keep });
       if (active) {
+        // The tree in memory may be the dropped ear's: own nothing until the
+        // kept ear's tree, now the preset's one tree, is installed.
+        histOwner.current = null;
         adopt(s);
-        // Joined: the kept ear's tree is now the preset's one tree.
-        loadOrInitHistory(name, snapOf(s.filters));
+        loadOrInitHistory(name, earSnap(s, earRef.current));
       }
       const left = await invoke<string[]>("split_presets");
       setSplitList(left);
       if (!left.length) {
         setJoinOpen(false);
-        setPerEarErr(null);
+        // Joined because switching off was refused: finish switching off.
+        if (perEarErr) {
+          setPerEarErr(null);
+          void togglePerEar();
+        }
       }
     } catch (e) {
       showNotice(String(e));
@@ -6480,6 +6558,9 @@ function MainApp() {
   /** Save the tree now (not after the autosave's delay): an ear switch or a
    *  split is about to replace it, and the backend copies it on a split. */
   const flushHistory = () => {
+    // Saved now, so the pending autosave mustn't fire later with an owner that
+    // a split or join is about to make wrong.
+    cancelAutosave();
     const owner = histOwner.current;
     const data = serializeHistory();
     return owner && data
@@ -6499,7 +6580,7 @@ function MainApp() {
     setState(p);
     selectOnly(null);
     setEditor(null);
-    loadOrInitHistory(presetsRef.current.active ?? "chain", snapOf(p.filters));
+    loadOrInitHistory(presetsRef.current.active ?? "chain", earSnap(r, e));
   };
   /** Pick how a split preset is shown. On an unsplit preset this splits it:
    *  both ears start the same, so nothing audible changes (Q-28). */
@@ -6509,15 +6590,16 @@ function MainApp() {
     await flushHistory();
     try {
       const s = await invoke<EqState>("chains_split", { name: active, join: null });
+      // The tree in memory may not even be this preset's yet (a preset switch
+      // still loading): own nothing until the ear's own tree is installed.
+      histOwner.current = null;
       rawRef.current = s;
       setRaw(s);
+      const p = projectEar(s, earRef.current);
+      setState(p);
+      selectOnly(null);
       // The left ear keeps the preset's tree file; the right got a copy.
-      histOwner.current = { preset: active, ear: "left" };
-      const want = earRef.current;
-      earRef.current = "left";
-      setEarState("left");
-      setState(projectEar(s, "left"));
-      if (want === "right") switchEar("right");
+      loadOrInitHistory(active, earSnap(s, earRef.current));
       return true;
     } catch (e) {
       showNotice(String(e));
@@ -6541,16 +6623,21 @@ function MainApp() {
   // While per-ear editing is on, the active preset always has its two ears:
   // the view is there as soon as you look, no click needed (owner, Q-28).
   // Tried once per preset activation, so a refusal (a blind test) can't loop.
+  // A preset already split when it became active counts as tried too: joining
+  // it from ⚙ must not split it straight back. A new activation resets this.
   const autoSplitTried = useRef<string | null>(null);
+  useEffect(() => {
+    autoSplitTried.current = null;
+  }, [presets.active]);
   useEffect(() => {
     const active = presets.active;
     if (!settings?.perEar) {
       autoSplitTried.current = null;
       return;
     }
-    if (!raw || raw.split || !active || abx || autoSplitTried.current === active) return;
+    if (!raw || !active || abx || autoSplitTried.current === active) return;
     autoSplitTried.current = active;
-    void splitActive(active);
+    if (!raw.split) void splitActive(active);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings?.perEar, raw?.split, presets.active, abx != null]);
 
@@ -6802,6 +6889,7 @@ function MainApp() {
   };
 
   const pasteFilters = async () => {
+    if (editBlocked()) return;
     let pasted: { enabled: boolean; kind: string; fcHz: number; gainDb: number; q: number }[] = [];
     try {
       const text = await navigator.clipboard.readText();
@@ -6902,6 +6990,7 @@ function MainApp() {
 
 
   const addFilter = () => {
+    if (editBlocked()) return;
     const cur = stateRef.current;
     if (!cur) return;
     const fresh: EqFilter = {
@@ -10338,7 +10427,9 @@ function MainApp() {
                   document.body,
                 )}
             </span>
-            <span className="dim-sm preset-hint">drag handles · scroll for Q</span>
+            <span className="dim-sm preset-hint">
+              {ab.side === "b" ? "hearing B (Flat) · switch to A to edit" : "drag handles · scroll for Q"}
+            </span>
             <span className="spacer" />
             {state.filters.some((f) => f.enabled && f.sourceFile !== OWN_FILE) &&
               state.filters.some((f) => f.enabled && f.sourceFile === OWN_FILE) && (
@@ -10757,7 +10848,11 @@ function MainApp() {
                 </div>
               );
             })}
-            <div className="cell add" title="add a filter" onClick={addFilter}>
+            <div
+              className={`cell add ${ab.side === "b" ? "disabled" : ""}`}
+              title={ab.side === "b" ? "You're hearing B (Flat): switch to A to edit" : "add a filter"}
+              onClick={addFilter}
+            >
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
                 <path d="M8 3v10M3 8h10" />
               </svg>

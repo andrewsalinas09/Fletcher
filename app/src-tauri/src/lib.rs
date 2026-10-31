@@ -144,8 +144,8 @@ struct EqState {
     sum_db_right: Option<Vec<f64>>,
     /// The active preset has a chain per ear (ADR-0017), whatever fletcher.txt holds now.
     split: bool,
-    /// The active preset's two chains when it is split: the truth for each ear,
-    /// whatever fletcher.txt holds right now (A/B side B, a preview).
+    /// The active preset's SAVED chains (`right` when split): what the preset is,
+    /// whatever fletcher.txt holds right now (A/B side B, a preview). None = no preset.
     ears: Option<ChainsDto>,
     filters: Vec<EqFilter>,
     source_files: Vec<String>,
@@ -314,7 +314,7 @@ fn eq_state() -> Result<EqState, String> {
         sum_db,
         sum_db_right,
         split,
-        ears: split.then(|| dto_chains(&preset_chains)),
+        ears: active_preset().map(|_| dto_chains(&preset_chains)),
         filters: filter_dtos,
         source_files,
         includes,
@@ -443,19 +443,52 @@ fn refuse_mid_trial() -> Result<(), String> {
 /// is written atomically (TB-11), and APO hot-reloads it. Returns the fresh
 /// merged state.
 ///
-/// `right` is the right ear's chain for a split preset (ADR-0017); without it
-/// `filters` plays on both ears. A split preset is never joined by a caller
-/// that just left `right` out: joining is `chains_split`.
+/// An edit names what it edits (Q-28, 0.7.0 review): `preset` is the preset
+/// it was made on, and `ear` the ear, for a split preset. The edit is applied
+/// to that preset's SAVED chains: the named ear is replaced and the other ear
+/// is kept from the file, never rebuilt by the caller. An edit for a preset
+/// that is no longer active (one still in flight across a preset switch) is
+/// dropped, not written into whatever is active now.
+///
+/// Without `ear`, `filters` is the whole chain (`right`, if given, is the
+/// right ear's). A split preset is never joined by a caller that just left
+/// `right` and `ear` out: joining is `chains_split`.
 #[tauri::command]
 fn set_fletcher_chain(
     filters: Vec<FilterIn>,
     right: Option<Vec<FilterIn>>,
+    preset: Option<String>,
+    ear: Option<String>,
 ) -> Result<EqState, String> {
     refuse_mid_trial()?;
-    if right.is_none() && active_chain().is_split() {
-        return Err("this preset has a chain per ear: send both, or join them first".into());
+    if preset.is_some() && preset != active_preset() {
+        return eq_state();
     }
-    let chain = chains_of(&filters, right.as_deref())?;
+    let saved = active_chain();
+    let chain = match ear.as_deref() {
+        Some(e) if saved.is_split() => {
+            let mine = chain_of(&filters)?;
+            match e {
+                "left" => Chains {
+                    left: mine,
+                    right: saved.right,
+                },
+                "right" => Chains {
+                    left: saved.left,
+                    right: Some(mine),
+                },
+                other => return Err(format!("unknown ear {other}")),
+            }
+        }
+        _ => {
+            if right.is_none() && saved.is_split() {
+                return Err(
+                    "this preset has a chain per ear: send both, or join them first".into(),
+                );
+            }
+            chains_of(&filters, right.as_deref())?
+        }
+    };
     let specs = specs_of(&chain);
     write_chain_safely(&chain, matched_preamp_full(&specs).0)?;
     push_chain_to_track(&chain);
@@ -516,7 +549,8 @@ fn live_chain() -> Result<Chains, String> {
 /// Splitting starts both ears as its current chain, so nothing audible
 /// changes, and the right ear's history starts as a copy of the preset's.
 /// Joining (`join` = "left" or "right") keeps that ear's chain and its history
-/// for the whole preset. Only the active preset is rewritten into fletcher.txt.
+/// for the whole preset. Only the active preset is rewritten into fletcher.txt,
+/// on whichever A/B side is playing.
 #[tauri::command]
 fn chains_split(name: Option<String>, join: Option<String>) -> Result<EqState, String> {
     refuse_mid_trial()?;
@@ -561,8 +595,9 @@ fn chains_split(name: Option<String>, join: Option<String>) -> Result<EqState, S
     st.save(&name, preset_preamp(&specs_of(&chain)), &chain)
         .map_err(|e| e.to_string())?;
     if active_preset().as_deref() == Some(name.as_str()) {
-        activate_chain(&chain)?;
-        set_ab_side("a");
+        // Rewrite the side that's playing, and stay on it: a split changes
+        // nothing audible, and neither side may flip under the listener.
+        apply_side(&ab_side())?;
     }
     eq_state()
 }
