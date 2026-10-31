@@ -2,6 +2,12 @@
 
 Each version's section becomes its GitHub release notes and the "what's new" text in Settings › UPDATES. Write for listeners, not developers.
 
+## 0.7.1
+
+- **Check that your EQ is reaching you.** Settings › SETUP › check setup plays a faint tone for a few seconds and measures whether Fletcher's EQ actually changes what your output plays. If it doesn't, it says why: Equalizer APO isn't on the device, it's installed only before mixing, Windows enhancements are off, or a line in Equalizer APO's config limits Fletcher to another device.
+- **Export diagnostics.** Settings › SETUP › export… saves a zip with that check, Equalizer APO's config files, your playback devices and their effects, audio software by name, and Fletcher's presets. Attach it to a GitHub issue when something doesn't work. Nothing is sent anywhere. It shows your Windows user name and device names.
+- The Clip Studio test tone moved to Settings › SETUP. 
+
 ## 0.7.0
 
 - **A separate EQ for each ear.** Turn on Settings › EARS › Edit each ear separately, and every preset gets its own left and right curves, starting out identical. In the EQ page's ⚙, show one ear at a time, both on one graph, or the two side by side, and turn on "Enable ghost" to see the other ear faintly. Each ear keeps its own undo history. A/B, blind tests and history previews play both ears as they are, and stay level-matched across both together. Join the ears again from ⚙ or from Settings, keeping either side. Thanks to @Liopleurod0n for the idea (#11)!
