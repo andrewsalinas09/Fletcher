@@ -4,7 +4,7 @@ Each version's section becomes its GitHub release notes and the "what's new" tex
 
 ## 0.7.0
 
-- **A separate EQ for each ear.** Turn on Settings › EARS › Edit each ear separately, and every preset gets its own left and right curves, starting out identical. In the EQ page's ⚙, show one ear at a time, both on one graph, or the two side by side, and turn on "Enable ghost" to see the other ear faintly. Each ear keeps its own undo history. A/B, blind tests and history previews play both ears as they are, and stay level-matched across both together. Join the ears again from ⚙ or from Settings, keeping either side.
+- **A separate EQ for each ear.** Turn on Settings › EARS › Edit each ear separately, and every preset gets its own left and right curves, starting out identical. In the EQ page's ⚙, show one ear at a time, both on one graph, or the two side by side, and turn on "Enable ghost" to see the other ear faintly. Each ear keeps its own undo history. A/B, blind tests and history previews play both ears as they are, and stay level-matched across both together. Join the ears again from ⚙ or from Settings, keeping either side. Thanks to @Liopleurod0n for the idea (#11)!
 - **B is for listening only.** While A/B is on B (Flat), editing pauses with a note to switch back to A. Before, adding or pasting a filter on B could replace your preset with Flat plus that one filter.
 - **Copying from Peace or a config file with separate left and right sections keeps them separate**, instead of merging both sides into one chain.
 - Renaming a preset keeps its undo history.
