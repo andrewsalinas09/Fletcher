@@ -2,6 +2,18 @@
 
 Append-only session journal. Newest entry first.
 
+## 2026-10-31 (setup check) — "It sounds the same with EQ on or off": a measured setup check and a diagnostics zip (ADR-0018)
+
+- **Report (Reddit tester):** import and UI fine, but a 20 dB cut above 1 kHz changed nothing, while Peace worked. Their APO was installed "as LFX/GFX". They also asked for preset hotkeys (Q-29).
+- **Measured, not assumed** (`examples/scope_probe.rs`, docs/research/apo-scope-and-loopback.md): WASAPI loopback hears APO's output to 0.1 dB. `Device:`, `Stage:` and `Channel:` selections end with the file they're in, so peace.txt can't silence Fletcher. A non-matching `Device:` line in config.txt above our Include silences Fletcher completely. APO runs filters post-mix unless told otherwise, so an output with APO pre-mix only plays Peace's "before mixing" EQ and not Fletcher's (likely for this tester; not yet reproduced). Peace's help confirms it writes per-device `Device:` lines and has an equalization-stage option.
+- **Built:** Settings › SETUP.
+  - "check setup" runs static checks (APO and version, APO on the output, enhancements, the device's APO stages, the Include, `Device:`/`Stage:` scope above it, `Copy:`), then a live test: a −50 dBFS tone, a −20 dB test cut in fletcher.txt measured on loopback, and a pre-mix retry. It only ever cuts, holds the writer lock, and restores the file byte-for-byte (TB-57).
+  - "export…" saves a zip: report, the APO registry, every playback endpoint's effects by name, APO's config folder, Fletcher's state and presets.
+  - New `fletcher_core::pathcheck` (tone + Goertzel on loopback); `apo` gained device match text, stages, registry and endpoint dumps; app module `setup.rs`; `zip` dependency.
+- **Verified here:** the live test passes on the Modi (post-mix, file restored). With `Device: Realtek Headphones` added above the Include, it names line 7 and measures 0.0 dB (config.txt restored). The zip opens and reads correctly.
+- **Probe note:** the running Fletcher re-planned and rewrote fletcher.txt when the probe changed peace.txt. That's correct behavior (ADR-0016), and it spoiled two probe cases.
+- **Open:** the tester's zip; reproducing pre-mix-only; Q-30 (a Stage option, scope-aware header label); Q-29 (preset hotkeys). Owner to try the SETUP section in the dev build.
+
 ## 2026-10-30 (per-ear UI) — Q-28 v1: each ear like a preset of its own
 
 - **Owner's model:** an ear is a sub-category of its preset, "no different than two separate presets. Same for everything." That made the build one idea: the EQ page works on a projection of the active ear (`projectEar`: that ear's filters and summed curve). The graph, strip, drags, filter editor and undo graph are unchanged; only the writer adds the other ear back (`withOtherEar`).

@@ -73,6 +73,26 @@ pub fn default_render_device_id() -> Option<String> {
     device.get_id().ok()
 }
 
+/// The default output's shared-mode mix format, as text: rate, channels,
+/// channel mask, sample type. The channel layout decides what APO's
+/// `Channel: L`/`R` lines reach.
+pub fn default_render_mix_format() -> Option<String> {
+    ensure_com();
+    let device = wasapi::DeviceEnumerator::new()
+        .ok()?
+        .get_default_device(&wasapi::Direction::Render)
+        .ok()?;
+    let f = device.get_iaudioclient().ok()?.get_mixformat().ok()?;
+    Some(format!(
+        "{} Hz, {} channels (mask {:#x}), {}-bit {:?}",
+        f.get_samplespersec(),
+        f.get_nchannels(),
+        f.get_dwchannelmask(),
+        f.get_validbitspersample(),
+        f.get_subformat().ok()?,
+    ))
+}
+
 #[derive(Debug, Clone)]
 pub struct RenderDevice {
     pub id: String,

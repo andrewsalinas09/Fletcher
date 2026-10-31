@@ -154,3 +154,16 @@ Settled by the owner: off by default, unlocked in Settings, one button on the EQ
   - Backend needed: list the split presets, and join a named preset rather than only the active one (`chains_split` takes the active preset today).
 
 **v1 built 2026-10-30:** the rulings above, as written; a pre-release review then found and fixed seven defects (TB-50 to TB-52). The EQ page edits a projection of one ear (`projectEar`); every write adds the other ear back from the preset; each ear has its own history file (`history/right/` for the right). The Lab's "current chain", previews, promote, node-vs-node tests and replay all carry both ears (TB-48). The spectrum pop-out follows the active ear via localStorage. Not yet: live verification, including the pop-outs (rule 10). A history tree picked from ANOTHER preset in the Lab's contender palette is that preset's left ear.
+
+## Q-29 · Hotkeys that switch to a preset — **Open**
+A Reddit tester, 2026-10-31: "I have one for headphones and one for speakers and I'd like to switch between them using hotkeys", the way Peace does without opening its window. Fletcher already loads a preset when an output becomes the Windows default (0.6.0, per-device settings) and has a hotkey per device. What's missing is a hotkey per preset, for one output used two ways (speakers and headphones on the same DAC, or a room EQ on and off). Open questions:
+- One hotkey per preset (set from the preset menu, like a device's from its ⚙), and/or one "next preset" hotkey that cycles a chosen list?
+- Show the same popup as device hotkeys?
+- Never during a blind test, as with every other switch.
+- What it does while A/B is on B.
+
+## Q-30 · What to do when APO isn't playing Fletcher's file — **Open (detection built, ADR-0018)**
+The setup check names the cause. Not decided:
+- **APO only runs pre-mix on an output:** offer a "Run before mixing" option that writes `Stage: pre-mix` at the top of fletcher.txt? It's per output in effect, and on an output with both stages it would move Fletcher pre-mix (per app, more CPU), so it must not be on by default. Wait for a confirmed case (TB-56).
+- **A `Device:` line in config.txt scopes Fletcher away:** a one-click fix would add `Device: all` before our Include, but that also re-scopes every line after it, which other tools own (ADR-0007). For now the check says what to change.
+- **The header's source label** ("Peace + Fletcher") and the curve should apply the same scope rules as the check (`Device:` and `Stage:` in config.txt), so Fletcher stops counting itself active where APO skips it.

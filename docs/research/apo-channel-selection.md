@@ -9,7 +9,7 @@ Source: the official [configuration reference](https://sourceforge.net/p/equaliz
 - **Device:** if the pattern doesn't match, "all following commands except Device commands are ignored".
 
 ## Not documented (so Fletcher doesn't rely on it)
-- Whether a `Channel:` (or `Device:`) selection made inside a file pulled in with `Include:` persists after the include returns. The page's top-level example (`Channel: L`, then `Include: demo.txt`, commented "Filters only for left channel") suggests a selection made *before* an Include applies inside it. It says nothing about restoring one made inside. **Fletcher ends a split fletcher.txt with `Channel: all`** (TB-45).
+- *Measured 2026-10-31 (apo-scope-and-loopback.md): it does not; `Channel:`, `Device:` and `Stage:` selections end with their file.* Whether a `Channel:` (or `Device:`) selection made inside a file pulled in with `Include:` persists after the include returns. The page's top-level example (`Channel: L`, then `Include: demo.txt`, commented "Filters only for left channel") suggests a selection made *before* an Include applies inside it. It says nothing about restoring one made inside. **Fletcher ends a split fletcher.txt with `Channel: all`** (TB-45).
 - Case sensitivity of identifiers. Fletcher writes uppercase and `all`, as the docs do, and reads leniently.
 - What happens to a filter while the selection names only positions the device lacks (C on stereo). Fletcher's readers treat such filters as reaching neither ear (`eq_state` tags them "none").
 - Whether `Copy:` honors the channel selection.

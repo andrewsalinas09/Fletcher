@@ -32,6 +32,7 @@ The engine (fletcher-core `playback.rs`/`signal.rs`/`dsp.rs` realtime layer + ap
 | UI shell | Tauri 2 + TypeScript/React; draws only — receives compact Rust-computed binary frames over Tauri channels for live visuals | ADR-0005 |
 | Tray/hotkeys | Background presence, global A/B toggle | |
 | Updater | Signed self-update from this repo's GitHub releases (`updates.rs`: `update_check`/`update_install`, `update-progress` event); install refused mid-trial/profile, audio released first | ADR-0015, TB-33; process in `docs/RELEASING.md` |
+| Setup check | Settings › SETUP (app `setup.rs`): static checks of everything that could keep APO from playing fletcher.txt (`apo::device_apo_stages`, `device_match_text`, `Device:`/`Stage:` above the Include); a live test that measures a −20 dB test cut on the output's loopback (`fletcher_core::pathcheck`: −50 dBFS tone + Goertzel); `export_diagnostics` zip (report, APO registry, endpoint effects by name, config folder, Fletcher state/presets) | ADR-0018, TB-56/57, research `apo-scope-and-loopback.md` |
 
 ## On-disk layout (v1, settled 2026-08-23)
 

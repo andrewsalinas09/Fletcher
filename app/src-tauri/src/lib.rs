@@ -15,6 +15,7 @@ use std::path::PathBuf;
 mod analysis;
 mod engine;
 mod profile;
+mod setup;
 mod tools;
 mod updates;
 
@@ -6841,6 +6842,9 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            setup::setup_checks,
+            setup::path_test,
+            setup::export_diagnostics,
             apo_status,
             eq_state,
             set_fletcher_chain,

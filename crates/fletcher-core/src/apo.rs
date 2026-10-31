@@ -154,6 +154,254 @@ pub fn device_apo_status(endpoint_id: &str) -> DeviceApo {
     }
 }
 
+const RENDER_KEY: &str = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\MMDevices\\Audio\\Render";
+/// PKEY_Device_DeviceDesc: the endpoint's own name ("Speakers").
+const DEVICE_DESC: &str = "{a45c254e-df1c-4efd-8020-67d146a850e0},2";
+/// PKEY_DeviceInterface_FriendlyName: the adapter's name ("Schiit Modi 3+").
+const INTERFACE_NAME: &str = "{b3f8fa53-0004-438e-9003-51a46e139bfc},6";
+
+fn endpoint_key(guid: &str) -> Option<winreg::RegKey> {
+    use winreg::RegKey;
+    use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ};
+    RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey_with_flags(format!("{RENDER_KEY}\\{guid}"), KEY_READ)
+        .ok()
+}
+
+/// The text APO matches `Device:` patterns against: "Device_name
+/// Connection_name GUID" (APO configuration reference). Every word of a
+/// pattern must be found in it.
+pub fn device_match_text(endpoint_id: &str) -> Option<String> {
+    let guid = render_endpoint_guid(endpoint_id)?;
+    let props = endpoint_key(guid)?.open_subkey("Properties").ok()?;
+    let get = |k: &str| props.get_value::<String, _>(k).unwrap_or_default();
+    Some(format!(
+        "{} {} {guid}",
+        get(INTERFACE_NAME),
+        get(DEVICE_DESC)
+    ))
+}
+
+/// Whether a `Device:` line's patterns match `text`. A pattern matches when
+/// all its space-separated words are found in the text; `;` separates
+/// alternatives; "all" always matches. APO's docs don't say whether matching
+/// ignores case; this does.
+pub fn device_pattern_matches(pattern: &str, text: &str) -> bool {
+    let text = text.to_lowercase();
+    pattern.split(';').any(|alt| {
+        let alt = alt.trim().to_lowercase();
+        alt == "all" || (!alt.is_empty() && alt.split_whitespace().all(|w| text.contains(w)))
+    })
+}
+
+/// Which of APO's two classes the device's effect chain names: (pre-mix,
+/// post-mix). APO runs filters post-mix unless a `Stage:` line says
+/// otherwise, so a device with only the pre-mix class plays nothing Fletcher
+/// writes.
+pub fn device_apo_stages(endpoint_id: &str) -> Option<(bool, bool)> {
+    use winreg::enums::KEY_READ;
+    let guid = render_endpoint_guid(endpoint_id)?;
+    let fx = endpoint_key(guid)?
+        .open_subkey_with_flags("FxProperties", KEY_READ)
+        .ok()?;
+    let raws: Vec<Vec<u8>> = fx
+        .enum_values()
+        .filter_map(|v| v.ok())
+        .map(|(_, v)| v.bytes.to_vec())
+        .collect();
+    let has = |clsid: &str| {
+        raws.iter()
+            .any(|b| decode_utf16(b).to_ascii_uppercase().contains(clsid))
+    };
+    Some((has(APO_CLSIDS[0]), has(APO_CLSIDS[1])))
+}
+
+fn decode_utf16(bytes: &[u8]) -> String {
+    let wide: Vec<u16> = bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&c| u16::from_le_bytes(c))
+        .collect();
+    String::from_utf16_lossy(&wide)
+}
+
+/// A COM class's registered name, e.g. an effect's CLSID → "Dolby Audio".
+fn clsid_name(clsid: &str) -> Option<String> {
+    use winreg::RegKey;
+    use winreg::enums::HKEY_CLASSES_ROOT;
+    RegKey::predef(HKEY_CLASSES_ROOT)
+        .open_subkey(format!("CLSID\\{clsid}"))
+        .ok()?
+        .get_value::<String, _>("")
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
+/// Every CLSID in `text`, each followed by its registered name.
+fn annotate_clsids(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find('{') {
+        out.push_str(&rest[..start]);
+        let tail = &rest[start..];
+        match tail.find('}') {
+            Some(end) if end == 37 => {
+                let clsid = &tail[..=end];
+                out.push_str(clsid);
+                if let Some(name) = clsid_name(clsid) {
+                    out.push_str(&format!(" ({name})"));
+                }
+                rest = &tail[end + 1..];
+            }
+            _ => {
+                out.push('{');
+                rest = &tail[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn reg_value_text(v: &winreg::RegValue) -> String {
+    use winreg::enums::RegType::*;
+    match v.vtype {
+        REG_SZ | REG_EXPAND_SZ | REG_MULTI_SZ => decode_utf16(&v.bytes)
+            .trim_end_matches('\0')
+            .replace('\0', " | "),
+        REG_DWORD if v.bytes.len() >= 4 => {
+            u32::from_le_bytes(v.bytes[..4].try_into().unwrap()).to_string()
+        }
+        _ => {
+            let hex: Vec<String> = v
+                .bytes
+                .iter()
+                .take(48)
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            format!(
+                "{:?} {}{}",
+                v.vtype,
+                hex.join(""),
+                if v.bytes.len() > 48 { "…" } else { "" }
+            )
+        }
+    }
+}
+
+/// Every value under `HKLM\SOFTWARE\EqualizerAPO` and its subkeys, as text.
+pub fn registry_dump() -> String {
+    use winreg::RegKey;
+    use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ};
+    fn walk(key: &winreg::RegKey, path: &str, out: &mut String) {
+        out.push_str(&format!("[{path}]\n"));
+        for (name, v) in key.enum_values().filter_map(|v| v.ok()) {
+            out.push_str(&format!("  {name} = {}\n", reg_value_text(&v)));
+        }
+        for sub in key.enum_keys().filter_map(|k| k.ok()) {
+            if let Ok(k) = key.open_subkey_with_flags(&sub, KEY_READ) {
+                walk(&k, &format!("{path}\\{sub}"), out);
+            }
+        }
+    }
+    let mut out = String::new();
+    match RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey_with_flags("SOFTWARE\\EqualizerAPO", KEY_READ)
+    {
+        Ok(k) => walk(&k, "HKLM\\SOFTWARE\\EqualizerAPO", &mut out),
+        Err(e) => out.push_str(&format!("HKLM\\SOFTWARE\\EqualizerAPO: {e}\n")),
+    }
+    out
+}
+
+/// Every playback endpoint Windows knows, active or not: its names, state,
+/// "Disable all enhancements", whether APO is on it, and every effect in its
+/// chain by name (other EQs and enhancement suites show up here).
+pub fn render_endpoints_dump() -> String {
+    use winreg::RegKey;
+    use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ};
+    let mut out = String::new();
+    let Ok(root) = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey_with_flags(RENDER_KEY, KEY_READ)
+    else {
+        return "render endpoints unreadable\n".into();
+    };
+    for guid in root.enum_keys().filter_map(|k| k.ok()) {
+        let Ok(dev) = root.open_subkey_with_flags(&guid, KEY_READ) else {
+            continue;
+        };
+        // DEVICE_STATE_*: 1 active, 2 disabled, 4 not present, 8 unplugged.
+        let state = match dev.get_value::<u32, _>("DeviceState").unwrap_or(0) & 0xF {
+            1 => "active",
+            2 => "disabled",
+            4 => "not present",
+            8 => "unplugged",
+            _ => "unknown",
+        };
+        let props = dev.open_subkey_with_flags("Properties", KEY_READ).ok();
+        let get = |k: &str| {
+            props
+                .as_ref()
+                .and_then(|p| p.get_value::<String, _>(k).ok())
+                .unwrap_or_default()
+        };
+        let sysfx = props
+            .as_ref()
+            .and_then(|p| p.get_value::<u32, _>(DISABLE_SYSFX).ok());
+        let id = format!("{{0.0.0.00000000}}.{guid}");
+        out.push_str(&format!(
+            "{} ({}) {guid}\n  state: {state}\n  APO: {}\n  Disable all enhancements: {}\n",
+            get(DEVICE_DESC),
+            get(INTERFACE_NAME),
+            device_apo_status(&id).as_str(),
+            sysfx.map_or("not set".to_string(), |v| v.to_string()),
+        ));
+        if let Ok(fx) = dev.open_subkey_with_flags("FxProperties", KEY_READ) {
+            for (name, v) in fx.enum_values().filter_map(|v| v.ok()) {
+                out.push_str(&format!(
+                    "  fx {name} = {}\n",
+                    annotate_clsids(&reg_value_text(&v))
+                ));
+            }
+        } else {
+            out.push_str("  fx: none\n");
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// Every value in one endpoint's Properties key (names, format, spatial
+/// sound, enhancement switches), as text.
+pub fn endpoint_properties_dump(endpoint_id: &str) -> String {
+    use winreg::enums::KEY_READ;
+    let Some(props) = render_endpoint_guid(endpoint_id)
+        .and_then(endpoint_key)
+        .and_then(|k| k.open_subkey_with_flags("Properties", KEY_READ).ok())
+    else {
+        return "properties unreadable\n".into();
+    };
+    let mut out = String::new();
+    for (name, v) in props.enum_values().filter_map(|v| v.ok()) {
+        out.push_str(&format!(
+            "{name} = {}\n",
+            annotate_clsids(&reg_value_text(&v))
+        ));
+    }
+    out
+}
+
+/// APO's installed version, from its uninstall entry.
+pub fn installed_version() -> Option<String> {
+    use winreg::RegKey;
+    use winreg::enums::HKEY_LOCAL_MACHINE;
+    RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\EqualizerAPO")
+        .ok()?
+        .get_value::<String, _>("DisplayVersion")
+        .ok()
+}
+
 /// APO's per-device installer: `DeviceSelector.exe` since 1.4, `Configurator.exe`
 /// before. Whichever this install has.
 pub fn device_selector_path(install: &ApoInstall) -> Option<PathBuf> {
@@ -248,6 +496,20 @@ mod tests {
             "{C18E2F7E-933D-4965-B7D1-1EEF228D2AF3}\0{EC1CC9CE-FAED-4822-828A-82A81A6F018F}\0\0",
         );
         assert!(names_apo([multi.as_slice()]));
+    }
+
+    #[test]
+    fn device_patterns_match_like_apo() {
+        let text = "Schiit Modi 3+ Speakers {e411be18-23e9-460d-9df3-bb467280999e}";
+        assert!(device_pattern_matches("all", text));
+        assert!(device_pattern_matches("Modi Speakers", text));
+        assert!(device_pattern_matches("speakers", text));
+        assert!(device_pattern_matches("Realtek Headphones; Modi", text));
+        assert!(!device_pattern_matches("Realtek Speakers", text));
+        assert!(device_pattern_matches(
+            "{e411be18-23e9-460d-9df3-bb467280999e}",
+            text
+        ));
     }
 
     /// Machine-dependent: only meaningful where APO is installed (the dev

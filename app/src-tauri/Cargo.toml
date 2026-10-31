@@ -1,6 +1,6 @@
 [package]
 name = "fletcher-app"
-version = "0.7.0"
+version = "0.7.1"
 description = "Fletcher - honest system EQ for Windows"
 authors = ["Andrew Salinas"]
 edition = "2021"
@@ -34,4 +34,6 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 ebur128 = "0.1"
 realfft = "3"
 base64 = "0.22"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+winreg = "0.55"
 

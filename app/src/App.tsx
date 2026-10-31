@@ -2170,6 +2170,14 @@ type AbxState = {
   suspended?: boolean;
 };
 
+type SetupCheck = { status: "ok" | "warn" | "fail" | "info"; title: string; detail: string };
+type PathResult = {
+  verdict: "post-mix" | "pre-mix" | "none" | "unmeasured";
+  postDropDb: number | null;
+  preDropDb: number | null;
+  detail: string;
+};
+
 type SettingsState = {
   referenceDb: number;
   preampTrimDb: number;
@@ -4977,6 +4985,43 @@ function MainApp() {
       .then((info) => showNotice(`Clip Studio playback OK — ${info}`))
       .catch((e) => showNotice(String(e)))
       .finally(() => setTestingTone(false));
+  };
+  // Settings › SETUP (ADR-0018): what could keep APO from playing Fletcher's
+  // file, a measured test of it, and a zip of everything for a bug report.
+  const [setupChecks, setSetupChecks] = useState<SetupCheck[] | null>(null);
+  const [pathResult, setPathResult] = useState<PathResult | null>(null);
+  const [setupBusy, setSetupBusy] = useState<"checking" | "exporting" | null>(null);
+  const checkSetup = async () => {
+    setSetupBusy("checking");
+    setPathResult(null);
+    try {
+      setSetupChecks(await invoke<SetupCheck[]>("setup_checks"));
+      setPathResult(await invoke<PathResult>("path_test"));
+    } catch (e) {
+      showNotice(String(e));
+    } finally {
+      setSetupBusy(null);
+    }
+  };
+  const exportDiagnostics = async () => {
+    try {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const path = await save({
+        defaultPath: "Fletcher diagnostics.zip",
+        filters: [{ name: "Zip", extensions: ["zip"] }],
+      });
+      if (!path) return;
+      setSetupBusy("exporting");
+      await invoke("export_diagnostics", {
+        path,
+        pathResult: pathResult ? `${pathResult.verdict}: ${pathResult.detail} ${JSON.stringify(pathResult)}` : null,
+      });
+      showNotice(`diagnostics saved to ${path}`);
+    } catch (e) {
+      showNotice(String(e));
+    } finally {
+      setSetupBusy(null);
+    }
   };
   const loadSettings = () => invoke<SettingsState>("settings_state").then(setSettings).catch(() => {});
   // Self-update (ADR-0015). One shared result for the tab dot and Settings.
@@ -9962,13 +10007,6 @@ function MainApp() {
                 </div>
                 <span className="set-live dim-sm">runs in the tray so the A/B hotkey works</span>
               </div>
-              <div className="set-row">
-                <span className="set-key">Clip Studio playback</span>
-                <button onClick={() => testTone("exclusive")} disabled={testingTone}>
-                  {testingTone ? "playing…" : "play test tone"}
-                </button>
-                <span className="set-live dim-sm">quiet 2 s tone, exclusive path — other audio pauses</span>
-              </div>
             </div>
             <div className="set-sect">
               <span className="mono set-head">HOTKEYS</span>
@@ -10013,6 +10051,62 @@ function MainApp() {
           </div>
 
           <div className="set-col">
+            <div className="set-sect">
+              <span className="mono set-head">SETUP</span>
+              <div className="set-row">
+                <span className="set-key">Is the EQ reaching you?</span>
+                <button onClick={checkSetup} disabled={setupBusy !== null}>
+                  {setupBusy === "checking" ? "checking…" : "check setup"}
+                </button>
+                <span className="set-live dim-sm">plays a faint tone for a few seconds and measures it</span>
+              </div>
+              {pathResult && (
+                <div className={`setup-check ${pathResult.verdict === "post-mix" ? "ok" : pathResult.verdict === "unmeasured" ? "warn" : "fail"}`}>
+                  <span className="mono setup-mark">{pathResult.verdict === "post-mix" ? "✓" : pathResult.verdict === "unmeasured" ? "?" : "✕"}</span>
+                  <span>
+                    {pathResult.verdict === "post-mix"
+                      ? "Measured: Fletcher's EQ reaches your output"
+                      : pathResult.verdict === "pre-mix"
+                        ? "Measured: APO only runs before mixing on this output"
+                        : pathResult.verdict === "none"
+                          ? "Measured: Fletcher's EQ doesn't reach your output"
+                          : "Couldn't measure"}
+                    <span className="setup-detail">{pathResult.detail}</span>
+                  </span>
+                </div>
+              )}
+              {setupChecks?.map((c, i) => (
+                <div key={i} className={`setup-check ${c.status}`}>
+                  <span className="mono setup-mark">
+                    {c.status === "ok" ? "✓" : c.status === "fail" ? "✕" : c.status === "warn" ? "!" : "·"}
+                  </span>
+                  <span>
+                    {c.title}
+                    {c.detail && <span className="setup-detail">{c.detail}</span>}
+                  </span>
+                </div>
+              ))}
+              <div className="set-row">
+                <span className="set-key">Clip Studio playback</span>
+                <button onClick={() => testTone("exclusive")} disabled={testingTone}>
+                  {testingTone ? "playing…" : "play test tone"}
+                </button>
+                <span className="set-live dim-sm">quiet 2 s tone, exclusive path — other audio pauses</span>
+              </div>
+              <div className="set-row">
+                <span className="set-key">Diagnostics</span>
+                <button onClick={exportDiagnostics} disabled={setupBusy !== null}>
+                  {setupBusy === "exporting" ? "saving…" : "export…"}
+                </button>
+                <span className="set-live dim-sm">a zip for a bug report</span>
+              </div>
+              <span className="set-note">
+                The zip holds this check (it runs the test if you haven't), Equalizer APO's config files, your
+                playback devices and their effects, audio software by name, and Fletcher's state and presets. Nothing is
+                sent anywhere; attach it to a GitHub issue. It shows your Windows user name and device names.
+              </span>
+            </div>
+
             <div className="set-sect">
               <span className="mono set-head">INTERFACE</span>
               <div className="set-row">

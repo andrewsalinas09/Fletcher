@@ -3128,6 +3128,38 @@ button.ghost {
   font-size: 12px;
 }
 
+/* Settings › SETUP: one line per check, a mark in the key column. */
+.setup-check {
+  display: flex;
+  gap: 8px;
+  padding-left: 150px;
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+.setup-mark {
+  width: 12px;
+  flex: none;
+  text-align: center;
+}
+.setup-check.ok .setup-mark {
+  color: var(--ok);
+}
+.setup-check.fail .setup-mark,
+.setup-check.warn .setup-mark {
+  color: var(--boost);
+}
+.setup-check.info .setup-mark {
+  color: var(--dim);
+}
+.setup-check.fail {
+  color: var(--boost);
+}
+.setup-detail {
+  display: block;
+  font-size: 11.5px;
+  color: var(--dim);
+}
+
 /* ADR-0015: an update is waiting — a quiet mark on the SETTINGS tab, never a popup. */
 .tab-dot {
   display: inline-block;

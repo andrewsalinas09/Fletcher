@@ -10,6 +10,7 @@ pub mod config;
 pub mod devices;
 pub mod dsp;
 pub mod fsx;
+pub mod pathcheck;
 pub mod peace;
 pub mod playback;
 pub mod presets;
