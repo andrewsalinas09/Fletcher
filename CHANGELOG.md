@@ -2,6 +2,10 @@
 
 Each version's section becomes its GitHub release notes and the "what's new" text in Settings › UPDATES. Write for listeners, not developers.
 
+## 0.6.1
+
+- **Hold to compare.** In the A/B hotkey's settings (⚙ next to Flip A/B in Settings › Hotkeys), turn on "Hold to compare": hold the hotkey to switch, let go to switch back. Choose "hold for flat" to hear your EQ and hold for flat, or "hold for your EQ" to hear flat and hold for your EQ. Blind tests still switch on each press.
+
 ## 0.6.0
 
 - **Settings for each output device.** Click ⚙ next to a device in the device menu. Pick a preset there and it loads whenever that device becomes your Windows default, however you switched. Volume rises still fade in, and it never switches during a blind test. The same panel shows whether Equalizer APO is on that device and opens APO's device selector. Thanks for the request (#7)!
