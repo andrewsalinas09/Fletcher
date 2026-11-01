@@ -2,6 +2,11 @@
 
 Each version's section becomes its GitHub release notes and the "what's new" text in Settings › UPDATES. Write for listeners, not developers.
 
+## 0.7.2
+
+- **Hotkeys for your presets.** Every preset now has its own settings: click ⚙ next to a preset in the preset menu, or the ⚙ at the end of the preset name on the EQ page. Under Hotkey, click assign and press any combination. Pressing it from any app loads that preset, for example speakers and headphones on the same output. A small popup names the preset and your output. Renaming a preset keeps its hotkey. Thanks for the request!
+- **The device hotkey popup shows the preset that's actually playing.** Before, it could name the device's preset when another one was playing. Pressing the hotkey for the device you're already on no longer reloads its preset over one you picked since.
+
 ## 0.7.1
 
 - **Check that your EQ is reaching you.** Settings › SETUP › check setup plays a faint tone for a few seconds and measures whether Fletcher's EQ actually changes what your output plays. If it doesn't, it says why: Equalizer APO isn't on the device, it's installed only before mixing, Windows enhancements are off, or a line in Equalizer APO's config limits Fletcher to another device.
