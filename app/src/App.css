@@ -271,6 +271,23 @@ nav {
   border-color: var(--ink);
 }
 
+/* The active preset's ⚙ (ADR-0019): the chip's last segment, divided off. */
+.preset-chip .chip-cfg {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  margin: -5px -12px -5px 2px;
+  padding: 0 9px;
+  border-left: 1px solid var(--line-mid);
+  font-size: 12px;
+  opacity: 0.6;
+}
+
+.preset-chip .chip-cfg:hover {
+  opacity: 1;
+  background: var(--paper);
+}
+
 .preset-menu {
   position: absolute;
   top: calc(100% + 4px);

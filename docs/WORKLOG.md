@@ -2,6 +2,23 @@
 
 Append-only session journal. Newest entry first.
 
+## 2026-10-31 (preset settings) — A settings panel per preset, and a hotkey that loads it (ADR-0019, Q-29)
+
+- **Owner's spec:** a "settings" for presets, from the preset menu (between rename and duplicate) and on the EQ page. First setting: a hotkey that loads the preset. Nothing by default; "assign" like a device's. Mid-build correction: no Ctrl+Shift+digit offered, the user always presses their own combination.
+- **Built:** `presetSettings` in state.json, actions `preset:<name>` listed in Settings › HOTKEYS as "Load <name>". `preset_hotkey_assign` / `preset_hotkey_remove`; device assignment and presets share `assign_hotkey` / `drop_hotkey`. Rename and delete carry the hotkey (TB-58). UI: `PresetHotkeyAssign`, a PRESET SETTINGS panel, ⚙ in each preset row (the row shows its combination), ⚙ beside the preset chip.
+- **Fixed on the way:** a preset loaded by a hotkey (device or preset) lands on side A, and the A/B bar now refreshes when that happens.
+- **EQ page:** the ⚙ is the preset chip's last segment (owner: a separate chip "looks odd disconnected").
+- **Found by the owner (TB-59):** a device hotkey's popup named the device's assigned preset even when nothing switched and another preset was playing. Decided with the owner: pressing it for the device already in use doesn't re-apply its preset. When it does switch, the hotkey now loads the preset itself, and the popup reports what's actually active.
+- **Verified:** clippy, fmt, tsc. **Not yet live-tested.** Owner to try: assign, press from another app, popup, rename and delete with a hotkey, the EQ-page ⚙.
+- **Open:** a "next preset" cycle (Q-29).
+
+## 2026-10-31 (tester follow-up) — The setup check found the tester's cause
+
+- **Result:** the tester updated to 0.7.1, ran check setup and read the report themselves. It failed on config.txt line 2, `Device: Out 1-2 MOTU M Series {guid}`, above `Include: fletcher.txt`. They moved the Include above it and Fletcher works. The stage was not the cause: their MOTU has APO both pre- and post-mix (TB-56).
+- **Learned:** the `Device:` line named their own device and missed only on its GUID, probably a stale endpoint ID. A line that looks right can still miss, which is a reason for the check to say which word failed (Q-30).
+- **Also:** the −10 dB `Preamp` kept in config.txt since the room EQ was removed on 2026-08-29 was deleted at the owner's request, stepped up in 3 dB stages (backup `config.txt.before-preamp-removal.bak`).
+- **Open:** Q-30 (a one-click fix, naming the failing word), Q-29.
+
 ## 2026-10-31 (setup check) — "It sounds the same with EQ on or off": a measured setup check and a diagnostics zip (ADR-0018)
 
 - **Report (Reddit tester):** import and UI fine, but a 20 dB cut above 1 kHz changed nothing, while Peace worked. Their APO was installed "as LFX/GFX". They also asked for preset hotkeys (Q-29).

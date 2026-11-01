@@ -3448,6 +3448,49 @@ function DeviceHotkeyAssign({ id, onDone }: { id: string; onDone: (list: Device[
   );
 }
 
+/** A preset without a hotkey: "assign" waits for a combination the user
+ *  presses; nothing is picked for them (Q-29). */
+function PresetHotkeyAssign({ name, onDone }: { name: string; onDone: (list: HotkeyInfo[]) => void }) {
+  const [listening, setListening] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const held = useComboCapture(
+    listening,
+    () => setListening(false),
+    (combo) =>
+      invoke<HotkeyInfo[]>("preset_hotkey_assign", { name, combo })
+        .then((list) => {
+          setError(null);
+          onDone(list);
+        })
+        .catch((e) => setError(String(e))),
+  );
+  return (
+    <div className="hk-row">
+      {listening ? (
+        <button
+          className="hk-field listening"
+          onClick={() => setListening(false)}
+          title="Press a key combination (Esc to cancel)"
+        >
+          {keycaps(held.map((m) => comboParts(m)[0]))}
+          <span className="hk-prompt">{held.length ? "+ a key…" : "press a combination…"}</span>
+        </button>
+      ) : (
+        <span
+          className="fe-btn mono"
+          onClick={() => {
+            setError(null);
+            setListening(true);
+          }}
+        >
+          assign
+        </span>
+      )}
+      {error && <span className="hk-error">{error}</span>}
+    </div>
+  );
+}
+
 /** `device_hotkey_assign`'s "every digit is taken" (lib.rs NO_FREE_DIGIT). */
 const NO_FREE_DIGIT = "no free Ctrl+Shift+digit";
 
@@ -4259,6 +4302,8 @@ function MainApp() {
   /** The device whose settings panel is open (null = closed). */
   const [deviceCfg, setDeviceCfg] = useState<string | null>(null);
   const cfgDevice = devices.find((d) => d.id === deviceCfg) ?? null;
+  /** The preset whose settings panel is open (null = closed). */
+  const [presetCfg, setPresetCfg] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<{ from: string; value: string } | null>(null);
   const [aeq, setAeq] = useState("");
   const [aeqResults, setAeqResults] = useState<AutoeqEntry[]>([]);
@@ -4280,6 +4325,8 @@ function MainApp() {
         if (owner?.preset === from) histOwner.current = { ...owner, preset: to };
         setPresets(p);
         setRenaming(null);
+        // A preset's hotkey follows its name.
+        invoke<HotkeyInfo[]>("hotkeys").then(setHotkeyList).catch(() => {});
       })
       .catch((e) => showNotice(String(e)));
   };
@@ -4968,6 +5015,8 @@ function MainApp() {
   const abHotkey = abInfo?.enabled ? abInfo.combo : null;
   /** The open device settings' hotkey row, if the device has one. */
   const cfgHotkey = cfgDevice?.hotkey ? hotkeyList.find((h) => h.id === `device:${cfgDevice.id}`) : undefined;
+  /** A preset's hotkey row (Q-29), if it has one. */
+  const presetHotkey = (name: string) => hotkeyList.find((h) => h.id === `preset:${name}`);
   const [autostart, setAutostart] = useState<boolean | null>(null);
   const [calNoise, setCalNoise] = useState(false);
   const toggleCalNoise = () => {
@@ -5791,7 +5840,11 @@ function MainApp() {
     },
     toolsProgress: (p) => setToolsProg(p),
     // The new default device's preset was loaded (#7): same as picking it here.
-    presetSwitched: () => presetAction(invoke<EqState>("eq_state")),
+    // A preset hotkey also does it, and loading a preset lands on side A.
+    presetSwitched: () => {
+      presetAction(invoke<EqState>("eq_state"));
+      invoke<AbInfo>("ab_info").then(setAb).catch(() => {});
+    },
     // A scope window closed → its pane comes back inline.
     scopeClosed: (label) => {
       if (label === "scope-spec") setPopped((p) => ({ ...p, spec: false }));
@@ -5992,7 +6045,9 @@ function MainApp() {
       .catch((e) => showNotice(String(e)));
   };
   const deletePreset = (name: string) =>
-    presetAction(invoke<EqState>("preset_delete", { name }));
+    presetAction(invoke<EqState>("preset_delete", { name })).then(() =>
+      invoke<HotkeyInfo[]>("hotkeys").then(setHotkeyList).catch(() => {}),
+    );
 
   /** Send Fletcher's own chain to the backend (throttled during drags). */
   /** The newest chain waiting for the throttled write: the timer must send the
@@ -7780,6 +7835,47 @@ function MainApp() {
                   )}
                 </div>
               </div>
+        </SettingsModal>
+      )}
+
+      {presetCfg && presets.presets.includes(presetCfg) && (
+        <SettingsModal
+          heading="PRESET SETTINGS"
+          title={
+            <>
+              <b>{presetCfg}</b>
+              {presets.active === presetCfg && <span className="dim-sm">current</span>}
+            </>
+          }
+          onClose={() => setPresetCfg(null)}
+        >
+          <div className="dev-sect">
+            <span className="room-key">Hotkey</span>
+            <span className="dim-sm">Loads this preset from any app.</span>
+            <div className="room-row">
+              {presetHotkey(presetCfg) ? (
+                <HotkeyField
+                  info={presetHotkey(presetCfg)!}
+                  showLabel={false}
+                  onChange={setHotkeyList}
+                  extra={
+                    <span
+                      className="fe-btn mono"
+                      onClick={() =>
+                        invoke<HotkeyInfo[]>("preset_hotkey_remove", { name: presetCfg })
+                          .then(setHotkeyList)
+                          .catch((err) => showNotice(String(err)))
+                      }
+                    >
+                      remove
+                    </span>
+                  }
+                />
+              ) : (
+                <PresetHotkeyAssign name={presetCfg} onDone={setHotkeyList} />
+              )}
+            </div>
+          </div>
         </SettingsModal>
       )}
 
@@ -10225,6 +10321,19 @@ function MainApp() {
                 <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6">
                   <path d="M4 6l4 4 4-4" />
                 </svg>
+                {presets.active && (
+                  <span
+                    className="chip-cfg"
+                    title={`Settings for ${presets.active}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setMenuOpen(false);
+                      setPresetCfg(presets.active);
+                    }}
+                  >
+                    ⚙
+                  </span>
+                )}
               </span>
               {menuOpen &&
                 (() => {
@@ -10383,6 +10492,9 @@ function MainApp() {
                         <span>{p}</span>
                       )}
                       <span className="spacer" />
+                      {presetHotkey(p)?.enabled && (
+                        <span className="dim-sm mono">{fmtCombo(presetHotkey(p)!.combo)}</span>
+                      )}
                       <span
                         className="row-act"
                         title="rename"
@@ -10392,6 +10504,17 @@ function MainApp() {
                         }}
                       >
                         ✎
+                      </span>
+                      <span
+                        className="row-act"
+                        title="Settings for this preset"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setMenuOpen(false);
+                          setPresetCfg(p);
+                        }}
+                      >
+                        ⚙
                       </span>
                       <span
                         className="row-act"

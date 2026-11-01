@@ -4049,7 +4049,7 @@ fn history_import(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn preset_rename(from: String, to: String) -> Result<PresetsState, String> {
+fn preset_rename(app: tauri::AppHandle, from: String, to: String) -> Result<PresetsState, String> {
     let to = sanitize_name(&to).ok_or("invalid preset name")?;
     let st = store()?;
     if !st.exists(&from) {
@@ -4066,6 +4066,7 @@ fn preset_rename(from: String, to: String) -> Result<PresetsState, String> {
         set_active_preset(Some(&to));
     }
     retarget_device_presets(&from, Some(&to));
+    retarget_preset_settings(&app, &from, Some(&to));
     rename_history(&from, &to);
     presets_state()
 }
@@ -4200,16 +4201,33 @@ fn device_hotkey_assign(
     id: String,
     combo: Option<String>,
 ) -> Result<Vec<DeviceDto>, String> {
-    let hk = device_hotkey_id(&id);
+    assign_hotkey(&app, &device_hotkey_id(&id), combo, |c| {
+        if c.is_some() {
+            remember_device_name(&id);
+        }
+        set_device_setting(&id, "hotkey", c);
+    })?;
+    Ok(devices_list())
+}
+
+/// Give a per-thing action (`hk`, a device's or a preset's) a hotkey: `combo`
+/// if given, else the first free Ctrl+Shift+digit (devices only). `save` records (or, on
+/// failure, clears) the combination the action was given; that record is what
+/// makes the action's row exist in `hotkey_actions`.
+fn assign_hotkey(
+    app: &tauri::AppHandle,
+    hk: &str,
+    combo: Option<String>,
+    save: impl Fn(Option<&str>),
+) -> Result<(), String> {
     if let Some(c) = combo {
-        // The device's row must exist for `hotkey_set` to validate and register it.
-        remember_device_name(&id);
-        set_device_setting(&id, "hotkey", Some(&c));
-        return match hotkey_set(app, hk.clone(), Some(c), Some(true), None, None) {
-            Ok(_) => Ok(devices_list()),
+        // The row must exist for `hotkey_set` to validate and register it.
+        save(Some(&c));
+        return match hotkey_set(app.clone(), hk.to_string(), Some(c), Some(true), None, None) {
+            Ok(_) => Ok(()),
             Err(e) => {
-                set_device_setting(&id, "hotkey", None);
-                forget_hotkey(&hk);
+                save(None);
+                forget_hotkey(hk);
                 Err(e)
             }
         };
@@ -4221,8 +4239,8 @@ fn device_hotkey_assign(
         .filter_map(|c| parse_combo(&c).ok())
         .collect();
     let live = !HOTKEYS_PAUSED.load(std::sync::atomic::Ordering::Relaxed);
-    if let Some(old) = hotkey_combo(&hk).filter(|_| live) {
-        unregister_hotkey(&app, &old);
+    if let Some(old) = hotkey_combo(hk).filter(|_| live) {
+        unregister_hotkey(app, &old);
     }
     for digit in "1234567890".chars() {
         let combo = format!("ctrl+shift+Digit{digit}");
@@ -4230,28 +4248,160 @@ fn device_hotkey_assign(
             continue;
         }
         // Registering is the real test: another app may hold the combination.
-        if live && register_hotkey(&app, hk.clone(), &combo).is_err() {
+        if live && register_hotkey(app, hk.to_string(), &combo).is_err() {
             continue;
         }
-        remember_device_name(&id);
-        set_device_setting(&id, "hotkey", Some(&combo));
-        store_hotkey(&hk, &combo, true);
-        return Ok(devices_list());
+        save(Some(&combo));
+        store_hotkey(hk, &combo, true);
+        return Ok(());
     }
     Err(NO_FREE_DIGIT.into())
 }
 
-#[tauri::command]
-fn device_hotkey_remove(app: tauri::AppHandle, id: String) -> Vec<DeviceDto> {
-    let hk = device_hotkey_id(&id);
+/// Unregister and forget a per-thing action's hotkey.
+fn drop_hotkey(app: &tauri::AppHandle, hk: &str) {
     if !HOTKEYS_PAUSED.load(std::sync::atomic::Ordering::Relaxed) {
-        if let Some(c) = hotkey_combo(&hk) {
-            unregister_hotkey(&app, &c);
+        if let Some(c) = hotkey_combo(hk) {
+            unregister_hotkey(app, &c);
         }
     }
-    forget_hotkey(&hk);
+    forget_hotkey(hk);
+}
+
+#[tauri::command]
+fn device_hotkey_remove(app: tauri::AppHandle, id: String) -> Vec<DeviceDto> {
+    drop_hotkey(&app, &device_hotkey_id(&id));
     set_device_setting(&id, "hotkey", None);
     devices_list()
+}
+
+// ---------------- per-preset settings (Q-29) ----------------
+//
+// state.json "presetSettings" maps a preset name → { hotkey }. Like a
+// device's, "hotkey" is the combination the preset was given (its reset
+// target); the live choice, on/off and popup live with every other hotkey,
+// under "preset:<name>". A rename moves all of it; a delete drops it.
+
+fn preset_settings() -> serde_json::Map<String, serde_json::Value> {
+    read_state()
+        .get("presetSettings")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn set_preset_setting(name: &str, key: &str, value: Option<&str>) {
+    let mut all = preset_settings();
+    let entry = all
+        .entry(name.to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    match value {
+        Some(v) => entry[key] = serde_json::json!(v),
+        None => {
+            if let Some(o) = entry.as_object_mut() {
+                o.remove(key);
+            }
+        }
+    }
+    all.retain(|_, v| v.as_object().is_some_and(|o| !o.is_empty()));
+    write_state_field("presetSettings", serde_json::Value::Object(all));
+}
+
+fn preset_hotkey_id(name: &str) -> String {
+    format!("preset:{name}")
+}
+
+/// Give a preset a hotkey. Always a combination the user pressed: unlike a
+/// device's, there's no Ctrl+Shift+digit offered.
+#[tauri::command]
+fn preset_hotkey_assign(
+    app: tauri::AppHandle,
+    name: String,
+    combo: String,
+) -> Result<Vec<HotkeyInfo>, String> {
+    if !store()?.exists(&name) {
+        return Err(format!("preset {name:?} not found"));
+    }
+    assign_hotkey(&app, &preset_hotkey_id(&name), Some(combo), |c| {
+        set_preset_setting(&name, "hotkey", c)
+    })?;
+    Ok(hotkey_infos())
+}
+
+#[tauri::command]
+fn preset_hotkey_remove(app: tauri::AppHandle, name: String) -> Vec<HotkeyInfo> {
+    drop_hotkey(&app, &preset_hotkey_id(&name));
+    set_preset_setting(&name, "hotkey", None);
+    hotkey_infos()
+}
+
+/// Follow a preset rename (`to` = Some) or deletion (None) in its settings and
+/// hotkey. A hotkey's registration names its action, so a rename registers
+/// the combination again under the new name.
+fn retarget_preset_settings(app: &tauri::AppHandle, from: &str, to: Option<&str>) {
+    let mut all = preset_settings();
+    let Some(entry) = all.remove(from) else {
+        return;
+    };
+    let (old_hk, combo, on, popup) = (
+        preset_hotkey_id(from),
+        hotkey_choice(&preset_hotkey_id(from)),
+        hotkey_enabled(&preset_hotkey_id(from)),
+        hotkey_popup(&preset_hotkey_id(from)),
+    );
+    let had_hotkey = entry.get("hotkey").is_some();
+    if had_hotkey {
+        drop_hotkey(app, &old_hk);
+    }
+    if let Some(to) = to {
+        all.insert(to.to_string(), entry);
+    }
+    write_state_field("presetSettings", serde_json::Value::Object(all));
+    if let (Some(to), true) = (to, had_hotkey) {
+        let hk = preset_hotkey_id(to);
+        store_hotkey(&hk, &combo, on);
+        set_hotkey_popup(&hk, popup);
+        if on && !HOTKEYS_PAUSED.load(std::sync::atomic::Ordering::Relaxed) {
+            if let Err(e) = register_hotkey(app, hk, &combo) {
+                eprintln!("fletcher: hotkey for {to}: {e}");
+            }
+        }
+    }
+}
+
+/// A preset's hotkey: load it, as if picked from the menu (rises fade in). Not
+/// during a blind test (its room owns the screen, so no popup either) or a
+/// hearing session.
+fn switch_to_preset(app: &tauri::AppHandle, name: &str, via: &str) {
+    use tauri::Emitter;
+    if TRIAL.lock().unwrap().is_some() {
+        return;
+    }
+    let popup = hotkey_popup(via);
+    let say = |detail: &str| {
+        if popup {
+            show_osd(app, name, detail)
+        }
+    };
+    if profile_running() {
+        return say("not during a hearing session");
+    }
+    if active_preset().as_deref() != Some(name) || ab_side() != "a" {
+        if let Err(e) = preset_switch(Some(name.to_string())) {
+            return say(&e);
+        }
+        let _ = app.emit("preset-switched", name);
+    }
+    say(&match devices::list_render_devices()
+        .into_iter()
+        .find(|d| d.is_default)
+    {
+        Some(d) if device_apo(&d.id) != apo::DeviceApo::Active => {
+            format!("Equalizer APO isn't on {}", d.name)
+        }
+        Some(d) => format!("on {}", d.name),
+        None => "preset".to_string(),
+    });
 }
 
 /// The default device changed (any route): load its preset, if it has one and
@@ -4289,14 +4439,18 @@ fn switch_to_device(app: &tauri::AppHandle, id: &str, via: &str) {
         if let Err(e) = devices::set_default_render_device(id) {
             return say(&d.name, &e);
         }
+        // Load its preset now rather than when the watcher hears of the switch,
+        // so the popup can report what plays. The watcher then finds it loaded.
+        // Already on this device, nothing loads: its preset applies when it
+        // BECOMES the default, never over a preset picked since (TB-59).
+        apply_device_preset(app, id);
     }
     let detail = if device_apo(id) != apo::DeviceApo::Active {
         "Equalizer APO isn't on this device".to_string()
+    } else if ab_side() == "b" {
+        "B (Flat)".to_string()
     } else {
-        match device_setting(id, "preset").or_else(active_preset) {
-            Some(p) => p,
-            None => "no preset".to_string(),
-        }
+        active_preset().unwrap_or_else(|| "no preset".to_string())
     };
     say(&d.name, &detail);
 }
@@ -5931,9 +6085,10 @@ fn abx_sessions() -> Vec<serde_json::Value> {
 }
 
 #[tauri::command]
-fn preset_delete(name: String) -> Result<EqState, String> {
+fn preset_delete(app: tauri::AppHandle, name: String) -> Result<EqState, String> {
     store()?.delete(&name).map_err(|e| e.to_string())?;
     retarget_device_presets(&name, None);
+    retarget_preset_settings(&app, &name, None);
     if active_preset().as_deref() == Some(name.as_str()) {
         set_active_preset(None);
         activate_chain(&Chains::default())?;
@@ -6335,7 +6490,8 @@ fn set_scope_shortcuts(app: &tauri::AppHandle, label: &str, enable: bool) {
 // names (ctrl+shift+KeyA), which the shortcut plugin parses directly, so the
 // remapping UI can store exactly what it captured. Add a row to HOTKEYS (and
 // a case in `run_hotkey`) for each new action. Each device given a hotkey adds
-// a row of its own, "device:<id>" (#10).
+// a row of its own, "device:<id>" (#10), and so does each preset,
+// "preset:<name>" (Q-29).
 
 struct HotkeyAction {
     id: String,
@@ -6365,7 +6521,15 @@ fn hotkey_actions() -> Vec<HotkeyAction> {
             default,
         })
     });
-    builtin.chain(per_device).collect()
+    let per_preset = preset_settings().into_iter().filter_map(|(name, s)| {
+        let default = s.get("hotkey")?.as_str()?.to_string();
+        Some(HotkeyAction {
+            id: preset_hotkey_id(&name),
+            label: format!("Load {name}"),
+            default,
+        })
+    });
+    builtin.chain(per_device).chain(per_preset).collect()
 }
 
 /// System-wide editing shortcuts a global hotkey would steal from every app.
@@ -6568,6 +6732,9 @@ fn run_hotkey(app: &tauri::AppHandle, id: &str, pressed: bool) {
             if let Some(dev) = id.strip_prefix("device:") {
                 let (dev, via) = (dev.to_string(), id.to_string());
                 std::thread::spawn(move || switch_to_device(&app2, &dev, &via));
+            } else if let Some(name) = id.strip_prefix("preset:") {
+                let (name, via) = (name.to_string(), id.to_string());
+                std::thread::spawn(move || switch_to_preset(&app2, &name, &via));
             }
         }
     }
@@ -6861,6 +7028,8 @@ pub fn run() {
             device_set_preset,
             device_hotkey_assign,
             device_hotkey_remove,
+            preset_hotkey_assign,
+            preset_hotkey_remove,
             osd_text,
             apo_open_device_selector,
             updates::update_check,

@@ -44,7 +44,7 @@ subsystem owns one folder.
 
 | Path | Contents | Format |
 |---|---|---|
-| `state.json` | active preset, A/B side, reference level, hotkeys (`hotkeys`, `hotkeysOff`, `hotkeyPopup`, A/B hold mode `abHold`), per-device settings (`deviceSettings`), per-ear editing on/off (`perEar`) | JSON |
+| `state.json` | active preset, A/B side, reference level, hotkeys (`hotkeys`, `hotkeysOff`, `hotkeyPopup`, A/B hold mode `abHold`), per-device settings (`deviceSettings`), per-preset settings (`presetSettings`: a preset's hotkey, ADR-0019), per-ear editing on/off (`perEar`) | JSON |
 | `presets/<name>.txt` | EQ chains; a split preset (ADR-0017) has `Channel: L` and `Channel: R` sections, ending on `Channel: all` | APO config syntax (portable, Peace/AutoEQ-compatible) |
 | `history/<preset>.json`, `history/right/<preset>.json` | undo graphs, one tree per preset (a split preset: one per ear, the right ear's in `right/`) (survive restarts; export/import = this file) | JSON `{version, current, nodes[]}` with full snapshots |
 | `sessions/<id>.json` | ABX session records — labeled trial logs, provenance | JSON |
