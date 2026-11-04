@@ -59,15 +59,16 @@ let told: ThemeChoice | null = null;
 
 function apply() {
   const c = themeChoice();
-  // The title bar is Windows', not ours: tell it too. Forcing it also forces
-  // what the page's prefers-color-scheme reports, so for Match Windows the
-  // window must be handed back (null), or the query just echoes the last
-  // forced theme (TB-62). Handing it back fires the query's change event,
-  // which runs this again with Windows' real setting.
+  // The title bar is Windows'. Dark forces it dark to match; Light and Match
+  // Windows leave it to Windows, as Fletcher always did (the owner keeps a
+  // dark title bar over the light theme). Forcing it also forces what the
+  // page's prefers-color-scheme reports, so Match Windows must hand it back,
+  // or the query echoes the last forced theme (TB-62). Handing it back fires
+  // the query's change event, which runs this again with Windows' setting.
   if (told !== c) {
     told = c;
     getCurrentWindow()
-      .setTheme(c === "system" ? null : c)
+      .setTheme(c === "dark" ? "dark" : null)
       .catch(() => {});
   }
   const t = resolve(c);

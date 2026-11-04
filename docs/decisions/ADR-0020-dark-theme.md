@@ -26,7 +26,8 @@ Only the dark ground (L 0.21), the selection fill's lightness and the shadow and
 
 **Mechanics:**
 - Every color is a token in two blocks at the top of App.css (light `:root`, dark `:root[data-theme="dark"]`). Nothing below them writes a color.
-- `src/theme.ts` resolves Light / Dark / Match Windows, sets `data-theme` before the first render, sets the Windows title bar, and syncs all windows (localStorage plus a `theme-changed` event). The default is Light.
+- `src/theme.ts` resolves Light / Dark / Match Windows, sets `data-theme` before the first render, and syncs all windows (localStorage plus a `theme-changed` event). The default is Light.
+- The Windows title bar is forced dark only in Dark. Light and Match Windows leave it to Windows, as before: the owner keeps a dark title bar over the light theme.
 - Canvas reads tokens with `tok()` / `tokA()`, cached until the theme changes, and redraws on `useThemeTick()`.
 - `scripts/check-colors.mjs` runs in CI. It fails on a color literal outside the token blocks or in a .ts/.tsx string, and on a token with no dark value. Exempt: `csp-watch.ts` (the alarm must draw without the stylesheet) and `theme.ts` (builds rgba from tokens).
 - The spectrogram heat map (ink to orange to paper) is data color, the same in both themes.
