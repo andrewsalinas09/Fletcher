@@ -4302,8 +4302,10 @@ function MainApp() {
   });
   const earRef = useRef<Ear>(ear);
   earRef.current = ear;
+  // Both ears unless you pick one (owner, 2026-11-04): per-ear editing splits
+  // the preset by itself, and showing one ear then looked like a choice.
   const [earView, setEarViewState] = useState<EarView>(() =>
-    readPref("fletcher.earview", ["left", "right", "both", "split"] as const, "left"),
+    readPref("fletcher.earview", ["left", "right", "both", "split"] as const, "both"),
   );
   const [ghost, setGhostState] = useState(() => readPref("fletcher.ghost", ["on", "off"] as const, "off") === "on");
   const setGhost = (on: boolean) => {
@@ -4317,6 +4319,8 @@ function MainApp() {
     writeGhosts(p);
   };
   const [overlay, setOverlay] = useState<Overlay | null>(null);
+  /** Why the ghosts couldn't be fetched, shown in the EQ view (never silent). */
+  const [overlayError, setOverlayError] = useState<string | null>(null);
   const [targetLib, setTargetLib] = useState<TargetLibrary | null>(null);
   const loadTargets = () => invoke<TargetLibrary>("targets").then(setTargetLib).catch(() => {});
   const [hpRows, setHpRows] = useState<HeadphoneRow[]>([]);
@@ -4417,8 +4421,16 @@ function MainApp() {
       target: ghosts.target ? ghosts.targetRef : null,
       smoothing: ghosts.smoothing,
     })
-      .then((o) => live && setOverlay(o))
-      .catch(() => live && setOverlay(null));
+      .then((o) => {
+        if (!live) return;
+        setOverlay(o);
+        setOverlayError(null);
+      })
+      .catch((e) => {
+        if (!live) return;
+        setOverlay(null);
+        setOverlayError(String(e));
+      });
     return () => {
       live = false;
     };
@@ -7572,10 +7584,16 @@ function MainApp() {
     canJoin: earsDiffer && !!presets.active,
     otherEar: ghost,
     ghosts,
-    headphone: overlay?.headphone
-      ? [overlay.headphone.name, overlay.headphone.source === "you" ? null : overlay.headphone.source].filter(Boolean).join(" · ")
+    // The output owns its headphone: read it from the device list (loaded at
+    // start), not from the overlay, which is only fetched while a ghost is on.
+    // From the overlay, an all-off panel said "none" and kept Measurement
+    // disabled: a deadlock.
+    headphone: defaultDevice?.headphone
+      ? [defaultDevice.headphone.name, defaultDevice.headphone.source === "you" ? null : defaultDevice.headphone.source]
+          .filter(Boolean)
+          .join(" · ")
       : null,
-    measurementError: overlay?.measurementError ?? null,
+    measurementError: overlay?.measurementError ?? overlayError,
     targetError: overlay?.targetError ?? null,
     hasBounds: !!overlay?.boundsUpper.some((v) => v != null),
     deviceName: defaultDevice?.name ?? null,

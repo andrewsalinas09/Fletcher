@@ -1108,6 +1108,29 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "this machine: reads the real APO config and state"]
+    fn live_overlay_on_this_machine() {
+        let o = tauri::async_runtime::block_on(eq_overlay(
+            Some(TargetRef::Featured {
+                label: "Harman over-ear 2018".into(),
+            }),
+            Some("1/12".into()),
+            None,
+        ));
+        match o {
+            Ok(o) => println!(
+                "headphone={:?} meas_err={:?} target_err={:?} meas_pts={} target_pts={}",
+                o.headphone.map(|h| h.name),
+                o.measurement_error,
+                o.target_error,
+                o.measurement_left.iter().flatten().count(),
+                o.target.iter().flatten().count()
+            ),
+            Err(e) => println!("ERROR: {e}"),
+        }
+    }
+
+    #[test]
     #[ignore = "network: fetches real AutoEq data"]
     fn live_autoeq_measurement_and_targets() {
         let (hit, curve) =
