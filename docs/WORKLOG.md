@@ -2,6 +2,13 @@
 
 Append-only session journal. Newest entry first.
 
+## 2026-11-03 — A content security policy, and blocks that can't fail silently (TB-60)
+
+- **Report:** a user pointed out `"csp": null` in tauri.conf.json. Checked: no injection path today (no `innerHTML`/`eval`, nothing remote in the UI, React escapes outside text), but a script that got in could call every command, including `history_export` (writes any path). So: hardening, not an active hole.
+- **Owner:** "Things breaking silently are literally the worst thing possible." So the policy shipped with an alarm: `src/csp-watch.ts`, imported first in every window, shows a red bar naming what was blocked and logs it to `csp-violations.log` (`csp_violation` command; capped at 256 KB; in the diagnostics zip). The policy also applies in `tauri dev` (`devCsp`), loosened only for Vite's inline preamble and websocket.
+- **Verified:** a `VITE_CSP_SELFTEST=1` release build blocked its test request, showed the bar and logged it (the bar "vanished" in early runs because the owner clicked it, which hides it). The normal build has no self-test code. The owner clicked through every window and pop-out in the normal build: zero violations.
+- **Ongoing cost:** none unless a feature loads something new into a window (remote images or fonts, a UI-side fetch, workers, WASM, media through the webview). The bar shows it in dev the first time.
+
 ## 2026-10-31 (preset settings) — A settings panel per preset, and a hotkey that loads it (ADR-0019, Q-29)
 
 - **Owner's spec:** a "settings" for presets, from the preset menu (between rename and duplicate) and on the EQ page. First setting: a hotkey that loads the preset. Nothing by default; "assign" like a device's. Mid-build correction: no Ctrl+Shift+digit offered, the user always presses their own combination.

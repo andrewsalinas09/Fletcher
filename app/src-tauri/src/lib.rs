@@ -26,6 +26,39 @@ fn data_dir() -> PathBuf {
         .join("Fletcher")
 }
 
+/// Where the content security policy's blocks are recorded (TB-60). The
+/// diagnostics zip carries it.
+const CSP_LOG: &str = "csp-violations.log";
+
+/// A window's CSP blocked something. The window already shows it; this keeps
+/// a record for bug reports. Capped, so a looping block can't fill the disk.
+#[tauri::command]
+fn csp_violation(window: tauri::Window, report: String) {
+    use std::io::Write;
+    let path = data_dir().join(CSP_LOG);
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > 256 * 1024) {
+        return;
+    }
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let line = format!(
+        "{secs} {} {} {}\n",
+        env!("CARGO_PKG_VERSION"),
+        window.label(),
+        report.replace('\n', " ")
+    );
+    eprintln!("fletcher: CSP blocked: {line}");
+    let _ = std::fs::create_dir_all(data_dir());
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = f.write_all(line.as_bytes());
+    }
+}
+
 fn store() -> Result<PresetStore, String> {
     PresetStore::open(&data_dir().join("presets")).map_err(|e| e.to_string())
 }
@@ -7030,6 +7063,7 @@ pub fn run() {
             device_hotkey_remove,
             preset_hotkey_assign,
             preset_hotkey_remove,
+            csp_violation,
             osd_text,
             apo_open_device_selector,
             updates::update_check,

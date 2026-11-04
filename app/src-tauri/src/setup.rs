@@ -660,6 +660,9 @@ fn export_sync(path: &Path, path_result: Option<String>) -> Result<(), String> {
     if let Ok(bytes) = std::fs::read(data.join("state.json")) {
         add("fletcher/state.json", &bytes)?;
     }
+    if let Ok(bytes) = std::fs::read(data.join(crate::CSP_LOG)) {
+        add(&format!("fletcher/{}", crate::CSP_LOG), &bytes)?;
+    }
     for (rel, p) in config_files(&data.join("presets")) {
         if let Ok(bytes) = std::fs::read(&p) {
             add(&format!("fletcher/presets/{rel}"), &bytes)?;
