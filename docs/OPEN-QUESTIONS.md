@@ -184,4 +184,10 @@ A user asked for squig.link-style overlays: target curves (Harman, peqdb, …) a
   - **Lab:** ABX and blind preference between targets (e.g. "EQ'd to Harman vs to my target"): include.
   - **Labels:** every curve names its source and rig; measurements say a rig isn't your ears; targets say a population average.
   - **Later (noted):** comparing to another headphone ("make my HD 650 sound like an HD 800 S"); sharing targets and bounds as files.
+- **Placement rulings 2026-11-04 (owner), from "information lives with what owns it; views only show":**
+  - **Output → headphone:** in the output device's settings modal, beside "open APO's device selector" (search AutoEq, import a file, none). Once bound, it's listed in Settings like a device hotkey. **Nothing on the EQ page** shows the binding (the first mockup's chip is dropped).
+  - **Targets** belong to no device: a TARGETS section in Settings (import; "new target" opens the usual modal, poppable).
+  - **The EQ page only shows them:** its ⚙ gets more ghosts. "Enable ghost" is renamed for what it shows (the other ear), joined by measurement, target and bounds ghosts.
+  - With measurement, target and bounds lined up at 0 dB at 500 Hz, they share the EQ graph's dB axis, so no separate "response view" is needed; the predicted result is one more ghost.
+  - Open: is the shown target chosen under the target ghost in the EQ ⚙ (proposed)?
 - **Open:** data sources and their licenses (code vs data), which targets, what preference bounds actually are and where they come from, target adjustments (bass, tilt, treble), how targets are stored and selected ("like presets"), and how this meets the Fingerprint Lab later.
