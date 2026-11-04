@@ -15,14 +15,15 @@ A user asked for dark mode. The owner wanted it "like this color but dark", not 
 
 **Dark values are derived from the light ones, in OKLCH:**
 1. Hue lock: every color keeps its light hue (boost 46.7°, cut 251.4°); neutrals share the paper's 84.6°.
-2. Text and strokes keep their chroma, and their lightness is solved so the APCA contrast against the dark paper equals today's against the light paper. APCA, not WCAG 2, because WCAG 2 misjudges light-on-dark.
-3. Surfaces and lines keep their OKLab lightness step from the paper. Raised stays lighter and recessed darker; lines flip so they still stand out.
-4. Accents on a selected (inverted) cell are matched against that cell, the ink.
-5. Washes keep their step from the ground with the hue locked, and their chroma is raised 1.49× for the Hunt effect (CAM16's F_L^¼ between the two grounds). Measured first: a 14% sRGB blend of the orange over near-black is L 0.28, C 0.03, and 14° yellower, which is brown.
+2. Accents (boost, cut, ok, warn, error, the right ear, comparison colors) keep their chroma, and their lightness is solved so the APCA contrast against the dark paper equals today's against the light paper. APCA, not WCAG 2, because WCAG 2 misjudges light-on-dark. Neutral text (ink, dim, ink-2, ink-3) gets 92% of the light contrast (ink APCA 87 instead of 95), which eases the glare of near-white on near-black.
+3. **Neutrals keep their saturation, not their chroma.** How tinted a color looks follows chroma relative to lightness. The first version kept chroma, which at a quarter of the lightness is about four times the saturation: the grays read brown ("coffee", not "paper"). Lines and surfaces keep their own saturation; neutral text and marks take the paper's.
+4. Surfaces and lines keep their OKLab lightness step from the paper. Raised stays lighter and recessed darker; lines flip so they still stand out.
+5. Accents on a selected cell are matched against that cell.
+6. Washes keep their step from the ground with the hue locked, and their chroma is raised 1.49× for the Hunt effect (CAM16's F_L^¼ between the two grounds). Measured first: a 14% sRGB blend of the orange over near-black is L 0.28, C 0.03, and 14° yellower, which is brown.
 
-6. **Roles, not values.** In light, the ink does two jobs: text and marks (thin, small) and selection fills (tabs, segments, current rows: large blocks). Darkest is right for both. In dark they split. A large bright block on a dark ground glares and dominates (irradiation: bright areas on dark look bigger and brighter), which is the old "invert colors" look the owner spotted. So selection has its own tokens: `--sel` / `--sel-ink`, equal to the ink and paper in light, and in dark a raised neutral (`#45423b`, L 0.38) with ink text on it (APCA 86, light 97). The accents and knob lines on a selected cell are re-derived against that fill. Small state marks (slider tracks and thumbs, progress dots, a switch that's on) stay the ink.
+7. **Roles, not values.** In light, the ink does two jobs: text and marks (thin, small) and selection fills (tabs, segments, current rows: large blocks). Darkest is right for both. In dark they split. A large bright block on a dark ground glares and dominates (irradiation: bright areas on dark look bigger and brighter), which is the old "invert colors" look the owner spotted. So selection has its own tokens: `--sel` / `--sel-ink`, equal to the ink and paper in light, and in dark a raised neutral (`#4b4a48`, L 0.41) with ink text on it. Switches follow the same split: dim tracks, and the knob carries the state (dim off, bright on). The accents and knob lines on a selected cell are re-derived against that fill. Small state marks (slider tracks and thumbs, progress dots, a switch that's on) stay the ink.
 
-Only the dark ground (L 0.21), the selection fill's lightness and the shadow and scrim alphas were chosen by eye.
+Chosen by eye, by the owner from four rendered variants (2026-11-03): the ground (L 0.25, lighter than the first version's 0.21), the 92% text contrast, the selection fill's lightness, and the shadow and scrim alphas. The variant with a deeper shadow and a hairline highlight for depth was not chosen.
 
 **Mechanics:**
 - Every color is a token in two blocks at the top of App.css (light `:root`, dark `:root[data-theme="dark"]`). Nothing below them writes a color.
@@ -35,5 +36,5 @@ Only the dark ground (L 0.21), the selection fill's lightness and the shadow and
 ## Consequences
 
 - A new color is a new token with both values, or CI fails. A feature can't ship light-only.
-- The dark orange is lighter than the first draft (`#ff9661`): matching contrast at that lightness reaches the sRGB gamut edge. If small orange text ever reads too pale, the principled alternative is matching contrast only for strokes and using a deeper orange for small text.
+- The dark orange is lighter than the first draft (`#ff9966`): matching contrast at that lightness reaches the sRGB gamut edge. If small orange text ever reads too pale, the principled alternative is matching contrast only for strokes and using a deeper orange for small text.
 - The derivation scripts are kept with the session's work, not in the repo; the rules above are enough to redo them.

@@ -61,50 +61,53 @@
 }
 
 /* Dark: the same paper and ink with the lights down (ADR-0020). Derived from
-   the light values by rule in OKLCH: every hue locked; text and strokes keep
-   their APCA contrast against the paper; surfaces and lines keep their
-   lightness step from it; washes keep their step with chroma raised for the
-   Hunt effect. Only the ground and the shadows were chosen by eye. */
+   the light values by rule in OKLCH: every hue locked; neutrals keep the
+   light theme's saturation (chroma relative to lightness), so they're as
+   faintly warm as the paper, not brown; accents keep their APCA contrast
+   against the paper and neutral text 92% of it; surfaces and lines keep their
+   lightness step; washes keep their step with chroma raised for the Hunt
+   effect. Chosen by eye from compared variants: the ground (L 0.25), the text
+   contrast, the selection fill (L 0.41) and the shadows. */
 :root[data-theme="dark"] {
-  --paper: #1a1814;
-  --panel: #1f1d1a;
-  --panel-alt: #16130d;
-  --raised: #24221d;
-  --ink: #f0ede8;
+  --paper: #222120;
+  --panel: #282726;
+  --panel-alt: #1d1c1b;
+  --raised: #2c2b2a;
+  --ink: #e6e3de;
   /* Not the ink: a large bright block glares on a dark ground (ADR-0020). */
-  --sel: #45423b;
-  --sel-ink: #f0ede8;
+  --sel: #4b4a48;
+  --sel-ink: #e6e3de;
   /* Dim tracks, the knob carries the state: dim off, bright on. */
-  --switch-off: #312d27;
-  --switch-on: #5b5851;
-  --switch-knob-off: #b0a99c;
-  --switch-knob-on: #f0ede8;
-  --switch-knob-ok: #1a1814;
-  --ink-2: #dbd2bf;
-  --ink-3: #e8e0d2;
-  --dim: #b0a99c;
-  --grid: #201c13;
-  --line: #282319;
-  --line-soft: #30291c;
-  --line-mid: #40392b;
-  --line-strong: #524b3e;
-  --boost: #ff9661;
-  --boost-dark: #ffa87d;
-  --cut: #92c4fa;
-  --cut-dark: #afc8e4;
-  --ok: #88cb8c;
-  --warn: #ffab84;
-  --warn-line: #543a26;
-  --error: #ffb69f;
-  --ear-right: #ffb1b3;
-  --cmp-4: #d6b1fc;
-  --cmp-6: #91c0c0;
-  --inv-line: #716c63;
-  --inv-line-strong: #8a8270;
-  --boost-wash: rgb(138 48 12 / 25%);
-  --cut-wash: rgb(62 80 108 / 25%);
-  --boost-wash-faint: rgb(138 48 12 / 18%);
-  --cut-wash-faint: rgb(62 80 108 / 18%);
+  --switch-off: #393836;
+  --switch-on: #61605e;
+  --switch-knob-off: #a6a39f;
+  --switch-knob-on: #e6e3de;
+  --switch-knob-ok: #222120;
+  --ink-2: #cccac5;
+  --ink-3: #dad8d2;
+  --dim: #a6a39f;
+  --grid: #272623;
+  --line: #2f2d2a;
+  --line-soft: #37342f;
+  --line-mid: #48443d;
+  --line-strong: #5b574e;
+  --boost: #ff9966;
+  --boost-dark: #ffaf88;
+  --cut: #94c6fc;
+  --cut-dark: #b4cde9;
+  --ok: #8bcd8e;
+  --warn: #ffae88;
+  --warn-line: #57483e;
+  --error: #ffb9a4;
+  --ear-right: #ffb4b6;
+  --cmp-4: #d9b3fe;
+  --cmp-6: #92c2c2;
+  --inv-line: #777672;
+  --inv-line-strong: #8d8b88;
+  --boost-wash: rgb(154 61 16 / 25%);
+  --cut-wash: rgb(78 93 112 / 25%);
+  --boost-wash-faint: rgb(154 61 16 / 18%);
+  --cut-wash-faint: rgb(78 93 112 / 18%);
   --shadow: rgb(0 0 0 / 45%);
   --shadow-mid: rgb(0 0 0 / 50%);
   --shadow-deep: rgb(0 0 0 / 55%);
