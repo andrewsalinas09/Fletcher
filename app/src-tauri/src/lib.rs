@@ -7079,6 +7079,7 @@ pub fn run() {
             headphones::target_save,
             headphones::target_import,
             headphones::target_delete,
+            headphones::targets_user,
             headphones::eq_overlay,
             osd_text,
             apo_open_device_selector,

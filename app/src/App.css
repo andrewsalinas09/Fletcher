@@ -3668,3 +3668,152 @@ button.ghost {
   opacity: 0.4;
   cursor: default;
 }
+
+/* ---------- targets and measurements (ADR-0021): ghosts behind the curve ---------- */
+.ghosts {
+  pointer-events: none;
+}
+
+.ghost-meas,
+.ghost-pred,
+.ghost-target {
+  fill: none;
+  stroke-linejoin: round;
+}
+
+/* The headphone as measured: dashed, quiet. */
+.ghost-meas {
+  stroke: var(--dim);
+  stroke-width: 1.4;
+  stroke-dasharray: 5 3;
+}
+
+/* What you hear: the measurement with your EQ. */
+.ghost-pred {
+  stroke: var(--cmp-4);
+  stroke-width: 1.8;
+}
+
+.ghost-target {
+  stroke: var(--cmp-6);
+  stroke-width: 1.8;
+}
+
+.ghost-bounds {
+  fill: color-mix(in srgb, var(--cmp-6) 16%, transparent);
+  stroke: none;
+}
+
+/* Above 10 kHz a measurement depends more on fit than on the headphone. */
+.ghost-lowconf {
+  fill: color-mix(in srgb, var(--ink) 4%, transparent);
+}
+
+.ghost-lowconf-label {
+  fill: var(--dim);
+  font-size: 9px;
+  font-family: "IBM Plex Mono", monospace;
+}
+
+.ghost-legend {
+  position: absolute;
+  left: 62px;
+  top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px 8px;
+  font-size: 10.5px;
+  color: var(--ink-2);
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  border: 1px solid var(--line);
+  pointer-events: none;
+}
+
+.ghost-legend span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ghost-legend line.ghost-bounds {
+  stroke: color-mix(in srgb, var(--cmp-6) 35%, transparent);
+  stroke-width: 6;
+}
+
+.link-like {
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* An output's headphone (device settings, Settings › HEADPHONES). */
+.hp-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hp-current {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.hp-search {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.hp-hits,
+.tp-list {
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--line-mid);
+  background: var(--panel);
+}
+
+.hp-hits:empty {
+  display: none;
+}
+
+/* Choosing a target. */
+.target-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 280px;
+}
+
+.target-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 520px;
+}
+
+.knob-row {
+  display: grid;
+  grid-template-columns: 76px 1fr 92px;
+  align-items: center;
+  gap: 10px;
+  font-size: 12.5px;
+}
+
+.knob-row .mono {
+  text-align: right;
+  font-size: 12px;
+}
+
+.target-preview {
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--line-mid);
+}
+
+.tp-axis {
+  fill: var(--dim);
+  font-size: 9px;
+  font-family: "IBM Plex Mono", monospace;
+}

@@ -856,8 +856,22 @@ pub fn target_import(
         Ok(file)
     };
     let file = copy(&path, "")?;
+    // Which file is the upper edge is read from the data, not the order they
+    // were picked in: the one with the higher average.
+    let mean_of = |p: &str| -> Result<f64, String> {
+        let c = Curve::parse(&std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"))?)
+            .map_err(|e| format!("{p}: {e}"))?;
+        Ok(c.db.iter().sum::<f64>() / c.db.len() as f64)
+    };
     let bounds = match bounds {
-        Some([u, l]) => Some([copy(&u, " bounds upper")?, copy(&l, " bounds lower")?]),
+        Some([a, b]) => {
+            let (u, l) = if mean_of(&a)? >= mean_of(&b)? {
+                (a, b)
+            } else {
+                (b, a)
+            };
+            Some([copy(&u, " bounds upper")?, copy(&l, " bounds lower")?])
+        }
         None => None,
     };
     target_save(
@@ -873,6 +887,12 @@ pub fn target_import(
         },
         None,
     )
+}
+
+/// The user's targets in full, for the editor.
+#[tauri::command]
+pub fn targets_user() -> Vec<UserTarget> {
+    user_targets()
 }
 
 #[tauri::command]
@@ -921,7 +941,7 @@ fn parse_smoothing(s: &str) -> Smoothing {
 }
 
 /// The ghosts for the EQ graph: the default output's headphone measurement,
-/// measurement + the live EQ (as APO plays it, per ear), the chosen target
+/// measurement + the live EQ (per ear, as the graph draws it), the chosen target
 /// fitted to the measurement, and its bounds. `smoothing`: "none", "1/24",
 /// "1/12" (default), "1/6", "1/3", "erb".
 #[tauri::command]
@@ -951,14 +971,20 @@ pub async fn eq_overlay(
             None => (None, None),
         };
         let bounds = target.as_ref().and_then(target_bounds);
+        // The EQ as the graph draws it: without the preamp. The preamp is a
+        // level, which level matching handles; drawn in, it would push the
+        // predicted curve below a target it matches in shape.
+        let drawn = |sum: &[f64]| -> Vec<f64> { sum.iter().map(|v| v - eq.preamp_db).collect() };
+        let eq_left = drawn(&eq.sum_db);
+        let eq_right = eq.sum_db_right.as_deref().map(drawn);
         let o = response::overlay(&response::OverlayInput {
             freqs: &eq.freqs,
             measurement: measurement.as_ref(),
             target: target_curve_v.as_ref(),
             bounds: bounds.as_ref(),
             smoothing: parse_smoothing(smoothing.as_deref().unwrap_or("1/12")),
-            eq_left: &eq.sum_db,
-            eq_right: eq.sum_db_right.as_deref(),
+            eq_left: &eq_left,
+            eq_right: eq_right.as_deref(),
             robust_fit: robust.unwrap_or(false),
         });
         Ok(OverlayDto {

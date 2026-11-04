@@ -4,6 +4,23 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { openUrl as openUrlInBrowser } from "@tauri-apps/plugin-opener";
 import { setThemeChoice, themeChoice, tok, tokA, useThemeTick, type ThemeChoice } from "./theme";
+import {
+  anyGhost,
+  bandPath,
+  GhostsSection,
+  HeadphonePicker,
+  headphoneLine,
+  pathGaps,
+  readGhosts,
+  TargetEditor,
+  writeGhosts,
+  type GhostPrefs,
+  type HeadphoneBinding,
+  type HeadphoneRow,
+  type Overlay,
+  type TargetLibrary,
+  type UserTarget,
+} from "./targets";
 import "./App.css";
 
 type EqFilter = {
@@ -2143,6 +2160,8 @@ type Device = {
   /** This device's switch hotkey (#10), kept while off. */
   hotkey: string | null;
   hotkeyOn: boolean;
+  /** The headphone on this output: its measurement (ADR-0021). */
+  headphone: HeadphoneBinding | null;
 };
 type UpdateStatus = {
   current: string;
@@ -4256,6 +4275,43 @@ function MainApp() {
     setGhostState(on);
     writePref("fletcher.ghost", on ? "on" : "off");
   };
+  // ---- targets and measurements (ADR-0021) ----
+  const [ghosts, setGhostsState] = useState<GhostPrefs>(readGhosts);
+  const setGhosts = (p: GhostPrefs) => {
+    setGhostsState(p);
+    writeGhosts(p);
+  };
+  const [overlay, setOverlay] = useState<Overlay | null>(null);
+  const [targetLib, setTargetLib] = useState<TargetLibrary | null>(null);
+  const loadTargets = () => invoke<TargetLibrary>("targets").then(setTargetLib).catch(() => {});
+  const [hpRows, setHpRows] = useState<HeadphoneRow[]>([]);
+  const loadHpRows = () => invoke<HeadphoneRow[]>("headphone_bindings").then(setHpRows).catch(() => {});
+  /** The target editor (Settings › TARGETS): null = closed, `initial` null = new. */
+  const [targetEdit, setTargetEdit] = useState<{ initial: UserTarget | null } | null>(null);
+  /** Settings › TARGETS › import: a response file, and optionally preference
+   *  bounds (two files; the backend tells upper from lower by their levels). */
+  const importTarget = async () => {
+    try {
+      const { open, ask } = await import("@tauri-apps/plugin-dialog");
+      const path = await open({
+        multiple: false,
+        filters: [{ name: "Target (REW text, AutoEq CSV)", extensions: ["txt", "csv", "frd"] }],
+      });
+      if (typeof path !== "string") return;
+      const name = path.split(/[\\/]/).pop()!.replace(/\.[^.]+$/, "");
+      let bounds: string[] | null = null;
+      if (await ask("Add preference bounds for this target? (two files: the band's upper and lower edges)", { title: "Bounds" })) {
+        const picked = await open({ multiple: true, filters: [{ name: "Bounds", extensions: ["txt", "csv", "frd"] }] });
+        if (Array.isArray(picked) && picked.length === 2) bounds = picked;
+        else if (picked) throw new Error("Bounds need exactly two files: the upper and lower edges.");
+      }
+      setTargetLib(await invoke<TargetLibrary>("target_import", { name, path, bounds }));
+    } catch (e) {
+      showNotice(String(e));
+    }
+  };
+  /** An output's headphone, edited from Settings (works while it's unplugged). */
+  const [hpEdit, setHpEdit] = useState<HeadphoneRow | { deviceId: string; deviceName: string; headphone: null } | null>(null);
   /** Take a state from the backend: keep both ears, show the active one. */
   const adopt = (s: EqState) => {
     rawRef.current = s;
@@ -4307,6 +4363,32 @@ function MainApp() {
   /** The device whose settings panel is open (null = closed). */
   const [deviceCfg, setDeviceCfg] = useState<string | null>(null);
   const cfgDevice = devices.find((d) => d.id === deviceCfg) ?? null;
+  // The EQ graph's ghosts: fetched when what they show changes (the output,
+  // its headphone, the target, smoothing), not on every edit. Measurement +
+  // EQ is drawn from the live curve, so it follows a drag.
+  const defaultDevice = devices.find((d) => d.isDefault) ?? null;
+  const overlayKey = JSON.stringify([
+    anyGhost(ghosts),
+    ghosts.target ? ghosts.targetRef : null,
+    ghosts.smoothing,
+    defaultDevice?.id,
+    defaultDevice?.headphone,
+    targetLib,
+  ]);
+  useEffect(() => {
+    if (!anyGhost(ghosts)) return setOverlay(null);
+    let live = true;
+    invoke<Overlay>("eq_overlay", {
+      target: ghosts.target ? ghosts.targetRef : null,
+      smoothing: ghosts.smoothing,
+    })
+      .then((o) => live && setOverlay(o))
+      .catch(() => live && setOverlay(null));
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [overlayKey]);
   /** The preset whose settings panel is open (null = closed). */
   const [presetCfg, setPresetCfg] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<{ from: string; value: string } | null>(null);
@@ -4405,6 +4487,12 @@ function MainApp() {
 
   // ---- Clip Studio (M2: library + track engine transport) ----
   const [view, setView] = useState<"eq" | "lab" | "settings" | "clips" | "prints">("eq");
+  // The target library and the headphone list load when something shows them.
+  useEffect(() => {
+    if (eqMenu || view === "settings") loadTargets();
+    if (view === "settings") loadHpRows();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [eqMenu, view]);
   // Measure the EQ graph's panel whenever it's on screen (it mounts with the EQ view).
   useLayoutEffect(() => {
     const panel = svgRef.current?.parentElement;
@@ -7332,10 +7420,21 @@ function MainApp() {
       ...state.sumDb.filter((_, i) => state.freqs[i] >= 20).map((db) => Math.abs(db - state.preampDb)),
       ...state.filters.filter((f) => f.enabled).map((f) => Math.abs(f.gainDb)),
     ];
+    // Ghosts that are shown count too, from 20 Hz up like the curve.
+    if (overlay && anyGhost(ghosts)) {
+      const shown = [
+        ...(ghosts.measurement || ghosts.predicted ? overlay.measurementLeft : []),
+        ...(ghosts.target ? overlay.target : []),
+        ...(ghosts.bounds ? [...overlay.boundsUpper, ...overlay.boundsLower] : []),
+      ];
+      shown.forEach((v, i) => {
+        if (v != null && overlay.freqs[i % overlay.freqs.length] >= 20) peaks.push(Math.abs(v));
+      });
+    }
     const maxAbs = peaks.length ? Math.max(...peaks) : 0;
     return SCALES.find((s) => s.v >= maxAbs + 1.5)?.v ?? 33;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state]);
+  }, [state, overlay, ghosts]);
 
   // Freeze the mapping during a drag even in auto mode: the fit is only
   // allowed to change while nothing is being held.
@@ -7432,6 +7531,57 @@ function MainApp() {
         className={`ear-curve ear-${o} ${both ? "" : "faint"}`}
         clipPath={`url(#${clipId})`}
       />
+    ) : null;
+  };
+  /** The ghosts behind the curve (ADR-0021): bounds, target, measurement, and
+   *  measurement + the EQ as drawn here (live, so it follows a drag). */
+  const ghostLayers = (clipId: string) => {
+    if (!overlay || !state || !anyGhost(ghosts) || overlay.freqs.length !== state.freqs.length) return null;
+    const f = overlay.freqs;
+    const meas = ear === "right" && overlay.measurementRight ? overlay.measurementRight : overlay.measurementLeft;
+    const hasMeas = meas.some((v) => v != null);
+    const predicted = meas.map((m, i) => (m == null ? null : m + state.sumDb[i] - state.preampDb));
+    const clip = `url(#${clipId})`;
+    const xc = xOf(overlay.confidentBelowHz);
+    return (
+      <g className="ghosts">
+        {hasMeas && (ghosts.measurement || ghosts.predicted) && (
+          <>
+            <rect x={xc} y={py0} width={Math.max(0, px1 - xc)} height={py1 - py0} className="ghost-lowconf" />
+            <text x={xc + 4} y={py1 - 6} className="ghost-lowconf-label">
+              less reliable
+            </text>
+          </>
+        )}
+        {ghosts.bounds && (
+          <path d={bandPath(f, overlay.boundsUpper, overlay.boundsLower, xOf, yOfPinned)} className="ghost-bounds" clipPath={clip} />
+        )}
+        {ghosts.target && <path d={pathGaps(f, overlay.target, xOf, yOfPinned)} className="ghost-target" clipPath={clip} />}
+        {ghosts.measurement && <path d={pathGaps(f, meas, xOf, yOfPinned)} className="ghost-meas" clipPath={clip} />}
+        {ghosts.predicted && <path d={pathGaps(f, predicted, xOf, yOfPinned)} className="ghost-pred" clipPath={clip} />}
+      </g>
+    );
+  };
+  /** What each ghost is, and where it came from. */
+  const ghostLegend = () => {
+    if (!overlay || !anyGhost(ghosts)) return null;
+    const hp = overlay.headphone;
+    const rows: [string, string][] = [];
+    if (ghosts.measurement && hp) rows.push(["ghost-meas", headphoneLine(hp)]);
+    if (ghosts.predicted && hp) rows.push(["ghost-pred", `${hp.name} with your EQ`]);
+    if (ghosts.target && ghosts.targetName) rows.push(["ghost-target", `${ghosts.targetName} · a population's preference`]);
+    if (ghosts.bounds && overlay.boundsUpper.some((v) => v != null)) rows.push(["ghost-bounds", "preference bounds"]);
+    return rows.length ? (
+      <div className="ghost-legend">
+        {rows.map(([cls, text]) => (
+          <span key={cls}>
+            <svg width="18" height="8">
+              <line x1="0" x2="18" y1="4" y2="4" className={cls} />
+            </svg>
+            {text}
+          </span>
+        ))}
+      </div>
     ) : null;
   };
   /** The grid, frame and axis labels every EQ graph shares. */
@@ -7807,6 +7957,17 @@ function MainApp() {
                 </div>
               </div>
               <div className="dev-sect">
+                <span className="room-key">Headphone</span>
+                <HeadphonePicker<Device>
+                  deviceId={cfgDevice.id}
+                  binding={cfgDevice.headphone}
+                  onDevices={(list) => {
+                    setDevices(list);
+                    loadHpRows();
+                  }}
+                />
+              </div>
+              <div className="dev-sect">
                 <span className="room-key">Hotkey</span>
                 <span className="dim-sm">Switches to this device from any app.</span>
                 <div className="room-row">
@@ -7846,6 +8007,36 @@ function MainApp() {
                   )}
                 </div>
               </div>
+        </SettingsModal>
+      )}
+
+      {targetEdit && (
+        <SettingsModal
+          heading={targetEdit.initial ? "TARGET" : "NEW TARGET"}
+          title={<b>{targetEdit.initial?.name ?? "A target of your own"}</b>}
+          onClose={() => setTargetEdit(null)}
+        >
+          <TargetEditor
+            initial={targetEdit.initial}
+            library={targetLib}
+            onSaved={setTargetLib}
+            onClose={() => setTargetEdit(null)}
+          />
+        </SettingsModal>
+      )}
+
+      {hpEdit && (
+        <SettingsModal heading="HEADPHONE" title={<b>{hpEdit.deviceName}</b>} onClose={() => setHpEdit(null)}>
+          <div className="dev-sect">
+            <HeadphonePicker<Device>
+              deviceId={hpEdit.deviceId}
+              binding={hpRows.find((r) => r.deviceId === hpEdit.deviceId)?.headphone ?? null}
+              onDevices={(list) => {
+                setDevices(list);
+                loadHpRows();
+              }}
+            />
+          </div>
         </SettingsModal>
       )}
 
@@ -10248,6 +10439,54 @@ function MainApp() {
             </div>
 
 
+            {hpRows.length > 0 && (
+              <div className="set-sect">
+                <span className="mono set-head">HEADPHONES</span>
+                {hpRows.map((r) => (
+                  <div key={r.deviceId} className="set-row">
+                    <span className="set-key">
+                      {r.deviceName}
+                      {!r.connected && <span className="dim-sm"> · not connected</span>}
+                    </span>
+                    <span className="set-text">{headphoneLine(r.headphone)}</span>
+                    <span className="row-act" title="Change this output's headphone" onClick={() => setHpEdit(r)}>
+                      ⚙
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="set-sect">
+              <span className="mono set-head">TARGETS</span>
+              {(targetLib?.yours ?? []).map((t) => (
+                <div key={t.name} className="set-row">
+                  <span className="set-key">{t.name}</span>
+                  <span className="set-text dim-sm">{t.rig ? `made for ${t.rig}` : ""}</span>
+                  <span
+                    className="row-act"
+                    title="Edit this target"
+                    onClick={() =>
+                      invoke<UserTarget[]>("targets_user")
+                        .then((all) => setTargetEdit({ initial: all.find((u) => u.name === t.name) ?? null }))
+                        .catch((e) => showNotice(String(e)))
+                    }
+                  >
+                    ⚙
+                  </span>
+                </div>
+              ))}
+              <div className="set-row">
+                <span className="set-key">{targetLib?.yours.length ? "" : "Your targets"}</span>
+                <button onClick={() => setTargetEdit({ initial: null })}>new target</button>
+                <button onClick={importTarget}>import…</button>
+              </div>
+              <span className="set-note">
+                A target is a frequency response to aim for. The EQ page shows one (⚙ › GHOSTS), measured against your
+                output's headphone. AutoEq's targets are there to pick from; yours start from one of them, or from a file.
+              </span>
+            </div>
+
             <div className="set-sect">
               <span className="mono set-head">TOOL PATHS</span>
               <div className="set-row">
@@ -10772,15 +11011,6 @@ function MainApp() {
                       ))}
                     </div>
                   </div>
-                  <div className="room-row">
-                    <div
-                      className={`switch ${ghost ? "on" : ""} ${settings?.perEar ? "" : "disabled"}`}
-                      onClick={() => settings?.perEar && setGhost(!ghost)}
-                    >
-                      <div className="knob" />
-                    </div>
-                    <span className="room-key">Enable ghost</span>
-                  </div>
                   {earsDiffer && presets.active && (
                     <div className="room-row">
                       <span className="room-key">Join ears</span>
@@ -10801,8 +11031,20 @@ function MainApp() {
                       ? "Turn on Settings › EARS › Edit each ear separately, to give each ear its own chain."
                       : !splitOn
                         ? "This preset still plays one chain on both ears. Click a view (Left too) to give each ear its own; both start the same."
-                        : "Ghost shows the other ear faintly behind the one you edit."}
+                        : "The other-ear ghost (below) shows the other ear faintly behind the one you edit."}
                   </span>
+                  <GhostsSection
+                    prefs={ghosts}
+                    setPrefs={setGhosts}
+                    overlay={overlay}
+                    library={targetLib}
+                    otherEar={{ on: ghost, enabled: !!settings?.perEar, toggle: () => setGhost(!ghost) }}
+                    deviceName={defaultDevice?.name ?? null}
+                    onOpenDevice={() => {
+                      setEqMenu(false);
+                      if (defaultDevice) setDeviceCfg(defaultDevice.id);
+                    }}
+                  />
                 </div>
               )}
             </span>
@@ -10936,6 +11178,7 @@ function MainApp() {
               {/* Curves stay inside the plot: a deep chain (a REW import stacking LP + HP)
                   must not paint over the labels in the gutters. */}
               {graphGrid("eq-plot-area")}
+              {ghostLayers("eq-plot-area")}
 
               {[...multiSel].map((si) => {
                 const sf = state.filters[si];
@@ -10986,6 +11229,7 @@ function MainApp() {
 
               {graphAxis()}
             </svg>
+            {ghostLegend()}
             </div>
             {splitView && ear === "left" && idleEarGraph("right")}
           </div>
