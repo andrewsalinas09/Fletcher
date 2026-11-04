@@ -189,5 +189,12 @@ A user asked for squig.link-style overlays: target curves (Harman, peqdb, …) a
   - **Targets** belong to no device: a TARGETS section in Settings (import; "new target" opens the usual modal, poppable).
   - **The EQ page only shows them:** its ⚙ gets more ghosts. "Enable ghost" is renamed for what it shows (the other ear), joined by measurement, target and bounds ghosts.
   - With measurement, target and bounds lined up at 0 dB at 500 Hz, they share the EQ graph's dB axis, so no separate "response view" is needed; the predicted result is one more ghost.
-  - Open: is the shown target chosen under the target ghost in the EQ ⚙ (proposed)?
+  - **Answers 2026-11-04 (owner):**
+    1. The shown target is chosen under the target ghost in the EQ ⚙.
+    2. The fit is **"From target…"** in the preset menu, next to "From REW file…": the current output's headphone fitted to the chosen target, as a new preset.
+    3. **Predicted (measurement + EQ) is its own ghost.** Every curve is a show/hide toggle: "these can all be out of the way *because* they're super rarely used. When they're needed it's simple and obvious."
+    4. A few AutoEq targets are featured, and **all of them are searchable** ("it's just data").
+    5. Fletcher's own built-in bounds: still hand-wavy; **build later**, after the rest is documented.
+    6. Alignment and smoothing defaults adopted (500 Hz third-octave anchor, target fitted over 100 Hz–10 kHz, 1/12-octave display, > 10 kHz shaded low confidence). Smoothing lives in the EQ ⚙, **encapsulated as one ghosts section** to polish as a unit, not sprawled.
+    7. Rig mismatch (explained: measurement and target from rigs with different ear simulators disagree in the treble by several dB): proposed ⚠ on the target ghost's row and in "From target…", offering the target's version for the measurement's rig when one exists. Awaiting the owner's OK.
 - **Open:** data sources and their licenses (code vs data), which targets, what preference bounds actually are and where they come from, target adjustments (bass, tilt, treble), how targets are stored and selected ("like presets"), and how this meets the Fingerprint Lab later.
