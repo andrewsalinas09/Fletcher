@@ -7544,13 +7544,23 @@ function MainApp() {
     const hasMeas = meas.some((v) => v != null);
     const predicted = meas.map((m, i) => (m == null ? null : m + state.sumDb[i] - state.preampDb));
     const clip = `url(#${clipId})`;
-    const xc = xOf(overlay.confidentBelowHz);
+    // Reliability fades, it doesn't stop: shading ramps up from where peaks
+    // and dips start moving with fit and ears to where the rig dominates.
+    const xFrom = xOf(overlay.doubtFromHz);
+    const xFull = xOf(overlay.doubtFullHz);
+    const fadeId = `${clipId}-doubt`;
     return (
       <g className="ghosts">
         {hasMeas && (ghosts.measurement || ghosts.predicted) && (
           <>
-            <rect x={xc} y={py0} width={Math.max(0, px1 - xc)} height={py1 - py0} className="ghost-lowconf" />
-            <text x={xc + 4} y={py1 - 6} className="ghost-lowconf-label">
+            <defs>
+              <linearGradient id={fadeId} gradientUnits="userSpaceOnUse" x1={xFrom} x2={xFull} y1={0} y2={0}>
+                <stop offset="0" className="doubt-stop" stopOpacity={0} />
+                <stop offset="1" className="doubt-stop" stopOpacity={0.07} />
+              </linearGradient>
+            </defs>
+            <rect x={xFrom} y={py0} width={Math.max(0, px1 - xFrom)} height={py1 - py0} fill={`url(#${fadeId})`} />
+            <text x={xFull + 4} y={py1 - 6} className="ghost-lowconf-label">
               less reliable
             </text>
           </>

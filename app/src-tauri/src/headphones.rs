@@ -600,10 +600,38 @@ pub fn target_curve(t: &TargetRef) -> Result<Curve, String> {
     target_curve_depth(t, 0)
 }
 
+/// AutoEq's curves, resolved once per run: they never change under their
+/// names, and re-reading the web-app list (~450 KB) on every slider move made
+/// the target editor lag. The user's own targets aren't cached; they change.
+static AUTOEQ_CURVES: std::sync::Mutex<Option<std::collections::HashMap<String, Curve>>> =
+    std::sync::Mutex::new(None);
+
 fn target_curve_depth(t: &TargetRef, depth: usize) -> Result<Curve, String> {
     if depth > 4 {
         return Err("that target's base refers back to itself".into());
     }
+    if matches!(t, TargetRef::User { .. }) {
+        return resolve_target(t, depth);
+    }
+    let key = serde_json::to_string(t).unwrap_or_default();
+    if let Some(c) = AUTOEQ_CURVES
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|m| m.get(&key))
+    {
+        return Ok(c.clone());
+    }
+    let c = resolve_target(t, depth)?;
+    AUTOEQ_CURVES
+        .lock()
+        .unwrap()
+        .get_or_insert_with(Default::default)
+        .insert(key, c.clone());
+    Ok(c)
+}
+
+fn resolve_target(t: &TargetRef, depth: usize) -> Result<Curve, String> {
     match t {
         TargetRef::Featured { label } => {
             let w = web_targets()?
@@ -924,8 +952,10 @@ pub struct OverlayDto {
     pub target_error: Option<String>,
     pub bounds_upper: Vec<Option<f64>>,
     pub bounds_lower: Vec<Option<f64>>,
-    /// Above this, shade as low confidence.
-    pub confident_below_hz: f64,
+    /// Where doubt about the measurement starts (shading fades in here) and
+    /// where it's full: reliability fades, it doesn't stop.
+    pub doubt_from_hz: f64,
+    pub doubt_full_hz: f64,
 }
 
 fn parse_smoothing(s: &str) -> Smoothing {
@@ -989,7 +1019,7 @@ pub async fn eq_overlay(
         });
         Ok(OverlayDto {
             freqs: eq.freqs,
-            headphone,
+            headphone: headphone.clone(),
             measurement_error,
             measurement_left: o.measurement_left,
             measurement_right: o.measurement_right,
@@ -999,7 +1029,10 @@ pub async fn eq_overlay(
             target_error,
             bounds_upper: o.bounds_upper,
             bounds_lower: o.bounds_lower,
-            confident_below_hz: response::CONFIDENT_BELOW_HZ,
+            doubt_from_hz: response::doubt_from_hz(
+                headphone.as_ref().and_then(|h| h.form.as_deref()),
+            ),
+            doubt_full_hz: response::DOUBT_FULL_HZ,
         })
     })
     .await

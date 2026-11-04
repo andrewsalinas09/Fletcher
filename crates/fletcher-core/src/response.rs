@@ -199,9 +199,26 @@ pub const ANCHOR_HZ: f64 = 500.0;
 /// The band a target is fitted over.
 pub const FIT_LO_HZ: f64 = 100.0;
 pub const FIT_HI_HZ: f64 = 10_000.0;
-/// Above this, a measurement depends more on fit and seating than on the
-/// headphone (reseating moves it 8–15 dB): shown as low confidence.
-pub const CONFIDENT_BELOW_HZ: f64 = 10_000.0;
+/// Where a measurement stops being reliable: it fades, it doesn't stop
+/// (docs/research/targets-and-preference-bounds.md). From here the overall
+/// shape still holds but peaks and dips move with fit and ears (Møller et al.
+/// 1995: a common shape "up to at least 7 kHz"); in-ears start later, as
+/// insertion depth moves their canal resonance across ~7–10 kHz.
+pub const DOUBT_FROM_OVER_EAR_HZ: f64 = 6_000.0;
+pub const DOUBT_FROM_IN_EAR_HZ: f64 = 7_000.0;
+/// From here the curve mostly reflects the rig and the fit: the 711
+/// coupler's specified limit (IEC 60318-4), and no common shape across people
+/// above ~10–12 kHz.
+pub const DOUBT_FULL_HZ: f64 = 10_000.0;
+
+/// Where doubt starts for a headphone of this form ("in-ear", "earbud",
+/// "over-ear"; unknown counts as over-ear, the earlier and safer start).
+pub fn doubt_from_hz(form: Option<&str>) -> f64 {
+    match form {
+        Some("in-ear") | Some("earbud") => DOUBT_FROM_IN_EAR_HZ,
+        _ => DOUBT_FROM_OVER_EAR_HZ,
+    }
+}
 
 /// The offset (dB) that puts `curve`'s third-octave band at 500 Hz at 0 dB.
 pub fn anchor_offset(curve: &Curve) -> Option<f64> {

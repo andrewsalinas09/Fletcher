@@ -42,7 +42,9 @@ export type Overlay = {
   targetError: string | null;
   boundsUpper: (number | null)[];
   boundsLower: (number | null)[];
-  confidentBelowHz: number;
+  /** Doubt about the measurement fades in from here, and is full here. */
+  doubtFromHz: number;
+  doubtFullHz: number;
 };
 
 /** A user target as stored (targets/<name>.json). */
@@ -436,20 +438,36 @@ export function TargetEditor({
   const [rigCurve, setRigCurve] = useState<{ freqs: number[]; db: (number | null)[] } | null>(null);
   const [showRig, setShowRig] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const live = useDebounced(t, 120);
   const allInfos = useMemo(() => [...(library?.yours ?? []), ...(library?.featured ?? [])], [library]);
   const baseInfo = allInfos.find((i) => sameTarget(i.target, t.base)) ?? null;
   const baseName = t.base ? (baseInfo?.name ?? ("file" in t.base ? t.base.file.replace(/\.csv$/, "") : "")) : "Flat";
   const imported = !!t.file;
 
-  useEffect(() => {
+  // Latest wins, with no waiting: one preview in flight at a time, and when it
+  // lands the newest knob positions go out at once. A slider drag redraws as
+  // fast as the backend answers, never queueing stale positions behind it.
+  const inFlight = useRef(false);
+  const latest = useRef(t);
+  latest.current = t;
+  const requestPreview = () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    const sent = latest.current;
     const args = imported
       ? { target: { kind: "user", name: initial!.name }, base: null, knobs: null }
-      : { target: null, base: live.base, knobs: live };
+      : { target: null, base: sent.base, knobs: sent };
     invoke<{ freqs: number[]; db: (number | null)[] }>("target_preview", args)
-      .then(setPreview)
-      .catch((e) => setError(String(e)));
-  }, [live, imported, initial]);
+      .then((p) => {
+        setPreview(p);
+        setError(null);
+      })
+      .catch((e) => setError(String(e)))
+      .finally(() => {
+        inFlight.current = false;
+        if (latest.current !== sent) requestPreview();
+      });
+  };
+  useEffect(requestPreview, [t, imported, initial]);
 
   useEffect(() => {
     if (!showRig || !baseInfo?.rigResponse) return setRigCurve(null);
@@ -487,7 +505,7 @@ export function TargetEditor({
                 <>
                   {" · "}
                   <span className="link-like" onClick={() => setShowRig((s) => !s)}>
-                    {showRig ? "hide" : "show"} that rig's ear response
+                    {showRig ? "hide" : "show"} that rig's ear response (HRTF)
                   </span>
                 </>
               )}

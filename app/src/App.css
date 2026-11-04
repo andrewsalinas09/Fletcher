@@ -3704,9 +3704,10 @@ button.ghost {
   stroke: none;
 }
 
-/* Above 10 kHz a measurement depends more on fit than on the headphone. */
-.ghost-lowconf {
-  fill: color-mix(in srgb, var(--ink) 4%, transparent);
+/* A measurement's reliability fades from ~6 kHz (7 for in-ears) to 10 kHz:
+   the shading ramps up across that span (its opacity is on the stops). */
+.doubt-stop {
+  stop-color: var(--ink);
 }
 
 .ghost-lowconf-label {
