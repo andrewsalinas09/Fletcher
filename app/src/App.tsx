@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { openUrl as openUrlInBrowser } from "@tauri-apps/plugin-opener";
 import { setThemeChoice, themeChoice, tok, tokA, useThemeTick, type ThemeChoice } from "./theme";
+import { SliderField } from "./controls";
 import {
   anyGhost,
   bandPath,
@@ -7374,7 +7375,6 @@ function MainApp() {
     return { top: 30, bot: -30 };
   });
   const [customOpen, setCustomOpen] = useState(false);
-  const [customDraft, setCustomDraft] = useState<{ top?: string; bot?: string }>({});
   const customRef = useRef<HTMLSpanElement>(null);
   const [customCenter, setCustomCenter] = useState(() => ({ top: custom.top, bot: custom.bot }));
   const customTrack = (edge: "top" | "bot") => [
@@ -7556,7 +7556,7 @@ function MainApp() {
             <defs>
               <linearGradient id={fadeId} gradientUnits="userSpaceOnUse" x1={xFrom} x2={xFull} y1={0} y2={0}>
                 <stop offset="0" className="doubt-stop" stopOpacity={0} />
-                <stop offset="1" className="doubt-stop" stopOpacity={0.07} />
+                <stop offset="1" className="doubt-stop" stopOpacity={0.09} />
               </linearGradient>
             </defs>
             <rect x={xFrom} y={py0} width={Math.max(0, px1 - xFrom)} height={py1 - py0} fill={`url(#${fadeId})`} />
@@ -11112,49 +11112,24 @@ function MainApp() {
                   <div className="scale-pop">
                     {(["top", "bot"] as const).map((edge) => {
                       const [lo, hi] = customTrack(edge);
-                      const release = (e: React.SyntheticEvent<HTMLInputElement>) =>
-                        recenterCustom(edge, +e.currentTarget.value);
                       return (
-                        <label key={edge} className="scale-row">
-                          <span className="dim-sm">{edge === "top" ? "top" : "bottom"}</span>
-                          <input
-                            type="range"
-                            min={lo}
-                            max={hi}
-                            step={0.5}
-                            value={custom[edge]}
-                            onChange={(e) => {
-                              setCustomDraft({});
-                              setCustomEdge(edge, +e.target.value);
-                            }}
-                            onPointerUp={release}
-                            onKeyUp={release}
-                          />
-                          <input
-                            className="scale-num mono"
-                            type="number"
-                            step={0.5}
-                            value={customDraft[edge] ?? String(custom[edge])}
-                            onChange={(e) => {
-                              // Live while typing whenever it's a usable number;
-                              // half-typed text ("-" on the way to "-15") waits.
-                              setCustomDraft((d) => ({ ...d, [edge]: e.target.value }));
-                              const v = Number(e.target.value);
-                              if (e.target.value.trim() !== "" && Number.isFinite(v)) {
-                                setCustomEdge(edge, v);
-                                if (v < lo || v > hi) setCustomCenter((c) => ({ ...c, [edge]: v }));
-                              }
-                            }}
-                            onBlur={() => {
-                              setCustomDraft((d) => ({ ...d, [edge]: undefined }));
-                              recenterCustom(edge, custom[edge]);
-                            }}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                            }}
-                          />
-                          <span className="dim-sm">dB</span>
-                        </label>
+                        <SliderField
+                          key={edge}
+                          className="scale-row"
+                          label={edge === "top" ? "top" : "bottom"}
+                          value={custom[edge]}
+                          min={lo}
+                          max={hi}
+                          step={0.5}
+                          digits={1}
+                          unit="dB"
+                          onChange={(v) => setCustomEdge(edge, v)}
+                          onTyped={(v) => {
+                            setCustomEdge(edge, v);
+                            if (v < lo || v > hi) setCustomCenter((c) => ({ ...c, [edge]: v }));
+                          }}
+                          onRelease={(v) => recenterCustom(edge, v)}
+                        />
                       );
                     })}
                     <span
@@ -11164,7 +11139,6 @@ function MainApp() {
                         const fit = { top: autoFit, bot: -autoFit };
                         setCustom(fit);
                         setCustomCenter(fit);
-                        setCustomDraft({});
                         try {
                           localStorage.setItem("fletcher.yscale.custom", JSON.stringify(fit));
                         } catch {

@@ -5,6 +5,7 @@
 // renders content only; App wraps it in its own modal.
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { SliderField } from "./controls";
 
 export type TargetRef = { kind: "featured"; label: string } | { kind: "autoeq"; file: string } | { kind: "user"; name: string };
 
@@ -529,21 +530,18 @@ export function TargetEditor({
         <div className="dev-sect">
           <span className="room-key">Adjust</span>
           {KNOBS.map((k) => (
-            <label key={k.key} className="knob-row" title={k.note}>
-              <span>{k.label}</span>
-              <input
-                type="range"
-                min={k.min}
-                max={k.max}
-                step={k.step}
-                value={t[k.key]}
-                onChange={(e) => setT({ ...t, [k.key]: +e.target.value })}
-              />
-              <span className="mono">
-                {t[k.key] > 0 ? "+" : ""}
-                {t[k.key].toFixed(k.step < 0.5 ? 2 : 1)} {k.unit}
-              </span>
-            </label>
+            <SliderField
+              key={k.key}
+              label={k.label}
+              title={k.note}
+              value={t[k.key]}
+              min={k.min}
+              max={k.max}
+              step={k.step}
+              digits={k.step < 0.5 ? 2 : 1}
+              unit={k.unit}
+              onChange={(v) => setT((cur) => ({ ...cur, [k.key]: v }))}
+            />
           ))}
           <span className="dim-sm">Bass: low shelf 105 Hz · Ear gain: peak 2.75 kHz · Treble: high shelf 2.5 kHz · Tilt: across the whole range</span>
         </div>

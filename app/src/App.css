@@ -827,6 +827,15 @@ button.ghost {
   border: 1px solid var(--line-strong);
 }
 
+/* The standard slider (controls.tsx SliderField): label, track, typed value,
+   unit. The EQ scale's rows below narrow it to their popover. */
+.slider-field {
+  display: grid;
+  grid-template-columns: 76px 1fr 56px 48px;
+  align-items: center;
+  gap: 8px;
+}
+
 .scale-row {
   display: grid;
   grid-template-columns: 42px 140px 52px auto;
@@ -834,6 +843,7 @@ button.ghost {
   gap: 8px;
 }
 
+.slider-field input[type="range"],
 .scale-row input[type="range"] {
   width: 100%;
   -webkit-appearance: none;
@@ -844,6 +854,7 @@ button.ghost {
   cursor: pointer;
 }
 
+.slider-field input[type="range"]::-webkit-slider-thumb,
 .scale-row input[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
@@ -3792,19 +3803,6 @@ button.ghost {
   flex-direction: column;
   gap: 10px;
   min-width: 520px;
-}
-
-.knob-row {
-  display: grid;
-  grid-template-columns: 76px 1fr 92px;
-  align-items: center;
-  gap: 10px;
-  font-size: 12.5px;
-}
-
-.knob-row .mono {
-  text-align: right;
-  font-size: 12px;
 }
 
 .target-preview {
