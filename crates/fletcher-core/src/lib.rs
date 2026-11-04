@@ -14,6 +14,7 @@ pub mod pathcheck;
 pub mod peace;
 pub mod playback;
 pub mod presets;
+pub mod response;
 pub mod rew;
 pub mod signal;
 pub mod stats;
