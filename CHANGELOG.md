@@ -2,6 +2,11 @@
 
 Each version's section becomes its GitHub release notes and the "what's new" text in Settings › UPDATES. Write for listeners, not developers.
 
+## 0.7.3
+
+- **Dark mode.** Settings › INTERFACE › Theme: Light, Dark, or Match Windows. It's the same paper-and-ink look with the lights down: warm, not inverted, with boost orange and cut blue kept exactly as recognizable. Every window follows, pop-outs and the hotkey popup included. Light mode is unchanged.
+- **Tighter security.** Fletcher's windows now only run Fletcher's own code. If anything is ever blocked, a red bar names it right away and it's included in the diagnostics export, so nothing fails silently. Thanks to the user who pointed this out!
+
 ## 0.7.2
 
 - **Hotkeys for your presets.** Every preset now has its own settings: click ⚙ next to a preset in the preset menu, or the ⚙ at the end of the preset name on the EQ page. Under Hotkey, click assign and press any combination. Pressing it from any app loads that preset, for example speakers and headphones on the same output. A small popup names the preset and your output. Renaming a preset keeps its hotkey. Thanks for the request!
