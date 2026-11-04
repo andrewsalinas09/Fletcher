@@ -6423,9 +6423,12 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
-/// The pop-outs whose Ctrl+Z / Ctrl+Y walk the main window's undo rail.
+/// The pop-outs whose Ctrl+Z / Ctrl+Y walk the main window's undo rail: every
+/// satellite by default (a new pop-out gets them without being listed; one
+/// left off a list was a recurring miss), except the hotkey popup, which never
+/// takes focus, and the scope windows, which own their transport keys.
 fn has_undo_keys(label: &str) -> bool {
-    matches!(label, "history" | "filter")
+    !matches!(label, "main" | "osd") && !label.starts_with("scope-")
 }
 
 /// Which pop-out currently owns the undo shortcuts. Moving straight from one
@@ -7016,8 +7019,10 @@ pub fn run() {
                 tauri::WindowEvent::Focused(focused) if has_undo_keys(window.label()) => {
                     undo_keys_focus(window.app_handle(), window.label(), *focused);
                 }
-                tauri::WindowEvent::Destroyed if window.label() == "filter" => {
-                    undo_keys_focus(window.app_handle(), "filter", false);
+                tauri::WindowEvent::Destroyed
+                    if has_undo_keys(window.label()) && window.label() != "history" =>
+                {
+                    undo_keys_focus(window.app_handle(), window.label(), false);
                 }
                 tauri::WindowEvent::Focused(focused) if window.label().starts_with("scope-") => {
                     set_scope_shortcuts(window.app_handle(), window.label(), *focused);

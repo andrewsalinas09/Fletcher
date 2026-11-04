@@ -1,11 +1,11 @@
 // The EQ page's view settings (⚙): filter order, ears, and the ghosts behind
 // the curve, as a layer list (design A, 2026-11-04). One component, used in the
-// popover and in its own window: the main window owns the state and sends it
-// (`ev-sync`); the window sends commands back (`ev-cmd`), the Q-20 pattern
-// (rule 10). Redesigning the panel means touching this file.
+// popover and in its own window, through the satellite scaffold (satellite.ts:
+// main owns the state, the window sends commands; Q-20, rule 10).
+// Redesigning the panel means touching this file.
 import { invoke } from "@tauri-apps/api/core";
-import { emitTo, listen } from "@tauri-apps/api/event";
 import { useEffect, useState } from "react";
+import { useSatellite } from "./satellite";
 import { TargetPicker, type GhostPrefs, type TargetLibrary } from "./targets";
 
 export type EarView = "left" | "right" | "both" | "split";
@@ -171,7 +171,7 @@ export function EqViewPanel({
         {layer("ghost-other", "Other ear", null, st.otherEar, st.perEar, () => send({ type: "otherEar", on: !st.otherEar }))}
         {layer("ghost-meas", "Measurement", hp ?? noHp, g.measurement, !!hp, () => set({ measurement: !g.measurement }))}
         {st.measurementError && hp && <span className="dim-sm warn-text ev-indent">{st.measurementError}</span>}
-        {layer("ghost-pred", "With your EQ", null, g.predicted, !!hp, () => set({ predicted: !g.predicted }))}
+        {layer("ghost-pred", "Measurement with your EQ", null, g.predicted, !!hp, () => set({ predicted: !g.predicted }))}
         <div className={`ev-layer ${g.target ? "" : "off"}`}>
           <Swatch cls="ghost-target" />
           <div className="ev-what ev-inline">
@@ -214,30 +214,21 @@ export function EqViewPanel({
   );
 }
 
+/** The satellite channel the panel's window and main talk on (satellite.ts). */
+export const EV_CHANNEL = "ev";
+
 /** The panel in its own window. It loads the target library itself; the rest
- *  comes from the main window. */
+ *  comes from the main window through the satellite scaffold. */
 export function PopoutEqView() {
-  const [st, setSt] = useState<EqViewState | null>(null);
+  const { state: st, send } = useSatellite<EqViewState, EqViewCmd>(EV_CHANNEL);
   const [library, setLibrary] = useState<TargetLibrary | null>(null);
   useEffect(() => {
-    // Say hello only after the listener is registered (the reply is a one-shot).
-    let un: (() => void) | undefined;
-    let gone = false;
-    listen<EqViewState>("ev-sync", (e) => !gone && setSt(e.payload)).then((f) => {
-      if (gone) return f();
-      un = f;
-      emitTo("main", "ev-hello", {});
-    });
     invoke<TargetLibrary>("targets").then(setLibrary).catch(() => {});
-    return () => {
-      gone = true;
-      un?.();
-    };
-  }, []);
+  }, [st?.ghosts.targetRef]);
   if (!st) return <div className="fe-window-empty dim">waiting for the main window…</div>;
   return (
     <div className="ev-window">
-      <EqViewPanel st={st} library={library} send={(c) => emitTo("main", "ev-cmd", c).catch(() => {})} />
+      <EqViewPanel st={st} library={library} send={send} />
     </div>
   );
 }
