@@ -1,22 +1,115 @@
 /* Fletcher — Console (ADR-0010).
    Paper ground, ink text, IBM Plex; boost = orange, cut = blue, everywhere. */
 
+/* Every color in the app is one of these tokens (ADR-0020). Nothing below this
+   block may write a color literal: scripts/check-colors.mjs fails CI if it does.
+   Canvas drawing reads the same tokens (tok() in App.tsx). */
 :root {
   --paper: #f2efe9;
   --panel: #f9f7f2;
   --panel-alt: #ece8df;
+  /* Menus and popovers. */
+  --raised: #fffdf6;
   --ink: #14171a;
+  /* Selected items: tabs, segments, current rows, switches that are on. */
+  --sel: #14171a;
+  --sel-ink: #f2efe9;
+  /* Switches: track off / on, knob off / on / on a green (ok) track. */
+  --switch-off: #b3ac9c;
+  --switch-on: #14171a;
+  --switch-knob-off: #f2efe9;
+  --switch-knob-on: #f2efe9;
+  --switch-knob-ok: #f2efe9;
+  /* Secondary dark text, and a darker one for emphasis. */
+  --ink-2: #55503f;
+  --ink-3: #3d382c;
   --dim: #8b8578;
+  --grid: #eee9dd;
   --line: #e5dfd1;
+  --line-soft: #ddd6c4;
   --line-mid: #c9c2b0;
   --line-strong: #b3ac9c;
   --boost: #c85a13;
+  /* Boost text on a dark (selected) cell. */
   --boost-dark: #e89a5f;
   --cut: #3f6d9e;
   /* Cut text on a dark (selected) cell. */
   --cut-dark: #9db8d2;
   --ok: #3d7d43;
+  --warn: #a3552e;
+  --warn-line: #d3b39c;
+  --error: #a33d1a;
+  /* A cool crimson, as muted as --boost/--cut/--ok but far from the boost
+     orange in hue, so a right-ear curve never reads as "a boost" (Q-28). */
+  --ear-right: #b4283f;
+  /* Comparison series, in order (history diff, compare overlays). */
+  --cmp-4: #7d5a9e;
+  --cmp-6: #4f7d7d;
+  /* Lines on a dark (selected) cell: a knob's track and tick. */
+  --inv-line: #3a3e36;
+  --inv-line-strong: #55503f;
+  /* Fills under boosts and cuts, and the fainter ones in the scopes. */
+  --boost-wash: rgb(200 90 19 / 14%);
+  --cut-wash: rgb(63 109 158 / 14%);
+  --boost-wash-faint: rgb(200 90 19 / 10%);
+  --cut-wash-faint: rgb(63 109 158 / 10%);
+  --shadow: rgb(20 23 26 / 10%);
+  --shadow-mid: rgb(20 23 26 / 12%);
+  --shadow-deep: rgb(20 23 26 / 15%);
+  --scrim: rgb(20 23 26 / 25%);
   color-scheme: light;
+}
+
+/* Dark: the same paper and ink with the lights down (ADR-0020). Derived from
+   the light values by rule in OKLCH: every hue locked; text and strokes keep
+   their APCA contrast against the paper; surfaces and lines keep their
+   lightness step from it; washes keep their step with chroma raised for the
+   Hunt effect. Only the ground and the shadows were chosen by eye. */
+:root[data-theme="dark"] {
+  --paper: #1a1814;
+  --panel: #1f1d1a;
+  --panel-alt: #16130d;
+  --raised: #24221d;
+  --ink: #f0ede8;
+  /* Not the ink: a large bright block glares on a dark ground (ADR-0020). */
+  --sel: #45423b;
+  --sel-ink: #f0ede8;
+  /* Dim tracks, the knob carries the state: dim off, bright on. */
+  --switch-off: #312d27;
+  --switch-on: #5b5851;
+  --switch-knob-off: #b0a99c;
+  --switch-knob-on: #f0ede8;
+  --switch-knob-ok: #1a1814;
+  --ink-2: #dbd2bf;
+  --ink-3: #e8e0d2;
+  --dim: #b0a99c;
+  --grid: #201c13;
+  --line: #282319;
+  --line-soft: #30291c;
+  --line-mid: #40392b;
+  --line-strong: #524b3e;
+  --boost: #ff9661;
+  --boost-dark: #ffa87d;
+  --cut: #92c4fa;
+  --cut-dark: #afc8e4;
+  --ok: #88cb8c;
+  --warn: #ffab84;
+  --warn-line: #543a26;
+  --error: #ffb69f;
+  --ear-right: #ffb1b3;
+  --cmp-4: #d6b1fc;
+  --cmp-6: #91c0c0;
+  --inv-line: #716c63;
+  --inv-line-strong: #8a8270;
+  --boost-wash: rgb(138 48 12 / 25%);
+  --cut-wash: rgb(62 80 108 / 25%);
+  --boost-wash-faint: rgb(138 48 12 / 18%);
+  --cut-wash-faint: rgb(62 80 108 / 18%);
+  --shadow: rgb(0 0 0 / 45%);
+  --shadow-mid: rgb(0 0 0 / 50%);
+  --shadow-deep: rgb(0 0 0 / 55%);
+  --scrim: rgb(0 0 0 / 55%);
+  color-scheme: dark;
 }
 
 * {
@@ -93,8 +186,8 @@ nav {
 }
 
 .tab.active {
-  background: var(--ink);
-  color: var(--paper);
+  background: var(--sel);
+  color: var(--sel-ink);
 }
 
 .tab.disabled {
@@ -296,9 +389,9 @@ nav {
   min-width: 280px;
   max-height: 72vh;
   overflow-y: auto;
-  background: #fffdf6;
+  background: var(--raised);
   border: 1px solid var(--ink);
-  box-shadow: 4px 4px 0 rgb(20 23 26 / 10%);
+  box-shadow: 4px 4px 0 var(--shadow);
 }
 
 .preset-row {
@@ -316,8 +409,8 @@ nav {
 }
 
 .preset-row.current {
-  background: var(--ink);
-  color: var(--paper);
+  background: var(--sel);
+  color: var(--sel-ink);
 }
 
 .row-act {
@@ -439,7 +532,7 @@ nav {
   position: fixed;
   inset: 0;
   z-index: 590;
-  background: rgb(20 23 26 / 25%);
+  background: var(--scrim);
 }
 
 .hist-panel.full { position: static; transform: none; width: 100vw; height: 100vh; border: none; box-shadow: none; }
@@ -459,7 +552,7 @@ nav {
   z-index: 600;
   background: var(--paper);
   border: 2px solid var(--ink);
-  box-shadow: 6px 6px 0 rgb(20 23 26 / 15%);
+  box-shadow: 6px 6px 0 var(--shadow-deep);
   display: flex;
   flex-direction: column;
 }
@@ -700,9 +793,9 @@ button.ghost {
 }
 
 .scale-opt.on {
-  background: var(--ink);
-  color: var(--paper);
-  border-color: var(--ink);
+  background: var(--sel);
+  color: var(--sel-ink);
+  border-color: var(--sel);
 }
 
 /* Custom scale: a small drop-down with top/bottom sliders and number boxes. */
@@ -787,11 +880,11 @@ button.ghost {
 }
 
 .grid-minor {
-  stroke: #eee9dd;
+  stroke: var(--grid);
 }
 
 .grid-major {
-  stroke: #ddd6c4;
+  stroke: var(--line-soft);
 }
 
 .grid-vert {
@@ -800,7 +893,7 @@ button.ghost {
 
 /* The unlabelled log steps between the labelled lines (issue #4): visible, never competing. */
 .grid-vert-minor {
-  stroke: #eee9dd;
+  stroke: var(--grid);
 }
 
 .grid-zero {
@@ -921,8 +1014,8 @@ button.ghost {
 }
 
 .cell.selected {
-  background: var(--ink);
-  color: var(--paper);
+  background: var(--sel);
+  color: var(--sel-ink);
 }
 
 .cell-type {
@@ -933,11 +1026,11 @@ button.ghost {
 
 .type-name {
   font-size: 10px;
-  color: #55503f;
+  color: var(--ink-2);
 }
 
 .cell.selected .type-name {
-  color: var(--paper);
+  color: var(--sel-ink);
   font-weight: 600;
 }
 
@@ -1014,7 +1107,7 @@ button.ghost {
 }
 
 .cell.selected .cell-expand {
-  color: var(--paper);
+  color: var(--sel-ink);
 }
 
 .cell-expand:hover {
@@ -1026,7 +1119,7 @@ button.ghost {
    the things you act on (text, handles, the current type); structure is gray. */
 .filter-editor {
   box-sizing: border-box;
-  background: #fffdf6;
+  background: var(--raised);
   padding: 10px 12px 12px;
   display: flex;
   flex-direction: column;
@@ -1041,13 +1134,13 @@ button.ghost {
   max-height: calc(100vh - 16px);
   overflow-y: auto;
   border: 1px solid var(--line-strong);
-  box-shadow: 6px 6px 0 rgb(20 23 26 / 12%);
+  box-shadow: 6px 6px 0 var(--shadow-mid);
 }
 
 /* In its own window: fills it. */
 .fe-window {
   min-height: 100vh;
-  background: #fffdf6;
+  background: var(--raised);
 }
 
 .fe-window-empty {
@@ -1265,9 +1358,9 @@ button.ghost {
   position: fixed;
   z-index: 500;
   min-width: 236px;
-  background: #fffdf6;
+  background: var(--raised);
   border: 1px solid var(--ink);
-  box-shadow: 4px 4px 0 rgb(20 23 26 / 10%);
+  box-shadow: 4px 4px 0 var(--shadow);
 }
 
 .type-row {
@@ -1288,8 +1381,8 @@ button.ghost {
 }
 
 .type-row.current {
-  background: var(--ink);
-  color: var(--paper);
+  background: var(--sel);
+  color: var(--sel-ink);
 }
 
 .type-code {
@@ -1371,8 +1464,8 @@ button.ghost {
 }
 
 .ab-side.active {
-  background: var(--ink);
-  color: var(--paper);
+  background: var(--sel);
+  color: var(--sel-ink);
   font-weight: 600;
 }
 
@@ -1464,7 +1557,7 @@ button.ghost {
 .lab-ckey {
   font-size: 8.5px;
   letter-spacing: 0.1em;
-  color: #8b8578;
+  color: var(--dim);
 }
 
 .contender {
@@ -1502,7 +1595,7 @@ button.ghost {
 }
 
 .c-opt:hover {
-  background: var(--panel-alt, #ece8df);
+  background: var(--panel-alt);
 }
 
 .c-sect {
@@ -1522,7 +1615,7 @@ button.ghost {
 
 .q-card.on {
   border: 1.5px solid var(--ink);
-  background: var(--panel-alt, #ece8df);
+  background: var(--panel-alt);
 }
 
 .q-card:hover {
@@ -1571,7 +1664,7 @@ button.ghost {
 .hp-name {
   flex: 1;
   border: 1px solid var(--ink);
-  background: #fffdf6;
+  background: var(--raised);
   font-size: 12px;
   padding: 5px 8px;
   color: var(--ink);
@@ -1601,7 +1694,7 @@ button.ghost {
 
 .hp-card.master {
   border: 1.5px solid var(--ink);
-  background: var(--panel-alt, #ece8df);
+  background: var(--panel-alt);
 }
 
 .hp-card-title {
@@ -1639,19 +1732,19 @@ button.ghost {
   height: 380px;
   flex: none;
   border: 1px solid var(--line-mid);
-  background: #fffdf6;
+  background: var(--raised);
 }
 
 .hp-honesty {
   line-height: 1.55;
-  border: 1px solid var(--line-soft, #ddd6c4);
+  border: 1px solid var(--line-soft);
   background: var(--panel);
   padding: 8px 12px;
 }
 
 .hp-level {
   width: 420px;
-  accent-color: var(--boost, #c85a13);
+  accent-color: var(--boost);
 }
 
 .hp-progress {
@@ -1671,7 +1764,7 @@ button.ghost {
 .hp-bar {
   width: 13px;
   height: 44px;
-  background: var(--panel-alt, #ece8df);
+  background: var(--panel-alt);
   position: relative;
 }
 
@@ -1679,20 +1772,20 @@ button.ghost {
   position: absolute;
   bottom: 0;
   width: 100%;
-  background: var(--boost, #c85a13);
+  background: var(--boost);
 }
 
 .hp-fill.done {
-  background: var(--ok, #3d7d43);
+  background: var(--ok);
 }
 
 .hp-fill.odd {
-  background: #a3552e;
+  background: var(--warn);
 }
 
 .hp-bar-label {
   font-size: 8px;
-  color: #8b8578;
+  color: var(--dim);
 }
 
 .hp-progress-note {
@@ -1725,9 +1818,9 @@ button.ghost {
   max-width: 92vw;
   max-height: 72vh;
   z-index: 600;
-  background: #fffdf6;
+  background: var(--raised);
   border: 2px solid var(--ink);
-  box-shadow: 6px 6px 0 rgb(20 23 26 / 15%);
+  box-shadow: 6px 6px 0 var(--shadow-deep);
   display: flex;
   flex-direction: column;
 }
@@ -1757,8 +1850,8 @@ button.ghost {
 
 /* keyboard cursor — distinct from .current (the active preset) */
 .preset-row.kbd {
-  background: var(--panel-alt, #ece8df);
-  box-shadow: inset 2px 0 0 var(--boost, #c85a13);
+  background: var(--panel-alt);
+  box-shadow: inset 2px 0 0 var(--boost);
 }
 
 .agg-strip {
@@ -1811,7 +1904,7 @@ button.ghost {
   width: 100%;
   font-size: 11.5px;
   border: 1px solid var(--ink);
-  background: #fffdf6;
+  background: var(--raised);
   padding: 6px 9px;
   color: var(--ink);
 }
@@ -1834,13 +1927,13 @@ button.ghost {
   align-items: center;
   gap: 8px;
   padding: 7px 14px;
-  border-bottom: 1px solid var(--line-soft, #e5dfd1);
+  border-bottom: 1px solid var(--line);
   cursor: pointer;
   font-size: 11.5px;
 }
 
 .finder-row.sel {
-  background: var(--panel-alt, #ece8df);
+  background: var(--panel-alt);
 }
 
 .f-check {
@@ -1855,13 +1948,13 @@ button.ghost {
 }
 
 .f-check.on {
-  border-color: var(--ink);
-  background: var(--ink);
-  color: var(--paper);
+  border-color: var(--sel);
+  background: var(--sel);
+  color: var(--sel-ink);
 }
 
 .f-moment {
-  color: #3f6d9e;
+  color: var(--cut);
   flex: none;
 }
 
@@ -1945,8 +2038,8 @@ button.ghost {
 
 .badge-abx {
   font-size: 9.5px;
-  background: var(--ink);
-  color: var(--paper);
+  background: var(--sel);
+  color: var(--sel-ink);
   padding: 2px 7px;
 }
 
@@ -1970,7 +2063,7 @@ button.ghost {
 }
 
 .session-verdict.meh {
-  color: #a3552e;
+  color: var(--warn);
 }
 
 .session-detail {
@@ -1997,8 +2090,8 @@ button.ghost {
 }
 
 .trial-chip.miss {
-  color: #a3552e;
-  border-color: #d3b39c;
+  color: var(--warn);
+  border-color: var(--warn-line);
 }
 
 .session-actions {
@@ -2039,7 +2132,7 @@ button.ghost {
   border: 1px solid var(--line-mid);
   padding: 3px 10px;
   cursor: pointer;
-  color: #55503f;
+  color: var(--ink-2);
 }
 
 .trial-center {
@@ -2053,7 +2146,7 @@ button.ghost {
 
 .trial-q {
   font-size: 15px;
-  color: #55503f;
+  color: var(--ink-2);
 }
 
 .trial-q b {
@@ -2085,8 +2178,8 @@ button.ghost {
 }
 
 .target.playing {
-  background: var(--ink);
-  color: var(--paper);
+  background: var(--sel);
+  color: var(--sel-ink);
 }
 
 .target-letter {
@@ -2161,7 +2254,7 @@ button.ghost {
 }
 
 .result-verdict.meh {
-  color: #a3552e;
+  color: var(--warn);
 }
 
 .result-stats {
@@ -2171,7 +2264,7 @@ button.ghost {
 .result-note {
   max-width: 480px;
   text-align: center;
-  color: #55503f;
+  color: var(--ink-2);
   line-height: 1.55;
 }
 
@@ -2181,13 +2274,13 @@ button.ghost {
   position: fixed;
   z-index: 1000;
   max-width: 340px;
-  background: #fffdf6;
+  background: var(--raised);
   border: 1px solid var(--ink);
-  box-shadow: 4px 4px 0 rgb(20 23 26 / 10%);
+  box-shadow: 4px 4px 0 var(--shadow);
   padding: 10px 13px;
   font-size: 11.5px;
   line-height: 1.5;
-  color: #3d382c;
+  color: var(--ink-3);
   pointer-events: none;
 }
 
@@ -2221,7 +2314,7 @@ button.ghost {
 .notice {
   margin: 8px 24px 0;
   border: 1px solid var(--line-strong);
-  background: #fffdf6;
+  background: var(--raised);
   padding: 7px 14px;
   font-size: 12px;
   cursor: pointer;
@@ -2440,8 +2533,8 @@ button.ghost {
 }
 
 .insp-ab-side.active {
-  background: var(--ink);
-  color: var(--paper);
+  background: var(--sel);
+  color: var(--sel-ink);
 }
 
 .insp-ab-side.disabled {
@@ -2562,7 +2655,7 @@ button.ghost {
 
 .tool-banner p {
   margin: 0;
-  color: #55503f;
+  color: var(--ink-2);
 }
 
 /* TB-32: the EQ room's "APO isn't on this device" banner — same paper card, one row of actions. */
@@ -2654,8 +2747,8 @@ button.ghost {
 }
 
 .clips-clip.active {
-  background: var(--ink);
-  color: var(--paper);
+  background: var(--sel);
+  color: var(--sel-ink);
 }
 
 .clips-clip.active .dim-sm {
@@ -2760,7 +2853,7 @@ button.ghost {
 }
 
 .tag-chip.on.custom {
-  background: #55503f;
+  background: var(--ink-2);
 }
 
 .tag-input {
@@ -2974,7 +3067,7 @@ button.ghost {
 
 .gen-layer.on {
   border-color: var(--ink);
-  box-shadow: 2px 2px 0 rgb(20 23 26 / 10%);
+  box-shadow: 2px 2px 0 var(--shadow);
 }
 
 .gen-add-layer {
@@ -2997,7 +3090,7 @@ button.ghost {
 
 .gen-err {
   margin: 0;
-  color: #a33d1a;
+  color: var(--error);
   font-size: 11px;
   white-space: pre-wrap;
 }
@@ -3023,11 +3116,11 @@ button.ghost {
   padding: 10px 12px 4px;
   font-size: 9.5px;
   letter-spacing: 0.08em;
-  color: var(--ink-dim, #8b8578);
+  color: var(--dim);
 }
 
 .sig-glyph {
-  color: var(--boost, #c85a13);
+  color: var(--boost);
   font-size: 13px;
   line-height: 1;
 }
@@ -3141,6 +3234,30 @@ button.ghost {
   line-height: 1.45;
 }
 
+/* Settings' frame: the scrolling panel, plus what's pinned to its corner. */
+.settings-frame {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+/* The support link: the quietest thing on the page, seen only when looked for. */
+.set-tip {
+  position: absolute;
+  right: 22px;
+  bottom: 6px;
+  font-size: 10px;
+  color: var(--dim);
+  opacity: 0.14;
+  cursor: pointer;
+}
+
+.set-tip:hover {
+  opacity: 1;
+  text-decoration: underline;
+}
+
 .set-live {
   font-size: 12px;
 }
@@ -3245,13 +3362,13 @@ button.ghost {
 
 .hk-field.listening {
   border: 1px dashed var(--ink);
-  background: #fffdf6;
+  background: var(--raised);
 }
 
 .kbd-cap {
   font-size: 11px;
   padding: 2px 7px;
-  background: #fffdf6;
+  background: var(--raised);
   border: 1px solid var(--line-mid);
   border-bottom-width: 2px;
   border-radius: 3px;
@@ -3288,15 +3405,17 @@ button.ghost {
 }
 
 .seg-opt.on {
-  background: var(--ink);
-  color: var(--paper);
+  background: var(--sel);
+  color: var(--sel-ink);
 }
 
+/* The track is a surface and the knob is the mark (ADR-0020 rule 6): in dark
+   the track stays dim and the knob carries the brightness. */
 .switch {
   width: 40px;
   height: 22px;
   border-radius: 11px;
-  background: var(--line-strong);
+  background: var(--switch-off);
   position: relative;
   cursor: pointer;
   flex: none;
@@ -3310,12 +3429,12 @@ button.ghost {
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  background: var(--paper);
-  transition: left 0.15s;
+  background: var(--switch-knob-off);
+  transition: left 0.15s, background 0.15s;
 }
 
 .switch.on {
-  background: var(--ink);
+  background: var(--switch-on);
 }
 
 .switch.on.ok {
@@ -3324,6 +3443,11 @@ button.ghost {
 
 .switch.on .knob {
   left: 20px;
+  background: var(--switch-knob-on);
+}
+
+.switch.on.ok .knob {
+  background: var(--switch-knob-ok);
 }
 
 .set-demo {
@@ -3345,10 +3469,10 @@ button.ghost {
 
 .set-demo-tip {
   border: 1px solid var(--ink);
-  background: #fffdf6;
+  background: var(--raised);
   padding: 10px 14px;
   max-width: 380px;
-  box-shadow: 3px 3px 0 rgb(20 23 26 / 12%);
+  box-shadow: 3px 3px 0 var(--shadow-mid);
   font-size: 12px;
 }
 
@@ -3359,7 +3483,7 @@ button.ghost {
 }
 
 .set-demo-tip p {
-  color: #55503f;
+  color: var(--ink-2);
   line-height: 1.45;
   margin: 0;
 }
@@ -3428,9 +3552,7 @@ button.ghost {
   /* The normal ink. Tried and dropped live: indigo, a bluer black, and teal
      cuts so the left ear could be blue (Q-28). */
   --ear-left: var(--ink);
-  /* A cool crimson, as muted as --boost/--cut/--ok but far from the boost
-     orange in hue, so a right-ear curve never reads as "a boost". */
-  --ear-right: #b4283f;
+  /* --ear-right is in the token block at the top. */
 }
 
 .sum-curve.ear-left {

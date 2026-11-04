@@ -11,6 +11,7 @@
     "core:window:allow-create",
     "core:window:allow-set-focus",
     "core:window:allow-show",
+    "core:window:allow-set-theme",
     "core:webview:allow-create-webview-window",
     "dialog:default",
     "autostart:default"

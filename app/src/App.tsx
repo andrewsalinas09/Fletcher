@@ -2,6 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
+import { openUrl as openUrlInBrowser } from "@tauri-apps/plugin-opener";
+import { setThemeChoice, themeChoice, tok, tokA, useThemeTick, type ThemeChoice } from "./theme";
 import "./App.css";
 
 type EqFilter = {
@@ -175,8 +177,8 @@ function GainGauge({ gainDb, dark }: { gainDb: number; dark?: boolean }) {
   const color = boost ? (dark ? "var(--boost-dark)" : "var(--boost)") : dark ? "var(--cut-dark)" : "var(--cut)";
   return (
     <svg width="26" height="26" viewBox="0 0 22 22" fill="none">
-      <line x1="11" y1="1.5" x2="11" y2="4" stroke={dark ? "#55503f" : "var(--line-strong)"} strokeWidth="1.2" />
-      <path d="M5.34 16.66 A8 8 0 1 1 16.66 16.66" stroke={dark ? "#3a3e36" : "var(--line)"} strokeWidth="3" />
+      <line x1="11" y1="1.5" x2="11" y2="4" stroke={dark ? "var(--inv-line-strong)" : "var(--line-strong)"} strokeWidth="1.2" />
+      <path d="M5.34 16.66 A8 8 0 1 1 16.66 16.66" stroke={dark ? "var(--inv-line)" : "var(--line)"} strokeWidth="3" />
       {Math.abs(clamped) > 0.05 && <path d={fill} stroke={color} strokeWidth="3.5" strokeLinecap="round" />}
     </svg>
   );
@@ -297,7 +299,7 @@ const peakFrom20 = (dbs: number[], freqs: number[]) =>
 const meanAbs = (xs: number[]) => (xs.length ? xs.reduce((s, x) => s + Math.abs(x), 0) / xs.length : 0);
 
 /** Series colors for multi-node compare — legend, rings, and curves agree. */
-const CMP_COLORS = ["#c85a13", "#3f6d9e", "#3d7d43", "#7d5a9e", "#a3552e", "#4f7d7d"];
+const CMP_COLORS = ["var(--boost)", "var(--cut)", "var(--ok)", "var(--cmp-4)", "var(--warn)", "var(--cmp-6)"];
 
 type DiffRow =
   | { t: "changed"; a: ChainSnap[number]; b: ChainSnap[number] }
@@ -1295,6 +1297,7 @@ function FftView({
   const [spectrum, setSpectrum] = useState<number[] | null>(null);
   const [cur, setCur] = useState<{ x: number; y: number } | null>(null);
   const [resizeTick, setResizeTick] = useState(0);
+  const themeTick = useThemeTick();
   const busy = useRef(false);
   useEffect(() => {
     const cv = canvasRef.current;
@@ -1330,7 +1333,7 @@ function FftView({
     const xOfF = (f: number) =>
       ((Math.log10(f) - Math.log10(20)) / (Math.log10(20000) - Math.log10(20))) * w;
     // frequency grid
-    ctx.strokeStyle = "#eee9dd";
+    ctx.strokeStyle = tok("--grid");
     ctx.font = "9px 'IBM Plex Mono', monospace";
     for (const f of [100, 1000, 10000]) {
       const x = xOfF(f);
@@ -1338,7 +1341,7 @@ function FftView({
       ctx.moveTo(x, 0);
       ctx.lineTo(x, h);
       ctx.stroke();
-      ctx.fillStyle = "#8b8578";
+      ctx.fillStyle = tok("--dim");
       ctx.fillText(f >= 1000 ? `${f / 1000}k` : `${f}`, x + 3, h - 4);
     }
     // spectrum: filled gray, −90..−10 dB mapped to the pane
@@ -1351,13 +1354,13 @@ function FftView({
         if (i === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
       });
-      ctx.strokeStyle = "#55503f";
+      ctx.strokeStyle = tok("--ink-2");
       ctx.lineWidth = 1.2;
       ctx.stroke();
       ctx.lineTo(w, h);
       ctx.lineTo(0, h);
       ctx.closePath();
-      ctx.fillStyle = "rgba(85, 80, 63, 0.25)";
+      ctx.fillStyle = tokA("--ink-2", 0.25);
       ctx.fill();
       ctx.lineWidth = 1;
     }
@@ -1366,7 +1369,7 @@ function FftView({
       const zeroY = h * 0.3;
       const pxPerDb = 3.0;
       const yOfGain = (g: number) => zeroY - g * pxPerDb;
-      ctx.strokeStyle = "#c9c2b0";
+      ctx.strokeStyle = tok("--line-mid");
       ctx.setLineDash([4, 4]);
       ctx.beginPath();
       ctx.moveTo(0, zeroY);
@@ -1384,7 +1387,7 @@ function FftView({
         }
         ctx.lineTo(gains[gains.length - 1].x, zeroY);
         ctx.closePath();
-        ctx.fillStyle = on ? "rgba(200, 90, 19, 0.14)" : "rgba(63, 109, 158, 0.14)";
+        ctx.fillStyle = on ? tok("--boost-wash") : tok("--cut-wash");
         ctx.fill();
       }
       ctx.beginPath();
@@ -1392,13 +1395,13 @@ function FftView({
         if (i === 0) ctx.moveTo(p.x, yOfGain(p.g));
         else ctx.lineTo(p.x, yOfGain(p.g));
       });
-      ctx.strokeStyle = "rgba(200, 90, 19, 0.75)";
+      ctx.strokeStyle = tokA("--boost", 0.75);
       ctx.lineWidth = 1.6;
       ctx.stroke();
       ctx.lineWidth = 1;
     }
     // legend
-    ctx.fillStyle = "#8b8578";
+    ctx.fillStyle = tok("--dim");
     ctx.font = "9.5px 'IBM Plex Mono', monospace";
     const legend = "FFT at playhead · — your EQ · ▮▮ where it boosts/cuts";
     ctx.fillText(legend, w - ctx.measureText(legend).width - 8, 12);
@@ -1419,14 +1422,14 @@ function FftView({
       const label = `${fmtHz(f)}Hz · ${curDb.toFixed(1)} dB${sig}`;
       ctx.font = "10px 'IBM Plex Mono', monospace";
       const tw = ctx.measureText(label).width;
-      ctx.fillStyle = "rgba(242, 239, 233, 0.92)";
+      ctx.fillStyle = tokA("--paper", 0.92);
       ctx.fillRect(6, 4, tw + 10, 15);
-      ctx.strokeStyle = "#c9c2b0";
+      ctx.strokeStyle = tok("--line-mid");
       ctx.strokeRect(5.5, 3.5, tw + 11, 16);
-      ctx.fillStyle = "#55503f";
+      ctx.fillStyle = tok("--ink-2");
       ctx.fillText(label, 11, 15);
     }
-  }, [spectrum, eq, cur, resizeTick]);
+  }, [spectrum, eq, cur, resizeTick, themeTick]);
 
   return (
     <canvas
@@ -2293,6 +2296,7 @@ const HP_TYPICAL: [number, number][] = [
 /** The profile curve: offsets vs log-f with error bars, rail arrows, gaps. */
 function ProfileCurve({ bands, title }: { bands: HpBandRec[]; title: string }) {
   const ref = useRef<HTMLCanvasElement | null>(null);
+  const themeTick = useThemeTick();
   useEffect(() => {
     const cv = ref.current;
     if (!cv) return;
@@ -2310,14 +2314,14 @@ function ProfileCurve({ bands, title }: { bands: HpBandRec[]; title: string }) {
       30 + ((Math.log10(f) - Math.log10(fMin)) / (Math.log10(fMax) - Math.log10(fMin))) * (w - 45);
     const yOf = (db: number) => h / 2 - (db / dbMax) * (h / 2 - 24);
     // zero line + label
-    ctx.strokeStyle = "#c9c2b0";
+    ctx.strokeStyle = tok("--line-mid");
     ctx.setLineDash([4, 4]);
     ctx.beginPath();
     ctx.moveTo(0, yOf(0));
     ctx.lineTo(w, yOf(0));
     ctx.stroke();
     ctx.setLineDash([]);
-    ctx.fillStyle = "#8b8578";
+    ctx.fillStyle = tok("--dim");
     ctx.font = "9.5px 'IBM Plex Mono', monospace";
     ctx.fillText("0 dB = as loud as 500 Hz", 34, yOf(0) - 5);
     // typical range (±6 dB around the ISO-shaped context curve)
@@ -2329,12 +2333,12 @@ function ProfileCurve({ bands, title }: { bands: HpBandRec[]; title: string }) {
     });
     [...HP_TYPICAL].reverse().forEach(([f, db]) => ctx.lineTo(xOf(f), yOf(db - 6)));
     ctx.closePath();
-    ctx.fillStyle = "rgba(63, 109, 158, 0.10)";
+    ctx.fillStyle = tok("--cut-wash-faint");
     ctx.fill();
-    ctx.fillStyle = "#3f6d9e";
+    ctx.fillStyle = tok("--cut");
     ctx.fillText("typical range for normal hearing", w - 230, 16);
     // frequency ticks
-    ctx.fillStyle = "#8b8578";
+    ctx.fillStyle = tok("--dim");
     for (const f of [63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]) {
       ctx.fillText(f >= 1000 ? `${f / 1000}k` : `${f}`, xOf(f) - 8, h - 6);
     }
@@ -2342,7 +2346,7 @@ function ProfileCurve({ bands, title }: { bands: HpBandRec[]; title: string }) {
     const pts = bands
       .filter((b) => b.pseDb != null)
       .sort((a, b) => a.centerHz - b.centerHz);
-    ctx.strokeStyle = "#c85a13";
+    ctx.strokeStyle = tok("--boost");
     ctx.lineWidth = 2;
     ctx.beginPath();
     pts.forEach((b, i) => {
@@ -2359,14 +2363,14 @@ function ProfileCurve({ bands, title }: { bands: HpBandRec[]; title: string }) {
       ctx.moveTo(x, yOf(b.pseDb! + u));
       ctx.lineTo(x, yOf(b.pseDb! - u));
       ctx.stroke();
-      ctx.fillStyle = "#c85a13";
+      ctx.fillStyle = tok("--boost");
       ctx.beginPath();
       ctx.arc(x, y, 3.5, 0, Math.PI * 2);
       ctx.fill();
     }
     // railed bands: arrows from the bound, never dots
-    ctx.strokeStyle = "#a3552e";
-    ctx.fillStyle = "#a3552e";
+    ctx.strokeStyle = tok("--warn");
+    ctx.fillStyle = tok("--warn");
     for (const b of bands) {
       if (b.pseDb != null || b.pseBoundDb == null) continue;
       const railedHigh = b.end.includes("railedHigh");
@@ -2386,10 +2390,10 @@ function ProfileCurve({ bands, title }: { bands: HpBandRec[]; title: string }) {
       ctx.fill();
     }
     ctx.lineWidth = 1;
-    ctx.fillStyle = "#55503f";
+    ctx.fillStyle = tok("--ink-2");
     ctx.font = "10px 'IBM Plex Mono', monospace";
     ctx.fillText(title, 34, 16);
-  }, [bands, title]);
+  }, [bands, title, themeTick]);
   return <canvas ref={ref} className="hp-curve" />;
 }
 
@@ -2527,12 +2531,12 @@ type ClipRow = {
 /** Band tags color the library (artboard: lows = blue, highs = boost-orange). */
 const clipDotColor = (tags: string[]) =>
   tags.includes("lows")
-    ? "#3f6d9e"
+    ? "var(--cut)"
     : tags.includes("highs")
-      ? "#c85a13"
+      ? "var(--boost)"
       : tags.includes("mids")
-        ? "#3d7d43"
-        : "#b3ac9c";
+        ? "var(--ok)"
+        : "var(--line-strong)";
 type LibraryState = { tracks: TrackRow[]; clips: ClipRow[] };
 type ToolsState = { ffmpeg: string | null; ytdlp: string | null };
 type TrackSess = {
@@ -2708,6 +2712,7 @@ function TimelineView({
   const [cur, setCur] = useState<{ x: number; y: number } | null>(null);
   // The pane flexes now — redraw whenever the canvas box actually changes.
   const [resizeTick, setResizeTick] = useState(0);
+  const themeTick = useThemeTick();
   useEffect(() => {
     const cv = canvasRef.current;
     if (!cv || typeof ResizeObserver === "undefined") return;
@@ -2847,16 +2852,16 @@ function TimelineView({
     ctx.clearRect(0, 0, w, h);
 
     // ruler ground
-    ctx.fillStyle = "#ece8df";
+    ctx.fillStyle = tok("--panel-alt");
     ctx.fillRect(0, 0, w, RULER_H);
-    ctx.strokeStyle = "#b3ac9c";
+    ctx.strokeStyle = tok("--line-strong");
     ctx.beginPath();
     ctx.moveTo(0, RULER_H - 0.5);
     ctx.lineTo(w, RULER_H - 0.5);
     ctx.stroke();
 
     if (!wave || !view) {
-      ctx.fillStyle = "#8b8578";
+      ctx.fillStyle = tok("--dim");
       ctx.font = "11px 'IBM Plex Mono', monospace";
       ctx.fillText("building waveform…", 12, RULER_H + 24);
       return;
@@ -2872,18 +2877,18 @@ function TimelineView({
       if (t < 0) continue;
       const x = xOfT(t);
       const isMajor = Math.abs(t / step - Math.round(t / step)) < 1e-6;
-      ctx.strokeStyle = "#c9c2b0";
+      ctx.strokeStyle = tok("--line-mid");
       ctx.beginPath();
       ctx.moveTo(x, isMajor ? 8 : 15);
       ctx.lineTo(x, RULER_H - 1);
       ctx.stroke();
       if (isMajor) {
-        ctx.fillStyle = "#8b8578";
+        ctx.fillStyle = tok("--dim");
         ctx.fillText(fmtTick(t, step), x + 3, 12);
       }
       // grid line through the lane on majors
       if (isMajor) {
-        ctx.strokeStyle = "#eee9dd";
+        ctx.strokeStyle = tok("--grid");
         ctx.beginPath();
         ctx.moveTo(x, RULER_H);
         ctx.lineTo(x, h);
@@ -2896,7 +2901,7 @@ function TimelineView({
     const lanesH = h - lanesTop;
     const specH = showSpec ? (showWave ? Math.round(lanesH * 0.55) : lanesH) : 0;
     if (showSpec) {
-      ctx.fillStyle = "#14171a";
+      ctx.fillStyle = tok("--ink");
       ctx.fillRect(0, lanesTop, w, specH);
       const off = specCanvas.current;
       if (off && spec && spec.durationS > 0) {
@@ -2904,7 +2909,7 @@ function TimelineView({
         const sw = (span / spec.durationS) * spec.cols;
         ctx.drawImage(off, sx, 0, sw, spec.rows, 0, lanesTop, w, specH);
         ctx.font = "9px 'IBM Plex Mono', monospace";
-        ctx.fillStyle = "#8b8578";
+        ctx.fillStyle = tok("--dim");
         for (const f of spec.linear ? [5000, 10000, 15000] : [100, 1000, 10000]) {
           const frac = spec.linear
             ? f / 20000
@@ -2913,7 +2918,7 @@ function TimelineView({
           ctx.fillText(f >= 1000 ? `${f / 1000}k` : `${f}`, 4, yf + 3);
         }
       } else {
-        ctx.fillStyle = "#8b8578";
+        ctx.fillStyle = tok("--dim");
         ctx.font = "11px 'IBM Plex Mono', monospace";
         ctx.fillText("building spectrogram…", 12, lanesTop + 24);
       }
@@ -2924,7 +2929,7 @@ function TimelineView({
     const laneH = Math.max(h - laneTop - 4, 10);
     const mid = laneTop + laneH / 2;
     if (showWave) {
-      ctx.strokeStyle = "#ddd6c4";
+      ctx.strokeStyle = tok("--line-soft");
       ctx.beginPath();
       ctx.moveTo(0, mid);
       ctx.lineTo(w, mid);
@@ -2996,7 +3001,7 @@ function TimelineView({
         cols = x + 1;
       }
     }
-    ctx.fillStyle = "#55503f";
+    ctx.fillStyle = tok("--ink-2");
     for (let x = 0; x < cols; x++) {
       let lo = colLo[x];
       let hi = colHi[x];
@@ -3016,9 +3021,9 @@ function TimelineView({
       const xa = xOfT(region.a);
       const xb = xOfT(region.b);
       if (xb > 0 && xa < w) {
-        ctx.fillStyle = "rgba(200, 90, 19, 0.10)";
+        ctx.fillStyle = tok("--boost-wash-faint");
         ctx.fillRect(Math.max(xa, 0), RULER_H, Math.min(xb, w) - Math.max(xa, 0), h - RULER_H);
-        ctx.strokeStyle = "#c85a13";
+        ctx.strokeStyle = tok("--boost");
         ctx.lineWidth = 1.4;
         for (const x of [xa, xb]) {
           if (x < 0 || x > w) continue;
@@ -3029,7 +3034,7 @@ function TimelineView({
         }
         ctx.lineWidth = 1;
         // edge grips (in points right, out points left — Resolve idiom)
-        ctx.fillStyle = "#c85a13";
+        ctx.fillStyle = tok("--boost");
         if (xa >= 0 && xa <= w) {
           ctx.beginPath();
           ctx.moveTo(xa, RULER_H + 2);
@@ -3047,11 +3052,11 @@ function TimelineView({
           ctx.fill();
         }
         ctx.font = "10px 'IBM Plex Mono', monospace";
-        ctx.fillStyle = "#c85a13";
+        ctx.fillStyle = tok("--boost");
         ctx.fillText(`IN ${fmtTcN(region.a, decimals)}`, Math.max(xa, 0) + 4, h - 8);
         const outLabel = `OUT ${fmtTcN(region.b, decimals)}`;
         ctx.fillText(outLabel, Math.min(xb, w) - ctx.measureText(outLabel).width - 4, h - 8);
-        ctx.fillStyle = "#8b8578";
+        ctx.fillStyle = tok("--dim");
         const dLabel = `Δ ${(region.b - region.a).toFixed(1)}s`;
         ctx.fillText(dLabel, (Math.max(xa, 0) + Math.min(xb, w)) / 2 - ctx.measureText(dLabel).width / 2, h - 8);
       }
@@ -3060,14 +3065,14 @@ function TimelineView({
     // playhead: line through the lane + a grip on the ruler
     if (posS >= start && posS <= start + span) {
       const x = xOfT(posS);
-      ctx.strokeStyle = "#14171a";
+      ctx.strokeStyle = tok("--ink");
       ctx.lineWidth = 1.6;
       ctx.beginPath();
       ctx.moveTo(x, 0);
       ctx.lineTo(x, h);
       ctx.stroke();
       ctx.lineWidth = 1;
-      ctx.fillStyle = "#14171a";
+      ctx.fillStyle = tok("--ink");
       ctx.beginPath();
       ctx.moveTo(x - 5, 0);
       ctx.lineTo(x + 5, 0);
@@ -3111,14 +3116,14 @@ function TimelineView({
       const tw = ctx.measureText(label).width;
       const bx = w - tw - 14;
       const by = h - 24;
-      ctx.fillStyle = "rgba(242, 239, 233, 0.92)";
+      ctx.fillStyle = tokA("--paper", 0.92);
       ctx.fillRect(bx - 5, by - 11, tw + 10, 15);
-      ctx.strokeStyle = "#c9c2b0";
+      ctx.strokeStyle = tok("--line-mid");
       ctx.strokeRect(bx - 5.5, by - 11.5, tw + 11, 16);
-      ctx.fillStyle = "#55503f";
+      ctx.fillStyle = tok("--ink-2");
       ctx.fillText(label, bx, by);
     }
-  }, [wave, view, win, posS, durationS, region, spec, showSpec, showWave, decimals, cur, resizeTick]);
+  }, [wave, view, win, posS, durationS, region, spec, showSpec, showWave, decimals, cur, resizeTick, themeTick]);
 
   return (
     <canvas
@@ -5200,6 +5205,12 @@ function MainApp() {
       return "standard";
     }
   });
+  /** Light, dark or match Windows (ADR-0020); every window follows. */
+  const [theme, setTheme] = useState<ThemeChoice>(themeChoice);
+  const pickTheme = (v: ThemeChoice) => {
+    setTheme(v);
+    setThemeChoice(v);
+  };
   const pickUiMode = (v: "standard" | "advanced") => {
     setUiMode(v);
     try {
@@ -9955,6 +9966,7 @@ function MainApp() {
       )}
 
       {view === "settings" && settings && (
+        <div className="settings-frame">
         <div className="settings">
           <div className="set-col">
             <div className="set-sect">
@@ -10217,6 +10229,22 @@ function MainApp() {
                 </div>
               </div>
               <span className="set-note">Standard grays out advanced tools; hover one to see what it does.</span>
+              <div className="set-row">
+                <span className="set-key">Theme</span>
+                <div className="seg">
+                  {(
+                    [
+                      ["light", "Light"],
+                      ["dark", "Dark"],
+                      ["system", "Match Windows"],
+                    ] as const
+                  ).map(([v, label]) => (
+                    <span key={v} className={`seg-opt ${theme === v ? "on" : ""}`} onClick={() => pickTheme(v)}>
+                      {label}
+                    </span>
+                  ))}
+                </div>
+              </div>
             </div>
 
 
@@ -10256,6 +10284,15 @@ function MainApp() {
               <span className="set-note">Fletcher only writes its own fletcher.txt. ffmpeg plays Clip Studio audio and yt-dlp imports from links; both live in Fletcher's folder.</span>
             </div>
           </div>
+        </div>
+        {/* Pinned to the panel's corner, outside the scroll: there whatever the size. */}
+        <span
+          className="set-tip"
+          title="buymeacoffee.com/andrewsalinas09"
+          onClick={() => openUrlInBrowser("https://buymeacoffee.com/andrewsalinas09").catch(() => {})}
+        >
+          buy me a coffee
+        </span>
         </div>
       )}
 

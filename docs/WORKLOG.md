@@ -2,6 +2,15 @@
 
 Append-only session journal. Newest entry first.
 
+## 2026-11-03 (dark theme) — Paper and ink with the lights down (ADR-0020, TB-61)
+
+- **Request:** a user asked for dark mode. Owner: not an inversion, "like this color but dark", and when the first draft's orange looked "slightly too brown": "I want real color science", and "It's imperative you don't change the light colors."
+- **Measured:** in OKLCH, a 14% orange wash over near-black is L 0.28, C 0.03, 14° yellower: brown, by definition. The solid orange had also drifted 4° toward yellow while lightening.
+- **Built:** dark values derived by rule (hue lock, APCA contrast matched, OKLab steps kept, Hunt-corrected washes); see ADR-0020 for the rules. Every literal color in App.css (57) and App.tsx (49) became a token, each checked by script against its light value. `src/theme.ts`: Light / Dark / Match Windows in Settings › INTERFACE, set before first paint, Windows title bar included, synced to every window. Canvas reads tokens (`tok`/`tokA`) and redraws on theme change. `scripts/check-colors.mjs` in CI, proven to fail on a planted literal, a planted TSX literal, and a token without a dark value.
+- **Kept as is:** the spectrogram heat map (data color).
+- **Owner, trying it:** selected items "stand out way too much… like the original iOS invert colors". Cause: selection used the ink as a fill, so dark made big near-white blocks. Fixed by role (ADR-0020 rule 6): `--sel`/`--sel-ink`, identical to ink/paper in light, a raised neutral in dark. Switches stay ink (a small mark; a `--sel` track read darker than the off track). Also found: Match Windows echoed the last forced theme (TB-62).
+- **Not yet verified:** the pop-outs (history, diff, filter editor, scopes) and the hotkey popup in dark, and switching while they're open. The owner is trying it live.
+
 ## 2026-11-03 — A content security policy, and blocks that can't fail silently (TB-60)
 
 - **Report:** a user pointed out `"csp": null` in tauri.conf.json. Checked: no injection path today (no `innerHTML`/`eval`, nothing remote in the UI, React escapes outside text), but a script that got in could call every command, including `history_export` (writes any path). So: hardening, not an active hole.
