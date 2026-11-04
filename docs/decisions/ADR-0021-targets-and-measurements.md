@@ -24,7 +24,7 @@ A user asked for squig.link-style overlays: target curves and preference bounds 
 - **One graph, one axis.** Measurement, predicted, target and bounds are drawn on the EQ graph's dB axis, lined up at 0 dB. No separate response view.
 - **Alignment** (research): the measurement is anchored on its mean over the third-octave band at 500 Hz (IEC 60268-7; how Harman presents targets). The target is moved, never the measurement, by the least-squares offset over 100 Hz–10 kHz (AutoEq's published method; the ear simulator's specified range). The predicted response is never refitted: it is the measurement plus the EQ curve exactly as the graph draws it. That curve leaves out the preamp, as Fletcher's graph always has; the preamp is a level, which level matching handles, and drawn in it would push the predicted curve below a target it matches in shape (revised 2026-11-04 while building the UI). Left and right share one offset (from their average), so a real imbalance stays visible.
 - **Smoothing:** 1/12 octave by default; none, 1/24, 1/6, 1/3 and ERB offered. Above 10 kHz is shaded as low confidence (reseating moves it 8–15 dB).
-- **Labels:** every curve names its source and rig. A measurement says it's one rig's average, not your ears; a target says it's a population preference.
+- **Labels:** every curve names its source and rig. A measurement says it's one rig's average, not your ears (in device settings). The graph's legend just names the target: "a population's preference" was dropped as clutter (owner, 2026-11-04).
 
 ### Acting on it
 

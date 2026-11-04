@@ -7571,7 +7571,7 @@ function MainApp() {
     const rows: [string, string][] = [];
     if (ghosts.measurement && hp) rows.push(["ghost-meas", headphoneLine(hp)]);
     if (ghosts.predicted && hp) rows.push(["ghost-pred", `${hp.name} with your EQ`]);
-    if (ghosts.target && ghosts.targetName) rows.push(["ghost-target", `${ghosts.targetName} · a population's preference`]);
+    if (ghosts.target && ghosts.targetName) rows.push(["ghost-target", ghosts.targetName]);
     if (ghosts.bounds && overlay.boundsUpper.some((v) => v != null)) rows.push(["ghost-bounds", "preference bounds"]);
     return rows.length ? (
       <div className="ghost-legend">
