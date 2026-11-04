@@ -9,10 +9,10 @@ import { EV_CHANNEL, EqViewPanel, PopoutEqView, type EqViewCmd, type EqViewState
 import { openSatellite, useSatelliteHost } from "./satellite";
 import {
   anyGhost,
-  bandPath,
+  GhostLayers,
+  ghostPeak,
   HeadphonePicker,
   headphoneLine,
-  pathGaps,
   readGhosts,
   TargetEditor,
   writeGhosts,
@@ -3733,7 +3733,16 @@ const FC_RANGE: [number, number] = [10, 23500];
 const Q_RANGE: [number, number] = [0.05, 50];
 
 /** Main → filter-editor window: the filter it shows (follows the selection). */
-type FeSync = { index: number | null; filter: EqFilter | null; freqs: number[]; totalDb: number[] };
+/** The EQ graph's ghosts, for another graph to draw the same way (ADR-0021). */
+type GhostView = { overlay: Overlay; prefs: GhostPrefs; ear: Ear };
+type FeSync = {
+  index: number | null;
+  filter: EqFilter | null;
+  freqs: number[];
+  totalDb: number[];
+  /** The EQ graph's ghosts, drawn in the editor's plot too. */
+  ghosts: GhostView | null;
+};
 /** Filter-editor window → main: everything the editor can do. */
 type FeCmd =
   | { type: "patch"; patch: Partial<EqFilter>; immediate: boolean }
@@ -3786,6 +3795,7 @@ function FilterEditor({
   filter,
   freqs,
   totalDb,
+  ghosts,
   pos,
   onPatch,
   onGesture,
@@ -3800,6 +3810,8 @@ function FilterEditor({
   freqs: number[];
   /** The whole chain's response (no preamp), drawn faintly for context. */
   totalDb: number[];
+  /** The EQ graph's ghosts (target, measurement…), drawn behind, as they're switched on there. */
+  ghosts?: GhostView | null;
   pos?: { left: number; bottom: number };
   /** Change the filter. `immediate` = write now (typed values, clicks). */
   onPatch: (patch: Partial<EqFilter>, immediate: boolean) => void;
@@ -3837,7 +3849,7 @@ function FilterEditor({
   const ownFreqs = curves?.freqs ?? freqs;
   const ownDb = curves?.own ?? filter.responseDb;
   const finite = (xs: number[]) => xs.filter((v) => Number.isFinite(v)).map(Math.abs);
-  const peak = Math.max(6, ...finite(ownDb), ...finite(totalDb));
+  const peak = Math.max(6, ...finite(ownDb), ...finite(totalDb), ghosts ? ghostPeak(ghosts.overlay, ghosts.prefs) : 0);
   const range = Math.min(36, Math.ceil((peak + 1) / 3) * 3);
   const yOf = (db: number) =>
     pad.t + ((range - Math.max(-range, Math.min(range, Number.isFinite(db) ? db : -range))) / (2 * range)) * (H - pad.t - pad.b);
@@ -3951,6 +3963,18 @@ function FilterEditor({
           <line key={f} x1={xOf(f)} x2={xOf(f)} y1={pad.t} y2={H - pad.b} className="grid-minor" />
         ))}
         <line x1={pad.l} x2={W - pad.r} y1={yOf(0)} y2={yOf(0)} className="fe-zero" />
+        {ghosts && (
+          <GhostLayers
+            overlay={ghosts.overlay}
+            prefs={ghosts.prefs}
+            ear={ghosts.ear}
+            drawn={totalDb}
+            xOf={xOf}
+            yOf={yOf}
+            plot={{ x0: pad.l, x1: W - pad.r, y0: pad.t, y1: H - pad.b }}
+            id={`fe-${mode}-ghosts`}
+          />
+        )}
         <path d={pathFrom(freqs, totalDb, xOf, yOf)} className="fe-total" />
         <path d={pathFrom(ownFreqs, ownDb, xOf, yOf)} fill="none" stroke={color} strokeWidth="2.2" />
         <circle cx={xOf(filter.fcHz)} cy={yOf(ownDb[fcIdx] ?? 0)} r="5" fill="none" stroke={color} strokeWidth="2" />
@@ -4067,6 +4091,7 @@ function PopoutFilter() {
         filter={{ ...sync.filter, ...local }}
         freqs={sync.freqs}
         totalDb={sync.totalDb}
+        ghosts={sync.ghosts}
         onPatch={(patch, immediate) => {
           lastLocal.current = Date.now();
           setLocal((l) => ({ ...l, ...patch }));
@@ -7245,6 +7270,8 @@ function MainApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [multiSel]);
 
+  /** The EQ graph's ghosts, for the filter editor's plot (popover and window). */
+  const feGhosts: GhostView | null = overlay && anyGhost(ghosts) ? { overlay, prefs: ghosts, ear } : null;
   // The filter-editor window (Q-20 pattern): main owns the truth.
   const emitFeSync = () => {
     const f = state && feIndex != null ? state.filters[feIndex] : undefined;
@@ -7254,13 +7281,14 @@ function MainApp() {
       filter: own ? f! : null,
       freqs: state?.freqs ?? [],
       totalDb: state ? state.sumDb.map((db) => db - state.preampDb) : [],
+      ghosts: feGhosts,
     };
     emit("fe-sync", payload);
   };
   useEffect(() => {
     emitFeSync();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, feIndex]);
+  }, [state, feIndex, overlay, ghosts, ear]);
   const onFeCmd = (c: FeCmd) => {
     if (c.type === "slide") {
       dragging.current = c.active;
@@ -7426,16 +7454,7 @@ function MainApp() {
       ...state.filters.filter((f) => f.enabled).map((f) => Math.abs(f.gainDb)),
     ];
     // Ghosts that are shown count too, from 20 Hz up like the curve.
-    if (overlay && anyGhost(ghosts)) {
-      const shown = [
-        ...(ghosts.measurement || ghosts.predicted ? overlay.measurementLeft : []),
-        ...(ghosts.target ? overlay.target : []),
-        ...(ghosts.bounds ? [...overlay.boundsUpper, ...overlay.boundsLower] : []),
-      ];
-      shown.forEach((v, i) => {
-        if (v != null && overlay.freqs[i % overlay.freqs.length] >= 20) peaks.push(Math.abs(v));
-      });
-    }
+    peaks.push(ghostPeak(overlay, ghosts));
     const maxAbs = peaks.length ? Math.max(...peaks) : 0;
     return SCALES.find((s) => s.v >= maxAbs + 1.5)?.v ?? 33;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -7582,43 +7601,19 @@ function MainApp() {
   };
   /** The ghosts behind the curve (ADR-0021): bounds, target, measurement, and
    *  measurement + the EQ as drawn here (live, so it follows a drag). */
-  const ghostLayers = (clipId: string) => {
-    if (!overlay || !state || !anyGhost(ghosts) || overlay.freqs.length !== state.freqs.length) return null;
-    const f = overlay.freqs;
-    const meas = ear === "right" && overlay.measurementRight ? overlay.measurementRight : overlay.measurementLeft;
-    const hasMeas = meas.some((v) => v != null);
-    const predicted = meas.map((m, i) => (m == null ? null : m + state.sumDb[i] - state.preampDb));
-    const clip = `url(#${clipId})`;
-    // Reliability fades, it doesn't stop: shading ramps up from where peaks
-    // and dips start moving with fit and ears to where the rig dominates.
-    const xFrom = xOf(overlay.doubtFromHz);
-    const xFull = xOf(overlay.doubtFullHz);
-    const fadeId = `${clipId}-doubt`;
-    return (
-      <g className="ghosts">
-        {hasMeas && (ghosts.measurement || ghosts.predicted) && (
-          <>
-            <defs>
-              <linearGradient id={fadeId} gradientUnits="userSpaceOnUse" x1={xFrom} x2={xFull} y1={0} y2={0}>
-                <stop offset="0" className="doubt-stop" stopOpacity={0} />
-                <stop offset="1" className="doubt-stop" stopOpacity={0.09} />
-              </linearGradient>
-            </defs>
-            <rect x={xFrom} y={py0} width={Math.max(0, px1 - xFrom)} height={py1 - py0} fill={`url(#${fadeId})`} />
-            <text x={xFull + 4} y={py1 - 6} className="ghost-lowconf-label">
-              less reliable
-            </text>
-          </>
-        )}
-        {ghosts.bounds && (
-          <path d={bandPath(f, overlay.boundsUpper, overlay.boundsLower, xOf, yOfPinned)} className="ghost-bounds" clipPath={clip} />
-        )}
-        {ghosts.target && <path d={pathGaps(f, overlay.target, xOf, yOfPinned)} className="ghost-target" clipPath={clip} />}
-        {ghosts.measurement && <path d={pathGaps(f, meas, xOf, yOfPinned)} className="ghost-meas" clipPath={clip} />}
-        {ghosts.predicted && <path d={pathGaps(f, predicted, xOf, yOfPinned)} className="ghost-pred" clipPath={clip} />}
-      </g>
-    );
-  };
+  const ghostLayers = (clipId: string) =>
+    overlay && state ? (
+      <GhostLayers
+        overlay={overlay}
+        prefs={ghosts}
+        ear={ear}
+        drawn={state.sumDb.map((db) => db - state.preampDb)}
+        xOf={xOf}
+        yOf={yOfPinned}
+        plot={{ x0: px0, x1: px1, y0: py0, y1: py1 }}
+        id={`${clipId}-ghosts`}
+      />
+    ) : null;
   /** What each ghost is, and where it came from. */
   const ghostLegend = () => {
     if (!overlay || !anyGhost(ghosts)) return null;
@@ -8484,6 +8479,7 @@ function MainApp() {
           filter={state.filters[feIndex]}
           freqs={state.freqs}
           totalDb={state.sumDb.map((db) => db - state.preampDb)}
+          ghosts={feGhosts}
           pos={editor}
           onPatch={(patch, immediate) => mutateFilter(feIndex, patch, immediate)}
           onGesture={(label) => window.setTimeout(() => commitGesture(label), 0)}

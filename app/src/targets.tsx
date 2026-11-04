@@ -148,6 +148,83 @@ export function bandPath(
   return d;
 }
 
+/** The ghosts as a graph draws them: shared by the EQ graph and the filter
+ *  editor's plot (popover and window), so they look the same everywhere.
+ *  `drawn` is the EQ curve as that graph draws it (no preamp), on
+ *  `overlay.freqs`; measurement + EQ is built from it, so it follows a drag. */
+export function GhostLayers({
+  overlay,
+  prefs,
+  ear,
+  drawn,
+  xOf,
+  yOf,
+  plot,
+  id,
+}: {
+  overlay: Overlay;
+  prefs: GhostPrefs;
+  ear: "left" | "right";
+  drawn: number[];
+  xOf: (f: number) => number;
+  yOf: (db: number) => number;
+  plot: { x0: number; x1: number; y0: number; y1: number };
+  /** Unique per graph (the gradient's and clip's ids). */
+  id: string;
+}) {
+  if (!anyGhost(prefs) || overlay.freqs.length !== drawn.length) return null;
+  const f = overlay.freqs;
+  const meas = ear === "right" && overlay.measurementRight ? overlay.measurementRight : overlay.measurementLeft;
+  const hasMeas = meas.some((v) => v != null);
+  const predicted = meas.map((m, i) => (m == null ? null : m + drawn[i]));
+  // Reliability fades, it doesn't stop: shading ramps up from where peaks and
+  // dips start moving with fit and ears to where the rig dominates.
+  const xFrom = Math.max(plot.x0, xOf(overlay.doubtFromHz));
+  const xFull = xOf(overlay.doubtFullHz);
+  const clip = `url(#${id}-clip)`;
+  return (
+    <g className="ghosts">
+      <defs>
+        <clipPath id={`${id}-clip`}>
+          <rect x={plot.x0} y={plot.y0} width={plot.x1 - plot.x0} height={plot.y1 - plot.y0} />
+        </clipPath>
+        <linearGradient id={`${id}-doubt`} gradientUnits="userSpaceOnUse" x1={xFrom} x2={xFull} y1={0} y2={0}>
+          <stop offset="0" className="doubt-stop" stopOpacity={0} />
+          <stop offset="1" className="doubt-stop" stopOpacity={0.09} />
+        </linearGradient>
+      </defs>
+      {hasMeas && (prefs.measurement || prefs.predicted) && (
+        <>
+          <rect x={xFrom} y={plot.y0} width={Math.max(0, plot.x1 - xFrom)} height={plot.y1 - plot.y0} fill={`url(#${id}-doubt)`} />
+          <text x={xFull + 4} y={plot.y1 - 6} className="ghost-lowconf-label">
+            less reliable
+          </text>
+        </>
+      )}
+      {prefs.bounds && <path d={bandPath(f, overlay.boundsUpper, overlay.boundsLower, xOf, yOf)} className="ghost-bounds" clipPath={clip} />}
+      {prefs.target && <path d={pathGaps(f, overlay.target, xOf, yOf)} className="ghost-target" clipPath={clip} />}
+      {prefs.measurement && <path d={pathGaps(f, meas, xOf, yOf)} className="ghost-meas" clipPath={clip} />}
+      {prefs.predicted && <path d={pathGaps(f, predicted, xOf, yOf)} className="ghost-pred" clipPath={clip} />}
+    </g>
+  );
+}
+
+/** The largest |dB| among the shown ghosts from 20 Hz up (for auto scales). */
+export function ghostPeak(overlay: Overlay | null, prefs: GhostPrefs): number {
+  if (!overlay || !anyGhost(prefs)) return 0;
+  const rows = [
+    ...(prefs.measurement || prefs.predicted ? [overlay.measurementLeft] : []),
+    ...(prefs.target ? [overlay.target] : []),
+    ...(prefs.bounds ? [overlay.boundsUpper, overlay.boundsLower] : []),
+  ];
+  let peak = 0;
+  for (const row of rows)
+    row.forEach((v, i) => {
+      if (v != null && overlay.freqs[i] >= 20) peak = Math.max(peak, Math.abs(v));
+    });
+  return peak;
+}
+
 function useDebounced<T>(value: T, ms: number): T {
   const [v, setV] = useState(value);
   useEffect(() => {
