@@ -5,10 +5,10 @@ import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { openUrl as openUrlInBrowser } from "@tauri-apps/plugin-opener";
 import { setThemeChoice, themeChoice, tok, tokA, useThemeTick, type ThemeChoice } from "./theme";
 import { SliderField } from "./controls";
+import { EqViewPanel, PopoutEqView, type EqViewCmd, type EqViewState } from "./eqview";
 import {
   anyGhost,
   bandPath,
-  GhostsSection,
   HeadphonePicker,
   headphoneLine,
   pathGaps,
@@ -261,6 +261,7 @@ const IS_FILTER_WINDOW = new URLSearchParams(window.location.search).get("view")
 const IS_SCOPE_SPEC_WINDOW = new URLSearchParams(window.location.search).get("view") === "scope-spec";
 const IS_SCOPE_FFT_WINDOW = new URLSearchParams(window.location.search).get("view") === "scope-fft";
 const IS_OSD_WINDOW = new URLSearchParams(window.location.search).get("view") === "osd";
+const IS_EQVIEW_WINDOW = new URLSearchParams(window.location.search).get("view") === "eqview";
 
 type ChainSnap = { enabled: boolean; kind: string; fcHz: number; gainDb: number; q: number }[];
 type HistTreeNode = {
@@ -4088,6 +4089,7 @@ export default function App() {
   if (IS_SCOPE_SPEC_WINDOW) return <PopoutScopeSpec />;
   if (IS_SCOPE_FFT_WINDOW) return <PopoutScopeFft />;
   if (IS_OSD_WINDOW) return <OsdNotice />;
+  if (IS_EQVIEW_WINDOW) return <PopoutEqView />;
   // eslint-disable-next-line react-hooks/rules-of-hooks
   return <MainApp />;
 }
@@ -4283,6 +4285,10 @@ function MainApp() {
     writeGhosts(p);
   };
   const [overlay, setOverlay] = useState<Overlay | null>(null);
+  /** The EQ view panel's state and command handler, for the window bus (set
+   *  each render where they're built, further down). */
+  const evStateRef = useRef<EqViewState | null>(null);
+  const onEvCmdRef = useRef<(c: EqViewCmd) => void>(() => {});
   const [targetLib, setTargetLib] = useState<TargetLibrary | null>(null);
   const loadTargets = () => invoke<TargetLibrary>("targets").then(setTargetLib).catch(() => {});
   const [hpRows, setHpRows] = useState<HeadphoneRow[]>([]);
@@ -6933,12 +6939,16 @@ function MainApp() {
     diffHello: () => void;
     feHello: () => void;
     feCmd: (c: FeCmd) => void;
+    evHello: () => void;
+    evCmd: (c: EqViewCmd) => void;
   }>({
     hello: () => {},
     cmd: () => {},
     diffHello: () => {},
     feHello: () => {},
     feCmd: () => {},
+    evHello: () => {},
+    evCmd: () => {},
   });
   busRef.current = {
     hello: () => {
@@ -6963,6 +6973,8 @@ function MainApp() {
     diffHello: () => emitDiffSync(),
     feHello: () => emitFeSync(),
     feCmd: (c) => onFeCmd(c),
+    evHello: () => emit("ev-sync", evStateRef.current),
+    evCmd: (c) => onEvCmdRef.current(c),
   };
   useEffect(() => {
     const u1 = listen("hist-hello", () => busRef.current.hello());
@@ -6970,8 +6982,10 @@ function MainApp() {
     const u3 = listen("diff-hello", () => busRef.current.diffHello());
     const u4 = listen("fe-hello", () => busRef.current.feHello());
     const u5 = listen<FeCmd>("fe-cmd", (e) => busRef.current.feCmd(e.payload));
+    const u6 = listen("ev-hello", () => busRef.current.evHello());
+    const u7 = listen<EqViewCmd>("ev-cmd", (e) => busRef.current.evCmd(e.payload));
     return () => {
-      for (const u of [u1, u2, u3, u4, u5]) u.then((f) => f());
+      for (const u of [u1, u2, u3, u4, u5, u6, u7]) u.then((f) => f());
     };
   }, []);
 
@@ -7534,6 +7548,70 @@ function MainApp() {
         clipPath={`url(#${clipId})`}
       />
     ) : null;
+  };
+  // ---- the EQ view panel (eqview.tsx): popover and window share it ----
+  const evState: EqViewState = {
+    ordering,
+    earView,
+    perEar: !!settings?.perEar,
+    canJoin: earsDiffer && !!presets.active,
+    otherEar: ghost,
+    ghosts,
+    headphone: overlay?.headphone
+      ? [overlay.headphone.name, overlay.headphone.source === "you" ? null : overlay.headphone.source].filter(Boolean).join(" · ")
+      : null,
+    measurementError: overlay?.measurementError ?? null,
+    targetError: overlay?.targetError ?? null,
+    hasBounds: !!overlay?.boundsUpper.some((v) => v != null),
+    deviceName: defaultDevice?.name ?? null,
+  };
+  const onEvCmd = (c: EqViewCmd) => {
+    if (c.type === "ordering") pickOrdering(c.v);
+    else if (c.type === "earView") pickEarView(c.v);
+    else if (c.type === "otherEar") setGhost(c.on);
+    else if (c.type === "ghosts") setGhosts(c.prefs);
+    else if (c.type === "join" && presets.active) joinPreset(presets.active, c.keep);
+    else if (c.type === "openDevice") {
+      setEqMenu(false);
+      // Fresh, so it's the output playing now; the main window comes forward
+      // when this was asked from the panel's own window.
+      invoke<Device[]>("devices_list")
+        .then((list) => {
+          setDevices(list);
+          const cur = list.find((d) => d.isDefault);
+          if (cur) setDeviceCfg(cur.id);
+          else showNotice("No output is the Windows default right now.");
+        })
+        .catch((e) => showNotice(String(e)));
+      import("@tauri-apps/api/window").then(({ getCurrentWindow }) => getCurrentWindow().setFocus()).catch(() => {});
+    }
+  };
+  evStateRef.current = evState;
+  onEvCmdRef.current = onEvCmd;
+  const evStateKey = JSON.stringify(evState);
+  useEffect(() => {
+    emit("ev-sync", evState);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [evStateKey]);
+  const popOutEqView = async () => {
+    try {
+      setEqMenu(false);
+      const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+      const existing = await WebviewWindow.getByLabel("eqview");
+      if (existing) {
+        await existing.show().catch(() => {});
+        await existing.setFocus();
+      } else {
+        new WebviewWindow("eqview", {
+          url: "index.html?view=eqview",
+          title: "Fletcher — EQ view",
+          width: 420,
+          height: 560,
+        });
+      }
+    } catch (e) {
+      showNotice(String(e));
+    }
   };
   /** The ghosts behind the curve (ADR-0021): bounds, target, measurement, and
    *  measurement + the EQ as drawn here (live, so it follows a drag). */
@@ -10976,95 +11054,7 @@ function MainApp() {
               </span>
               {eqMenu && (
                 <div className="preset-menu device-menu room-menu">
-                  <span className="mono lab-label">EQ VIEW</span>
-                  <div className="room-row">
-                    <span className="room-key">Filter ordering</span>
-                    <div className="seg seg-sm">
-                      {(
-                        [
-                          ["freq", "By frequency"],
-                          ["importance", "By importance"],
-                          ["file", "File order"],
-                        ] as const
-                      ).map(([v, label]) => (
-                        <span
-                          key={v}
-                          className={`seg-opt ${ordering === v ? "on" : ""}`}
-                          onClick={() => pickOrdering(v)}
-                        >
-                          {label}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                  <span className="dim-sm room-note">
-                    How the strip is sorted. AutoEQ writes biggest-correction-first — "by importance"
-                    shows that. Files on disk are never reordered.
-                  </span>
-                  <span className="mono lab-label">EARS</span>
-                  <div className="room-row">
-                    <span className="room-key">Show</span>
-                    <div className="seg seg-sm">
-                      {(
-                        [
-                          ["left", "Left"],
-                          ["right", "Right"],
-                          ["both", "Both"],
-                          ["split", "Split"],
-                        ] as const
-                      ).map(([v, label]) => (
-                        <span
-                          key={v}
-                          className={`seg-opt ${settings?.perEar && earView === v ? "on" : ""} ${settings?.perEar ? "" : "disabled"}`}
-                          onClick={() => pickEarView(v)}
-                        >
-                          {label}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                  {earsDiffer && presets.active && (
-                    <div className="room-row">
-                      <span className="room-key">Join ears</span>
-                      {(["left", "right"] as const).map((keep) => (
-                        <span
-                          key={keep}
-                          className="fe-btn mono"
-                          title={`One chain for both ears: the ${keep} ear's, with its history. The ${otherEar(keep)} ear's chain and history are dropped.`}
-                          onClick={() => joinPreset(presets.active!, keep)}
-                        >
-                          keep {keep}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                  <span className="dim-sm room-note">
-                    {!settings?.perEar
-                      ? "Turn on Settings › EARS › Edit each ear separately, to give each ear its own chain."
-                      : !splitOn
-                        ? "This preset still plays one chain on both ears. Click a view (Left too) to give each ear its own; both start the same."
-                        : "The other-ear ghost (below) shows the other ear faintly behind the one you edit."}
-                  </span>
-                  <GhostsSection
-                    prefs={ghosts}
-                    setPrefs={setGhosts}
-                    overlay={overlay}
-                    library={targetLib}
-                    otherEar={{ on: ghost, enabled: !!settings?.perEar, toggle: () => setGhost(!ghost) }}
-                    deviceName={defaultDevice?.name ?? null}
-                    onOpenDevice={() => {
-                      setEqMenu(false);
-                      // Fresh, so it's the output playing now.
-                      invoke<Device[]>("devices_list")
-                        .then((list) => {
-                          setDevices(list);
-                          const cur = list.find((d) => d.isDefault);
-                          if (cur) setDeviceCfg(cur.id);
-                          else showNotice("No output is the Windows default right now.");
-                        })
-                        .catch((e) => showNotice(String(e)));
-                    }}
-                  />
+                  <EqViewPanel st={evState} send={onEvCmd} library={targetLib} onPopOut={popOutEqView} />
                 </div>
               )}
             </span>

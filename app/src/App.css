@@ -827,11 +827,15 @@ button.ghost {
   border: 1px solid var(--line-strong);
 }
 
+.slider-field .scale-num {
+  width: 100%;
+}
+
 /* The standard slider (controls.tsx SliderField): label, track, typed value,
    unit. The EQ scale's rows below narrow it to their popover. */
 .slider-field {
   display: grid;
-  grid-template-columns: 76px 1fr 56px 48px;
+  grid-template-columns: 76px 1fr 68px 48px;
   align-items: center;
   gap: 8px;
 }
@@ -3815,4 +3819,158 @@ button.ghost {
   fill: var(--dim);
   font-size: 9px;
   font-family: "IBM Plex Mono", monospace;
+}
+
+/* ---------- the EQ view panel (eqview.tsx, design A): popover and window ---------- */
+.ev-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 390px;
+}
+
+.ev-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ev-popout {
+  color: var(--dim);
+  font-size: 13px;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.ev-popout:hover {
+  color: var(--ink);
+}
+
+.ev-sect {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ev-sect + .ev-sect {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+/* Label | control. Controls keep their own width (a segment control doesn't
+   stretch its last segment across the row). */
+.ev-row {
+  display: grid;
+  grid-template-columns: 92px auto;
+  justify-content: start;
+  align-items: center;
+  gap: 10px;
+}
+
+.ev-row .room-key,
+.ev-what b {
+  color: var(--ink-2);
+}
+
+/* A ghost: swatch | name and source | switch (all switches in one column). */
+.ev-layer {
+  display: grid;
+  grid-template-columns: 22px 1fr 40px;
+  align-items: center;
+  gap: 10px;
+  min-height: 28px;
+}
+
+.ev-layer.sub {
+  padding-left: 16px;
+}
+
+.ev-what {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+  min-width: 0;
+}
+
+.ev-what b {
+  font-weight: 500;
+  font-size: 12px;
+}
+
+.ev-what .dim-sm {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ev-layer.off .ev-what b {
+  color: var(--dim);
+}
+
+.ev-inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+/* The target, chosen in its own row. */
+.ev-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 230px;
+  border: 1px solid var(--line-mid);
+  background: var(--panel);
+  padding: 3px 8px;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.ev-field:hover {
+  border-color: var(--ink);
+}
+
+.ev-field .t {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ev-field .v {
+  margin-left: auto;
+  color: var(--dim);
+  font-size: 9px;
+}
+
+.ev-pick,
+.ev-indent {
+  margin-left: 32px;
+}
+
+.ev-swatch {
+  display: block;
+}
+
+.ghost-other {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 2.4;
+  opacity: 0.28;
+}
+
+.ghost-bounds-sw {
+  stroke: color-mix(in srgb, var(--cmp-6) 35%, transparent);
+  stroke-width: 7;
+}
+
+/* The panel in its own window. */
+.ev-window {
+  padding: 14px 16px;
+  min-height: 100vh;
+  background: var(--raised);
+}
+
+.ev-window .ev-panel {
+  min-width: 0;
 }

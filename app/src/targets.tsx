@@ -1,7 +1,7 @@
 // Targets, measurements and preference bounds: the UI (ADR-0021). One place
 // for the feature, so it's polished as a unit. App.tsx only places these:
 // HeadphonePicker in an output's settings, TargetPicker / TargetEditor in
-// Settings › TARGETS, and GhostsSection in the EQ page's ⚙. Every component
+// Settings › TARGETS (eqview.tsx draws the ghosts' switches). Every component
 // renders content only; App wraps it in its own modal.
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -569,103 +569,5 @@ export function TargetEditor({
         )}
       </div>
     </div>
-  );
-}
-
-// ---------------- the EQ page's ghosts ----------------
-
-const SMOOTHINGS: [string, string][] = [
-  ["none", "none"],
-  ["1/24", "1/24"],
-  ["1/12", "1/12"],
-  ["1/6", "1/6"],
-  ["1/3", "1/3"],
-  ["erb", "ERB"],
-];
-
-/** Everything the EQ graph can show behind your curve, in one section. */
-export function GhostsSection({
-  prefs,
-  setPrefs,
-  overlay,
-  library,
-  otherEar,
-  deviceName,
-  onOpenDevice,
-}: {
-  prefs: GhostPrefs;
-  setPrefs: (p: GhostPrefs) => void;
-  overlay: Overlay | null;
-  library: TargetLibrary | null;
-  /** The other-ear ghost (per-ear editing), owned by App. */
-  otherEar: { on: boolean; enabled: boolean; toggle: () => void };
-  deviceName: string | null;
-  onOpenDevice: () => void;
-}) {
-  const [picking, setPicking] = useState(false);
-  const set = (patch: Partial<GhostPrefs>) => setPrefs({ ...prefs, ...patch });
-  const sw = (on: boolean, enabled: boolean, toggle: () => void, label: string, note?: string) => (
-    <div className="room-row">
-      <div className={`switch ${on ? "on" : ""} ${enabled ? "" : "disabled"}`} onClick={() => enabled && toggle()}>
-        <div className="knob" />
-      </div>
-      <span className="room-key">{label}</span>
-      {note && <span className="dim-sm">{note}</span>}
-    </div>
-  );
-  const hp = overlay?.headphone ?? null;
-  const hasBounds = !!overlay && overlay.boundsUpper.some((v) => v != null);
-  return (
-    <>
-      <span className="mono lab-label">GHOSTS</span>
-      {sw(otherEar.on, otherEar.enabled, otherEar.toggle, "Other ear")}
-      {sw(prefs.measurement, true, () => set({ measurement: !prefs.measurement }), "Measurement", hp ? hp.name : undefined)}
-      {sw(prefs.predicted, true, () => set({ predicted: !prefs.predicted }), "Measurement + EQ")}
-      {(prefs.measurement || prefs.predicted) && !hp && (
-        <span className="dim-sm room-note">
-          {`No headphone set for ${deviceName ?? "this output"}. `}
-          <span className="link-like" onClick={onOpenDevice}>
-            Set one in its settings
-          </span>
-        </span>
-      )}
-      {overlay?.measurementError && (prefs.measurement || prefs.predicted) && (
-        <span className="dim-sm room-note warn-text">{overlay.measurementError}</span>
-      )}
-      {sw(prefs.target, true, () => set({ target: !prefs.target }), "Target", prefs.targetName ?? "none chosen")}
-      {prefs.target && (
-        <div className="room-row">
-          <span className="fe-btn mono" onClick={() => setPicking((p) => !p)}>
-            {picking ? "done" : "choose…"}
-          </span>
-          {overlay?.targetError && <span className="dim-sm warn-text">{overlay.targetError}</span>}
-        </div>
-      )}
-      {prefs.target && picking && (
-        <TargetPicker
-          value={prefs.targetRef}
-          library={library}
-          onPick={(i) => {
-            set({ targetRef: i?.target ?? null, targetName: i?.name ?? null });
-            setPicking(false);
-          }}
-        />
-      )}
-      {sw(prefs.bounds, hasBounds || prefs.bounds, () => set({ bounds: !prefs.bounds }), "Bounds", hasBounds ? undefined : "this target has none")}
-      <div className="room-row">
-        <span className="room-key">Smoothing</span>
-        <div className="seg seg-sm">
-          {SMOOTHINGS.map(([v, label]) => (
-            <span key={v} className={`seg-opt ${prefs.smoothing === v ? "on" : ""}`} onClick={() => set({ smoothing: v })}>
-              {label}
-            </span>
-          ))}
-        </div>
-      </div>
-      <span className="dim-sm room-note">
-        Lined up at 0 dB at 500 Hz; the target is moved onto the measurement over 100 Hz–10 kHz. A measurement is one
-        rig's average, not your ears; a target is a population's preference.
-      </span>
-    </>
   );
 }
