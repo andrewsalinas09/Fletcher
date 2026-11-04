@@ -8,6 +8,8 @@ Append-only session journal. Newest entry first.
 - **Researched** (docs/research/targets-and-preference-bounds.md): squig.link/CrinGraph (normalization modes; targets as a DF base plus bass/ear-gain/treble/tilt knobs; preference bounds are Headphones.com's construction from Harman data, offsets around a DF base); PEQdB (its own blind-test targets); AutoEq's targets and raw measurements (MIT, per source and rig, one 1.01 grid). Data rights: only AutoEq's are licensed; squig.link, PEQdB and the Headphones.com bounds are not.
 - **Rulings** (Q-31): fetch AutoEq and let users import; our own targets and bounds; overlays switched in the EQ ⚙; output → headphone in device settings and Settings; an AutoEq-style fit; per-ear; Lab ABX and preference between targets; labels with source and rig. Later: measured personal bounds from blind tests, comparing to another headphone, sharing files.
 - **Mockups:** seven screens on the real EQ page (claude.ai/artifact/QW6JncnpfaRzEsJ55hQDud). Open: correction view, response view or both; alignment and smoothing (research running).
+- **Owner's design philosophy, distilled:** information lives with what owns it; views only show. The headphone chip and the device-owned target were dropped; the EQ page gets ghosts in its ⚙. Saved to memory. ADR-0021 written from Q-31; 0.7.3 released (dark mode, CSP).
+- **Backend built** (ADR-0021 steps 1–2, backend of 3–5): `fletcher_core::response` (13 tests, against AutoEq's own files) and `headphones.rs` (measurement search and fetch with TB-63's quirks, the device binding, the target library, `eq_overlay`). A live test against AutoEq passes. No UI yet.
 
 ## 2026-11-03 (dark theme) — Paper and ink with the lights down (ADR-0020, TB-61)
 

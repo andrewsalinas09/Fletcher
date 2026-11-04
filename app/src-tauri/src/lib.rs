@@ -14,6 +14,7 @@ use std::path::PathBuf;
 
 mod analysis;
 mod engine;
+mod headphones;
 mod profile;
 mod setup;
 mod tools;
@@ -4118,6 +4119,8 @@ struct DeviceDto {
     /// This device's switch hotkey (#10), kept while switched off.
     hotkey: Option<String>,
     hotkey_on: bool,
+    /// The headphone on this output: its measurement (ADR-0021).
+    headphone: Option<headphones::HeadphoneBinding>,
 }
 
 #[tauri::command]
@@ -4132,6 +4135,7 @@ fn devices_list() -> Vec<DeviceDto> {
                 preset: device_setting(&d.id, "preset"),
                 hotkey: assigned.then(|| hotkey_choice(&hk)),
                 hotkey_on: assigned && hotkey_enabled(&hk),
+                headphone: headphones::headphone_of(&d.id),
                 id: d.id,
                 name: d.name,
                 is_default: d.is_default,
@@ -7064,6 +7068,18 @@ pub fn run() {
             preset_hotkey_assign,
             preset_hotkey_remove,
             csp_violation,
+            headphones::headphone_search,
+            headphones::device_headphone_autoeq,
+            headphones::device_headphone_import,
+            headphones::device_headphone_clear,
+            headphones::headphone_bindings,
+            headphones::targets,
+            headphones::targets_search,
+            headphones::target_preview,
+            headphones::target_save,
+            headphones::target_import,
+            headphones::target_delete,
+            headphones::eq_overlay,
             osd_text,
             apo_open_device_selector,
             updates::update_check,

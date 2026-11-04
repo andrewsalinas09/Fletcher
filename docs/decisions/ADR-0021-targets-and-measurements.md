@@ -48,7 +48,9 @@ A user asked for squig.link-style overlays: target curves and preference bounds 
 6. **"From target…":** the fit, as a new preset.
 7. **Lab:** targets as contenders.
 
-Each step ships on its own and is usable. Steps 3, 4 and 5 touch pop-outs (the target modal), so rule 10 applies.
+Each step ships on its own and is usable.
+
+**Progress:** steps 1–2 and the backend of 3–5 done 2026-11-04 (`fletcher_core::response`, `headphones.rs`: commands `headphone_search`, `device_headphone_autoeq/_import/_clear`, `headphone_bindings`, `targets`, `targets_search`, `target_preview`, `target_save/_import/_delete`, `eq_overlay`). Found while building: AutoEq's tilt pivots at 632 Hz (`log_tilt`), its bass boost is the RBJ shelf with fc as midpoint (APO's LSC), and its web-app targets are stored without bass, the boost added on top. Next: the UI for 3–5, then the fit (6). Steps 3, 4 and 5 touch pop-outs (the target modal), so rule 10 applies.
 
 ## Consequences
 
