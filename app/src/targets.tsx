@@ -376,7 +376,7 @@ export function HeadphonePicker<D>({
       {busy && <span className="dim-sm">fetching…</span>}
       {error && <span className="dim-sm warn-text">{error}</span>}
       <span className="dim-sm">
-        A measurement is one rig's average over a few seatings, not your ears; above 10 kHz it depends more on
+        A measurement is one rig's average over a few seatings, not your ears; above 6 kHz it depends more on
         fit than on the headphone.
       </span>
     </div>
