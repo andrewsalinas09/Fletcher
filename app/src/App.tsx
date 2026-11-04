@@ -5843,9 +5843,11 @@ function MainApp() {
   // TB-32: when the EQ can't be heard on this device, the banner needs to know
   // whether some OTHER device would hear it — so load the list unprompted.
   const apoBroken = !!state && state.apoOnDevice !== "active" && state.apoOnDevice !== "unknown";
-  // An open device menu follows a switch made outside Fletcher (#8).
+  // The device list follows the current output from the start (#8): an open
+  // device menu tracks a switch made outside Fletcher, and the EQ page's
+  // ghosts need the current output's headphone before any menu is opened.
   useEffect(() => {
-    if (apoBroken || deviceMenu) invoke<Device[]>("devices_list").then(setDevices).catch(() => {});
+    invoke<Device[]>("devices_list").then(setDevices).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apoBroken, state?.deviceName]);
   // Open device settings follow every reload: APO's device selector closing
@@ -7940,23 +7942,6 @@ function MainApp() {
                 </div>
               </div>
               <div className="dev-sect">
-                <span className="room-key">Equalizer APO</span>
-                <span className={`dim-sm ${cfgDevice.apo === "active" || cfgDevice.apo === "unknown" ? "" : "warn-text"}`}>
-                  {cfgDevice.apo === "active"
-                    ? "Installed on this device: the EQ applies here."
-                    : cfgDevice.apo === "disabled"
-                      ? "Windows' “Disable all enhancements” is on for this device: the EQ can't apply here."
-                      : cfgDevice.apo === "missing"
-                        ? "Not installed on this device: the EQ can't apply here."
-                        : "Couldn't read whether APO is on this device."}
-                </span>
-                <div className="room-row">
-                  <button onClick={openApoSelector} disabled={apoSelectorOpen}>
-                    {apoSelectorOpen ? "waiting for APO's device selector…" : "open APO's device selector"}
-                  </button>
-                </div>
-              </div>
-              <div className="dev-sect">
                 <span className="room-key">Headphone</span>
                 <HeadphonePicker<Device>
                   deviceId={cfgDevice.id}
@@ -8005,6 +7990,23 @@ function MainApp() {
                       }}
                     />
                   )}
+                </div>
+              </div>
+              <div className="dev-sect">
+                <span className="room-key">Equalizer APO</span>
+                <span className={`dim-sm ${cfgDevice.apo === "active" || cfgDevice.apo === "unknown" ? "" : "warn-text"}`}>
+                  {cfgDevice.apo === "active"
+                    ? "Installed on this device: the EQ applies here."
+                    : cfgDevice.apo === "disabled"
+                      ? "Windows' “Disable all enhancements” is on for this device: the EQ can't apply here."
+                      : cfgDevice.apo === "missing"
+                        ? "Not installed on this device: the EQ can't apply here."
+                        : "Couldn't read whether APO is on this device."}
+                </span>
+                <div className="room-row">
+                  <button onClick={openApoSelector} disabled={apoSelectorOpen}>
+                    {apoSelectorOpen ? "waiting for APO's device selector…" : "open APO's device selector"}
+                  </button>
                 </div>
               </div>
         </SettingsModal>
@@ -11042,7 +11044,15 @@ function MainApp() {
                     deviceName={defaultDevice?.name ?? null}
                     onOpenDevice={() => {
                       setEqMenu(false);
-                      if (defaultDevice) setDeviceCfg(defaultDevice.id);
+                      // Fresh, so it's the output playing now.
+                      invoke<Device[]>("devices_list")
+                        .then((list) => {
+                          setDevices(list);
+                          const cur = list.find((d) => d.isDefault);
+                          if (cur) setDeviceCfg(cur.id);
+                          else showNotice("No output is the Windows default right now.");
+                        })
+                        .catch((e) => showNotice(String(e)));
                     }}
                   />
                 </div>
