@@ -3952,6 +3952,12 @@ button.ghost {
   display: block;
 }
 
+/* "Your EQ" row: the curve's own line. */
+.ev-eq-sw {
+  stroke: var(--ink);
+  stroke-width: 2.4;
+}
+
 .ghost-other {
   fill: none;
   stroke: var(--ink);

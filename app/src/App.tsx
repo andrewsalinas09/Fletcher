@@ -3742,6 +3742,8 @@ type FeSync = {
   totalDb: number[];
   /** The EQ graph's ghosts, drawn in the editor's plot too. */
   ghosts: GhostView | null;
+  /** "Your EQ" is on in the EQ view. */
+  showEq: boolean;
 };
 /** Filter-editor window → main: everything the editor can do. */
 type FeCmd =
@@ -3796,6 +3798,7 @@ function FilterEditor({
   freqs,
   totalDb,
   ghosts,
+  showEq = true,
   pos,
   onPatch,
   onGesture,
@@ -3812,6 +3815,8 @@ function FilterEditor({
   totalDb: number[];
   /** The EQ graph's ghosts (target, measurement…), drawn behind, as they're switched on there. */
   ghosts?: GhostView | null;
+  /** Draw the whole EQ's line (off when "Your EQ" is off in the EQ view). */
+  showEq?: boolean;
   pos?: { left: number; bottom: number };
   /** Change the filter. `immediate` = write now (typed values, clicks). */
   onPatch: (patch: Partial<EqFilter>, immediate: boolean) => void;
@@ -3975,7 +3980,7 @@ function FilterEditor({
             id={`fe-${mode}-ghosts`}
           />
         )}
-        <path d={pathFrom(freqs, totalDb, xOf, yOf)} className="fe-total" />
+        {showEq && <path d={pathFrom(freqs, totalDb, xOf, yOf)} className="fe-total" />}
         <path d={pathFrom(ownFreqs, ownDb, xOf, yOf)} fill="none" stroke={color} strokeWidth="2.2" />
         <circle cx={xOf(filter.fcHz)} cy={yOf(ownDb[fcIdx] ?? 0)} r="5" fill="none" stroke={color} strokeWidth="2" />
         <g className="axis">
@@ -4092,6 +4097,7 @@ function PopoutFilter() {
         freqs={sync.freqs}
         totalDb={sync.totalDb}
         ghosts={sync.ghosts}
+        showEq={sync.showEq}
         onPatch={(patch, immediate) => {
           lastLocal.current = Date.now();
           setLocal((l) => ({ ...l, ...patch }));
@@ -7282,6 +7288,7 @@ function MainApp() {
       freqs: state?.freqs ?? [],
       totalDb: state ? state.sumDb.map((db) => db - state.preampDb) : [],
       ghosts: feGhosts,
+      showEq: ghosts.eq,
     };
     emit("fe-sync", payload);
   };
@@ -7692,7 +7699,7 @@ function MainApp() {
         <svg viewBox={`0 0 ${gsize.w} ${gsize.h}`} className="graph">
           {graphGrid(`eq-plot-${e}`)}
           {otherEarPath(e, `eq-plot-${e}`)}
-          {c && (
+          {c && ghosts.eq && (
             <path
               d={pathFrom(raw.freqs, c, xOf, yOfPinned)}
               className={`sum-curve ear-${e}`}
@@ -8480,6 +8487,7 @@ function MainApp() {
           freqs={state.freqs}
           totalDb={state.sumDb.map((db) => db - state.preampDb)}
           ghosts={feGhosts}
+          showEq={ghosts.eq}
           pos={editor}
           onPatch={(patch, immediate) => mutateFilter(feIndex, patch, immediate)}
           onGesture={(label) => window.setTimeout(() => commitGesture(label), 0)}
@@ -11139,11 +11147,15 @@ function MainApp() {
                 ) : null;
               })}
               {otherEarPath(ear, "eq-plot-area")}
-              <path
-                d={pathFrom(state.freqs, state.sumDb.map((db) => db - state.preampDb), xOf, yOfPinned)}
-                className={`sum-curve ${splitOn ? `ear-${ear}` : ""}`}
-                clipPath="url(#eq-plot-area)"
-              />
+              {/* Your EQ's own line, unless switched off in the EQ view (the
+                  handles and the strip stay: only the line goes). */}
+              {ghosts.eq && (
+                <path
+                  d={pathFrom(state.freqs, state.sumDb.map((db) => db - state.preampDb), xOf, yOfPinned)}
+                  className={`sum-curve ${splitOn ? `ear-${ear}` : ""}`}
+                  clipPath="url(#eq-plot-area)"
+                />
+              )}
 
               {state.filters.map((f, i) => (
                 <circle

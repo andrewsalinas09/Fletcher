@@ -167,7 +167,8 @@ export function EqViewPanel({
       </div>
 
       <div className="ev-sect">
-        <span className="mono lab-label">GHOSTS</span>
+        <span className="mono lab-label">CURVES</span>
+        {layer("ev-eq-sw", "Your EQ", null, g.eq, true, () => set({ eq: !g.eq }))}
         {layer("ghost-other", "Other ear", null, st.otherEar, st.perEar, () => send({ type: "otherEar", on: !st.otherEar }))}
         {layer("ghost-meas", "Measurement", hp ?? noHp, g.measurement, !!hp, () => set({ measurement: !g.measurement }))}
         {st.measurementError && hp && <span className="dim-sm warn-text ev-indent">{st.measurementError}</span>}

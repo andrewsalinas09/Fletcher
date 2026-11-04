@@ -62,6 +62,8 @@ export type UserTarget = {
 
 /** What the EQ graph shows (per viewer: localStorage). */
 export type GhostPrefs = {
+  /** Your EQ's own curve. Off hides only the line; handles and editing stay. */
+  eq: boolean;
   measurement: boolean;
   predicted: boolean;
   target: boolean;
@@ -73,6 +75,7 @@ export type GhostPrefs = {
 
 const GHOSTS_KEY = "fletcher.ghosts";
 const NO_GHOSTS: GhostPrefs = {
+  eq: true,
   measurement: false,
   predicted: false,
   target: false,
