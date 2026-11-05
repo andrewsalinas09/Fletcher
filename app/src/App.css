@@ -254,6 +254,19 @@ nav {
   width: 440px;
   padding: 14px 18px 18px;
   gap: 16px;
+  /* .palette caps the height; a taller body scrolls instead of spilling out. */
+  overflow-y: auto;
+}
+
+.dev-modal > * {
+  flex-shrink: 0;
+}
+
+.dev-modal-head {
+  position: sticky;
+  top: 0;
+  background: var(--raised);
+  z-index: 1;
 }
 
 .dev-modal-head {
