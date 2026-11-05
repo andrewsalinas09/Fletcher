@@ -205,3 +205,10 @@ A user asked for squig.link-style overlays: target curves (Harman, peqdb, …) a
 Owner: "is there a way to also have advanced control over target building? Like something you can do manually?" How targets are made in practice: Harman's came from listeners adjusting shelves on a diffuse-field base; squig.link and AutoEq use a base plus bass/ear-gain/treble/tilt; reviewers also blend targets and hand-draw them.
 - **Proposal:** a target is a base plus a filter chain, edited on a graph exactly like the EQ page (same handles, strip and filter editor). The four knobs become a quick start that writes four filters into that chain, so "simple" and "advanced" are one model. Also: blend two targets (a percentage), and later the measured personal bounds from blind tests.
 - Pops out like the other editors (rule 10).
+
+## Q-33 · The preset menu redesign — **Open (2026-11-04)**
+
+- **Raised by:** the owner, from a screenshot: "we also need to do another edit pass of this like we did for the EQ settings. It's honestly really bad."
+- **Problems:** four always-on icons per row (delete one slip away); making a preset is spread over three places (Peace's row and its copy button, the AutoEQ block, a name field with three buttons), and "From target…" (ADR-0021 step 6) would add a fourth; the AutoEQ header is a standing instruction.
+- **Common to every option:** rename, duplicate and delete move into the preset's settings modal; rows show name and hotkey, with the gear on hover; every source of a new preset is in one place; a new preset appears named and ready to rename.
+- **Options:** A, a quiet list plus one NEW PRESET strip of source buttons, the target fit opening in place (recommended); B, two panes; C, a single "New preset…" row that switches the palette to a source list. Mockups: claude.ai/artifact/TJwR6U4jfyzznBTA4Xu7U3.
