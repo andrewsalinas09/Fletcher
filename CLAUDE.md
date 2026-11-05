@@ -28,6 +28,7 @@ A modern, open-source frontend for Equalizer APO on Windows — parametric EQ th
 | `docs/OPEN-QUESTIONS.md` | Q-01..Q-24 with statuses; several carry hard-won platform laws (Q-20: satellite webviews get no DOM keys → focus-scoped OS shortcuts) | Before designing anything new |
 | `docs/TESTBED.md` | TB-01..TB-24 edge cases | Before AND after design changes |
 | `docs/GLOSSARY.md` | Domain vocabulary | A term is unfamiliar |
+| `docs/IMPORTS.md` | User guide: every import, its file formats, how the data is read, lined up and stored | Touching an import, a parser or a stored format |
 | `docs/research/` | Verified external facts (APO mechanics + live spike results, AutoEq formats, frontend landscape) | Verifying claims about the outside world |
 | `docs/ROADMAP.md` | Phases and current focus | Starting any session |
 | `docs/WORKLOG.md` | Session journal | Resuming after a gap |

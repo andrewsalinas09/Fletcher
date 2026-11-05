@@ -47,11 +47,14 @@ Ears and headphones aren't perfectly symmetric. Turn on per-ear editing in Setti
 </p>
 
 ### 5,000+ headphone corrections, one search away
-Type a headphone name and pick from the [AutoEQ](https://github.com/jaakkopasanen/AutoEq) database. The correction imports as your own preset, ready to tweak. You can also import Peace presets or paste Equalizer APO filter lines.
+Type a headphone name and pick from the [AutoEQ](https://github.com/jaakkopasanen/AutoEq) database. The correction imports as your own preset, ready to tweak. You can also copy Peace's chain, import a REW filter file, or paste Equalizer APO filter lines. Every import, its file formats and what happens to the data: [docs/IMPORTS.md](docs/IMPORTS.md).
 
 <p align="center">
   <img src="docs/images/autoeq-search.png" alt="The search palette showing your presets and AutoEQ results for Sennheiser headphones" width="800">
 </p>
+
+### Targets, measurements and preference bounds
+Set the headphone on each output (from AutoEQ's measurements, or your own file, per ear if you have both), then show it on the EQ graph against a target: AutoEQ's Harman, diffuse-field and rig-specific targets, or your own, built from a base with bass, ear gain, treble and tilt, or imported. Draw your headphone as measured, as it sounds with your EQ, and the target with its preference bounds, lined up by shape, with the less reliable treble shaded. **A target…** fits your headphone to any target with AutoEQ's own method and gives you an editable preset.
 
 ### Instant, level-matched A/B
 Press **Ctrl+Shift+A** anywhere in Windows to flip between your EQ and flat. Both sides are matched in loudness, so you're comparing the sound, not the volume.
