@@ -2,6 +2,16 @@
 
 Each version's section becomes its GitHub release notes and the "what's new" text in Settings › UPDATES. Write for listeners, not developers.
 
+## 0.8.0
+
+- **Targets and your headphone's measurement on the EQ graph (#13).** Set the headphone on each output (its settings, from the output menu's ⚙): search AutoEQ's 5,000+ measurements, which name who measured it and on which rig, or import your own file, one per ear if you have both. Then, in the EQ page's ⚙ (now **EQ view**), show your headphone as measured, as it sounds with your EQ, and a target, all lined up by shape. Treble above 6 kHz is shaded, because there a measurement depends more on how the headphone sits than on the headphone.
+- **Targets of your own.** Settings › TARGETS has AutoEQ's featured targets, searches all of AutoEQ's, and holds yours: start from any target (or flat) and turn bass, ear gain, treble and tilt, with the preview updating as you drag, or import a file. The editor shows which rig a target was made for and that rig's ear response. Add preference bounds (two files: the band's upper and lower edges) and they're drawn around the target.
+- **A target… makes a preset that fits your headphone to any target**, with AutoEQ's own method: checked against AutoEQ's published results, it lands within 0.06 dB of them. Preset menu › New preset… › A target…. With separate left and right measurements and each ear edited separately, each ear gets its own fit.
+- **A cleaner preset menu.** It's your presets and a search, nothing else on the rows but the name, its hotkey and a ⚙ when you point at it. Making a preset is one row at the bottom, **New preset…**, which lists every way to start one: empty, what's playing, a target, a REW file, or another EQ's chain. Renaming, duplicating and deleting moved into the preset's ⚙, and delete asks first. Esc always takes you back.
+- **The EQ view can pop out** into its own window (⧉), and so can the target editor. The filter editor draws the same lines as the graph, and you can hide your EQ's own curve to see the rest.
+- **"…" on a button now always means it asks for something more** (a file, a choice, a key) before doing anything.
+- **How every import works**, the file formats and what happens to your data: [docs/IMPORTS.md](https://github.com/andrewsalinas09/Fletcher/blob/main/docs/IMPORTS.md).
+
 ## 0.7.3
 
 - **Dark mode.** Settings › INTERFACE › Theme: Light, Dark, or Match Windows. It's the same paper-and-ink look with the lights down: warm, not inverted, with boost orange and cut blue kept exactly as recognizable. Every window follows, pop-outs and the hotkey popup included. Light mode is unchanged.
