@@ -39,6 +39,21 @@ Click ⤢ on any filter for a larger editor: its own curve with your whole EQ be
   <img src="docs/images/filter-editor.png" alt="The filter editor open over the EQ graph: a peaking filter's curve with the full EQ dashed behind it, Fc, gain and Q sliders, and a grid of all twelve filter types drawn as small response previews" width="900">
 </p>
 
+### See your headphone against a target, and EQ it there
+Tell Fletcher which headphone is on each output and the EQ graph can show what you're actually hearing: your headphone's measured response, the same response with your EQ applied, and a target to aim for, all lined up by shape. Drag a filter and the "with your EQ" line follows as you drag, so you can watch it meet the target.
+
+- **Your headphone:** search 5,000+ measurements from [AutoEQ](https://github.com/jaakkopasanen/AutoEq), each naming who measured it and on which rig, or import your own measurement, with a file per ear if you have both.
+- **Targets:** AutoEQ's Harman, diffuse-field and rig-specific targets, searchable, or your own: start from any target and turn bass, ear gain, treble and tilt with a live preview, or import a file. Each target shows which rig it was made for and that rig's ear response.
+- **Preference bounds:** add a band around a target (its upper and lower edges) to see how far from it the sound can go and still be liked.
+- **Make a preset from it:** **New preset… › A target…** fits your headphone to any target with AutoEQ's own method (checked against AutoEQ's published results, within 0.06 dB) and gives you an ordinary preset to tweak. With a measurement for each ear and per-ear editing on, each ear gets its own fit.
+- **Honest about its limits:** treble above 6 kHz is shaded, because there a measurement depends more on how the headphone sits on your head than on the headphone itself. Smoothing from none to 1/3 octave or ERB.
+
+Everything lives in the EQ view (the ⚙ at the top right of the EQ page), which also pops out into its own window. How each import works and what happens to the data: [docs/IMPORTS.md](docs/IMPORTS.md).
+
+<p align="center">
+  <img src="docs/images/targets.png" alt="The EQ page with the EQ view panel open: the HD 650 with its AutoEQ-fitted preset drawn in purple over the Harman over-ear 2018 target in teal, the two lines nearly on top of each other through the mids, the treble above 10 kHz shaded as less reliable, and the EQ curve in black with its ten filter handles" width="900">
+</p>
+
 ### A separate EQ for each ear
 Ears and headphones aren't perfectly symmetric. Turn on per-ear editing in Settings and every preset gets its own left and right curves, starting out identical. Edit one ear at a time, show both on one graph, or put them side by side, with the other ear shown faintly for reference. Each ear keeps its own undo history, and A/B comparisons and blind tests use both ears as they are.
 
@@ -52,9 +67,6 @@ Type a headphone name and pick from the [AutoEQ](https://github.com/jaakkopasane
 <p align="center">
   <img src="docs/images/autoeq-search.png" alt="The search palette showing your presets and AutoEQ results for Sennheiser headphones" width="800">
 </p>
-
-### Targets, measurements and preference bounds
-Set the headphone on each output (from AutoEQ's measurements, or your own file, per ear if you have both), then show it on the EQ graph against a target: AutoEQ's Harman, diffuse-field and rig-specific targets, or your own, built from a base with bass, ear gain, treble and tilt, or imported. Draw your headphone as measured, as it sounds with your EQ, and the target with its preference bounds, lined up by shape, with the less reliable treble shaded. **A target…** fits your headphone to any target with AutoEQ's own method and gives you an editable preset.
 
 ### Instant, level-matched A/B
 Press **Ctrl+Shift+A** anywhere in Windows to flip between your EQ and flat. Both sides are matched in loudness, so you're comparing the sound, not the volume.
