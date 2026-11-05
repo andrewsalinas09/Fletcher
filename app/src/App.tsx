@@ -3612,7 +3612,11 @@ function PresetNameField({
     if (fresh) input.current?.select();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  // Esc drops the typing and lets the key through, so the modal closes as
+  // everywhere else; the blur that follows must not save what was dropped.
+  const dropped = useRef(false);
   const commit = () => {
+    if (dropped.current) return;
     const to = v.trim();
     if (!to || to === name) return setV(name);
     onRename(to)
@@ -3631,7 +3635,7 @@ function PresetNameField({
         onKeyDown={(e) => {
           if (e.key === "Enter") (e.target as HTMLInputElement).blur();
           if (e.key === "Escape") {
-            e.stopPropagation();
+            dropped.current = true;
             setV(name);
           }
         }}
