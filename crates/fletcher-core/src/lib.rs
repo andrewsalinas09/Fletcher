@@ -9,6 +9,7 @@ pub mod apo;
 pub mod config;
 pub mod devices;
 pub mod dsp;
+pub mod fit;
 pub mod fsx;
 pub mod pathcheck;
 pub mod peace;

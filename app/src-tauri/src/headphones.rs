@@ -1040,6 +1040,78 @@ pub fn target_delete(name: String) -> Result<TargetLibrary, String> {
     Ok(targets_sync())
 }
 
+// ---------------- the fit ("A target…", ADR-0021 step 6) ----------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FitResult {
+    preset: String,
+    filters: usize,
+    state: crate::EqState,
+}
+
+/// The filters as a preset stores them, rounded the way AutoEq prints its
+/// results (Hz to 1, gain to 0.1 dB, Q to 0.01).
+fn fitted_chain(
+    m: &Curve,
+    target: &Curve,
+) -> Result<Vec<fletcher_core::config::ChainFilter>, String> {
+    Ok(fletcher_core::fit::fit(m, target)?
+        .filters
+        .into_iter()
+        .map(|s| fletcher_core::config::ChainFilter {
+            enabled: true,
+            kind: s.kind,
+            fc_hz: s.fc_hz.round(),
+            gain_db: (s.gain_db * 10.0).round() / 10.0,
+            q: (s.q * 100.0).round() / 100.0,
+        })
+        .collect())
+}
+
+/// Fit the playing output's headphone to `target` (AutoEq's method,
+/// `fletcher_core::fit`) and save the filters as a new preset, which then
+/// plays. Each ear gets its own fit when the measurement has both and each
+/// ear's own EQ is on (ADR-0017); otherwise their average.
+#[tauri::command]
+pub(crate) async fn target_fit(target: TargetRef, name: String) -> Result<FitResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let device = fletcher_core::devices::list_render_devices()
+            .into_iter()
+            .find(|d| d.is_default)
+            .ok_or("no output is the Windows default right now")?;
+        let h = headphone_of(&device.id).ok_or_else(|| {
+            format!(
+                "{} has no headphone set: choose one in its settings",
+                device.name
+            )
+        })?;
+        let m = load_measurement(&h)?;
+        let t = target_curve(&target)?;
+        let chains = match (&m.right, crate::per_ear()) {
+            (Some(right), true) => fletcher_core::config::Chains {
+                left: fitted_chain(&m.left, &t)?,
+                right: Some(fitted_chain(right, &t)?),
+            },
+            _ => fletcher_core::config::Chains::linked(fitted_chain(&m.average(), &t)?),
+        };
+        let specs = |c: &[fletcher_core::config::ChainFilter]| crate::filter_specs(c);
+        let stereo = fletcher_core::dsp::StereoSpecs {
+            left: specs(&chains.left),
+            right: specs(chains.right.as_deref().unwrap_or(&chains.left)),
+        };
+        let filters = chains.left.len();
+        let preset = crate::import_chains_as_preset(&name, crate::preset_preamp(&stereo), &chains)?;
+        Ok(FitResult {
+            preset,
+            filters,
+            state: crate::eq_state()?,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 // ---------------- the overlay ----------------
 
 #[derive(Serialize)]
@@ -1235,6 +1307,32 @@ mod tests {
             ),
             Err(e) => println!("ERROR: {e}"),
         }
+    }
+
+    /// The fit as "A target…" runs it, minus saving the preset: this
+    /// machine's output headphone and AutoEq's featured Harman target.
+    #[test]
+    #[ignore = "this machine: reads the real device binding; network"]
+    fn live_fit_on_this_machine() {
+        let device = fletcher_core::devices::list_render_devices()
+            .into_iter()
+            .find(|d| d.is_default)
+            .expect("a default output");
+        let h = headphone_of(&device.id).expect("a headphone on the default output");
+        let m = load_measurement(&h).unwrap();
+        let t = target_curve(&TargetRef::Featured {
+            label: "Harman over-ear 2018".into(),
+        })
+        .unwrap();
+        let chain = fitted_chain(&m.average(), &t).unwrap();
+        println!("{} on {}:", h.name, device.name);
+        for f in &chain {
+            println!(
+                "  {:?} {} Hz {:+.1} dB Q {:.2}",
+                f.kind, f.fc_hz, f.gain_db, f.q
+            );
+        }
+        assert_eq!(chain.len(), 10);
     }
 
     #[test]

@@ -27,6 +27,7 @@ import {
   type HeadphoneRow,
   type Overlay,
   type TargetLibrary,
+  type TargetRef,
   type UserTarget,
 } from "./targets";
 import "./App.css";
@@ -4565,6 +4566,23 @@ function MainApp() {
     }
   };
 
+  // "A target…" (ADR-0021 step 6): the playing output's headphone fitted to
+  // a target, AutoEQ's way, saved as a new preset that then plays.
+  const [fitting, setFitting] = useState(false);
+  const fitToTarget = (target: TargetRef, name: string) => {
+    setFitting(true);
+    invoke<{ preset: string; filters: number; state: EqState }>("target_fit", { target, name })
+      .then((r) => {
+        adopt(r.state);
+        refreshPresets();
+        loadOrInitHistory(r.preset, earSnap(r.state, earRef.current));
+        setMenuOpen(false);
+        showNotice(`fitted ${r.filters} filters as “${r.preset}” — it's your active preset now`);
+      })
+      .catch((e) => showNotice(String(e)))
+      .finally(() => setFitting(false));
+  };
+
   const importAeq = (entry: AutoeqEntry) => {
     setImporting(true);
     invoke<EqState>("autoeq_import", { name: entry.name, path: entry.path })
@@ -4585,10 +4603,10 @@ function MainApp() {
   const [view, setView] = useState<"eq" | "lab" | "settings" | "clips" | "prints">("eq");
   // The target library and the headphone list load when something shows them.
   useEffect(() => {
-    if (eqMenu || view === "settings") loadTargets();
+    if (eqMenu || menuOpen || view === "settings") loadTargets();
     if (view === "settings") loadHpRows();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [eqMenu, view]);
+  }, [eqMenu, menuOpen, view]);
   // Measure the EQ graph's panel whenever it's on screen (it mounts with the EQ view).
   useLayoutEffect(() => {
     const panel = svgRef.current?.parentElement;
@@ -7656,6 +7674,19 @@ function MainApp() {
     hasBounds: !!overlay?.boundsUpper.some((v) => v != null),
     deviceName: defaultDevice?.name ?? null,
   };
+  /** The playing output's settings. Fresh, so it's the output playing now;
+   *  the main window comes forward when this was asked from a pop-out. */
+  const openOutputSettings = () => {
+    invoke<Device[]>("devices_list")
+      .then((list) => {
+        setDevices(list);
+        const cur = list.find((d) => d.isDefault);
+        if (cur) setDeviceCfg(cur.id);
+        else showNotice("No output is the Windows default right now.");
+      })
+      .catch((e) => showNotice(String(e)));
+    import("@tauri-apps/api/window").then(({ getCurrentWindow }) => getCurrentWindow().setFocus()).catch(() => {});
+  };
   const onEvCmd = (c: EqViewCmd) => {
     if (c.type === "ordering") pickOrdering(c.v);
     else if (c.type === "earView") pickEarView(c.v);
@@ -7664,17 +7695,7 @@ function MainApp() {
     else if (c.type === "join" && presets.active) joinPreset(presets.active, c.keep);
     else if (c.type === "openDevice") {
       setEqMenu(false);
-      // Fresh, so it's the output playing now; the main window comes forward
-      // when this was asked from the panel's own window.
-      invoke<Device[]>("devices_list")
-        .then((list) => {
-          setDevices(list);
-          const cur = list.find((d) => d.isDefault);
-          if (cur) setDeviceCfg(cur.id);
-          else showNotice("No output is the Windows default right now.");
-        })
-        .catch((e) => showNotice(String(e)));
-      import("@tauri-apps/api/window").then(({ getCurrentWindow }) => getCurrentWindow().setFocus()).catch(() => {});
+      openOutputSettings();
     }
   };
   useSatelliteHost(EV_CHANNEL, evState, onEvCmd);
@@ -10818,6 +10839,18 @@ function MainApp() {
                   }}
                   onClose={() => setMenuOpen(false)}
                   onError={showNotice}
+                  fit={{
+                    headphone: defaultDevice?.headphone ?? null,
+                    deviceName: defaultDevice?.name ?? state.deviceName ?? null,
+                    library: targetLib,
+                    initial: ghosts.targetRef ? { target: ghosts.targetRef, name: ghosts.targetName ?? "" } : null,
+                    busy: fitting,
+                    onFit: fitToTarget,
+                    onSetHeadphone: () => {
+                      setMenuOpen(false);
+                      openOutputSettings();
+                    },
+                  }}
                 />
               )}
             </span>

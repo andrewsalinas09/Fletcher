@@ -1354,7 +1354,16 @@ fn own_filter(
 /// and make it the active, audible one on side A. Returns the preset's name.
 fn import_as_preset(name: &str, preamp: f64, chain: &[ChainFilter]) -> Result<String, String> {
     // AutoEQ and REW files are one chain for both ears.
-    let chain = &Chains::linked(chain.to_vec());
+    import_chains_as_preset(name, preamp, &Chains::linked(chain.to_vec()))
+}
+
+/// Save `chain` as a new preset (named `name`, or "name 2"… if taken) and
+/// make it the one playing.
+pub(crate) fn import_chains_as_preset(
+    name: &str,
+    preamp: f64,
+    chain: &Chains,
+) -> Result<String, String> {
     let st = store()?;
     let base = sanitize_name(name).ok_or("unusable preset name")?;
     let mut preset_name = base.clone();
@@ -7087,6 +7096,7 @@ pub fn run() {
             headphones::target_delete,
             headphones::targets_user,
             headphones::eq_overlay,
+            headphones::target_fit,
             osd_text,
             apo_open_device_selector,
             updates::update_check,

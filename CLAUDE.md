@@ -10,7 +10,7 @@ A modern, open-source frontend for Equalizer APO on Windows — parametric EQ th
 
 | Path | Contains |
 |---|---|
-| `crates/fletcher-core/` | Engine lib: lossless APO config parser/writer (`config.rs`), RBJ biquad DSP (`dsp.rs`), APO detection (`apo.rs`), devices + IPolicyConfig default-switch (`devices.rs`), atomic writes w/ Windows retry (`fsx.rs`), preset store (`presets.rs`), .peace importer (`peace.rs`), binomial/xorshift (`stats.rs`). ~30 tests incl. real-fixture round-trips (`tests/`). Spike probe in `examples/`. |
+| `crates/fletcher-core/` | Engine lib: lossless APO config parser/writer (`config.rs`), RBJ biquad DSP (`dsp.rs`), APO detection (`apo.rs`), devices + IPolicyConfig default-switch (`devices.rs`), atomic writes w/ Windows retry (`fsx.rs`), preset store (`presets.rs`), .peace importer (`peace.rs`), binomial/xorshift (`stats.rs`), responses/targets/overlay (`response.rs`), AutoEq's fit ported (`fit.rs`). ~30 tests incl. real-fixture round-trips (`tests/`). Spike probe in `examples/`. |
 | `app/` | Tauri 2 + React/TS. `src-tauri/src/lib.rs` = the whole command surface + tray/hotkeys/watcher/ABX session engine. `src/App.tsx` = the whole UI (MainApp + PopoutHistory + HistoryTree). `src/App.css` = ADR-0010 tokens. |
 | `design/` | The design canvas working files (.dc.html artboards; published at claude.ai/code/artifact/759d400e-2583-45f9-bbd0-3008d41f8cc8). Reference, not runtime. |
 | `docs/` | The knowledge system — see map below. |

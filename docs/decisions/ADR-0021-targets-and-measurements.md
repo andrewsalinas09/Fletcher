@@ -58,6 +58,8 @@ Each step ships on its own and is usable.
 
 **The editor finished (2026-11-04):** a Bounds section in the target editor (owner: "the bounds can also live in the editor"): add, replace or remove the two edge files, which file is upper read from the data; the preview draws the band. `target_save` takes a bounds edit (keep / files / clear); the files a target owns come from disk, never the page, and are renamed with it (TB-64). The editor pops out (⧉ beside ×, `SettingsModal.onPopOut`; channel `te`, window `targeteditor`), carrying the unsaved draft; saves there update main's library. It has no undo keys: it edits no EQ, and its name field keeps its own Ctrl+Z.
 
+**The fit (2026-11-04):** `fletcher_core::fit` is AutoEq's method ported (credited, MIT) and checked step by step against AutoEq's own result file (TB-65); "A target…" sits under the preset palette's New preset… (ADR-0022) and saves an ordinary preset, per ear when the measurement has both ears and per-ear editing is on. Not yet: the Lab (step 7).
+
 ## Consequences
 
 - AutoEq's file layout becomes a second runtime interface (as ADR-0008 already accepted for presets); its measurement folders are versioned by source and rig.

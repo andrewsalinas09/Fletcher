@@ -513,6 +513,56 @@ nav {
   color: inherit;
 }
 
+/* "A target…" opened in its row (Q-33 A3). */
+.pal-sources .preset-row.open,
+.pal-sources .preset-row.open:hover {
+  background: var(--raised);
+}
+
+.fit-panel {
+  align-self: stretch;
+  margin-top: 8px;
+  border: 1px solid var(--line-mid);
+  background: var(--panel);
+  padding: 10px 12px;
+  display: grid;
+  grid-template-columns: 76px 1fr;
+  gap: 8px 10px;
+  align-items: center;
+  cursor: default;
+}
+
+.fit-k {
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.fit-v {
+  min-width: 0;
+}
+
+.fit-pick,
+.fit-go,
+.fit-note {
+  grid-column: 2;
+}
+
+.fit-pick {
+  border: 1px solid var(--line-mid);
+  background: var(--raised);
+}
+
+.fit-go {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.fit-note {
+  line-height: 1.4;
+}
+
 .dev-name-input {
   font: inherit;
   font-size: 13px;

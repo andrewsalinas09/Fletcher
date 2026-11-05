@@ -2,6 +2,15 @@
 
 Append-only session journal. Newest entry first.
 
+## 2026-11-04 — The target editor finished, the preset palette redesigned, "From target…"
+
+- **Target editor:** bounds live in it (add / replace / remove; upper told from lower by the data; the band in the preview); a target's files follow its name and come only from disk (TB-64); it pops out through satellite.ts (`SettingsModal.onPopOut`, ⧉ beside ×), carrying the unsaved draft. Modals taller than the window now scroll, head pinned.
+- **Preset palette (Q-33 → ADR-0022):** mockups of three designs beside today's; the owner chose C (a list plus "New preset…" that turns the palette into the sources) with A's search and A's target panel. Rename, duplicate and delete moved into the preset's settings; a new placeholder-named preset opens there, name selected. Its own component, `presetmenu.tsx`. Keys are taken at the window while it's open, so Esc goes back even after a click moved focus (owner: "it won't let me go back").
+- **"…" means there's more (ADR-0023):** the owner liked it in the mockups and asked for it everywhere it fits; audited and applied across the app.
+- **The fit (ADR-0021 step 6):** `fletcher_core::fit`, AutoEq's `process`/`equalize`/PEQ optimizer ported line by line (Savitzky–Golay smoothing, scipy's find_peaks with prominence and width, the protection mask, both slope limiters, the default 105 Hz LSC + 4 PK and 10 kHz HSC + 4 PK layout, the sharpness penalty); a projected BFGS stands in for SLSQP. "A target…" under New preset fits the playing output's headphone (per ear when both are measured and per-ear editing is on) and saves an ordinary preset.
+- **Learned:** AutoEq's published results use `min_mean_error` (the error's mean over 100 Hz–10 kHz moved to 0, not the 1 kHz crossing): without it the port was 0.64 dB off at every step; with it each step matches AutoEq's own result file within 0.06 dB and the final EQ within 0.063 dB RMS (worst 0.27 dB) to 10 kHz. Checked step by step against the columns of AutoEq's result CSV, not just the end.
+- **Next:** the owner tries "A target…" and the pop-out; then targets in the Lab (step 7) and Q-32.
+
 ## 2026-11-04 — Targets, measurements and preference bounds: research and plan (Q-31, issue #13)
 
 - **Request:** squig.link-style target and preference-bound overlays, first class, "like presets". Owner: not a copy of squig.link; targets are a library (a few built in, the rest made by the user), and the hard half is the headphone's own response.
