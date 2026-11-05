@@ -118,7 +118,7 @@ export function EqViewPanel({
     <>
       {`none on ${st.deviceName ?? "this output"} · `}
       <span className="link-like" onClick={() => send({ type: "openDevice" })}>
-        set one
+        set one…
       </span>
     </>
   );

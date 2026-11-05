@@ -6,6 +6,7 @@ import { openUrl as openUrlInBrowser } from "@tauri-apps/plugin-opener";
 import { setThemeChoice, themeChoice, tok, tokA, useThemeTick, type ThemeChoice } from "./theme";
 import { SliderField } from "./controls";
 import { EV_CHANNEL, EqViewPanel, PopoutEqView, type EqViewCmd, type EqViewState } from "./eqview";
+import { PresetPalette, type AutoeqEntry } from "./presetmenu";
 import { openSatellite, useSatelliteHost } from "./satellite";
 import {
   anyGhost,
@@ -2178,7 +2179,6 @@ type UpdateStatus = {
   /** False in dev builds, which an installer can't replace. */
   canInstall: boolean;
 };
-type AutoeqEntry = { name: string; path: string; note: string };
 
 type AbxState = {
   active: boolean;
@@ -3516,7 +3516,7 @@ function PresetHotkeyAssign({ name, onDone }: { name: string; onDone: (list: Hot
             setListening(true);
           }}
         >
-          assign
+          assign…
         </span>
       )}
       {error && <span className="hk-error">{error}</span>}
@@ -3589,6 +3589,55 @@ function SettingsModal({
       </div>
     </>,
     document.body,
+  );
+}
+
+/** A preset's name in its settings: commits on Enter or leaving the field.
+ *  `fresh` = a preset just made with a placeholder name: it comes selected. */
+function PresetNameField({
+  name,
+  fresh,
+  onRename,
+}: {
+  name: string;
+  fresh: boolean;
+  onRename: (to: string) => Promise<unknown>;
+}) {
+  const [v, setV] = useState(name);
+  const [err, setErr] = useState<string | null>(null);
+  const input = useRef<HTMLInputElement>(null);
+  useEffect(() => setV(name), [name]);
+  useEffect(() => {
+    if (fresh) input.current?.select();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const commit = () => {
+    const to = v.trim();
+    if (!to || to === name) return setV(name);
+    onRename(to)
+      .then(() => setErr(null))
+      .catch((e) => setErr(String(e)));
+  };
+  return (
+    <div className="dev-sect">
+      <span className="room-key">Name</span>
+      <input
+        className="dev-name-input"
+        value={v}
+        autoFocus={fresh}
+        ref={input}
+        onChange={(e) => setV(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+          if (e.key === "Escape") {
+            e.stopPropagation();
+            setV(name);
+          }
+        }}
+        onBlur={commit}
+      />
+      {err && <span className="dim-sm warn-text">{err}</span>}
+    </div>
   );
 }
 
@@ -4194,10 +4243,7 @@ function MainApp() {
   };
   const [presets, setPresets] = useState<PresetsState>({ presets: [], active: null });
   const [menuOpen, setMenuOpen] = useState(false);
-  /** Keyboard cursor inside the preset palette (Q-23: the real search UI). */
-  const [palSel, setPalSel] = useState(0);
   const [eqMenu, setEqMenu] = useState(false);
-  const [newName, setNewName] = useState("");
   const [typeMenu, setTypeMenu] = useState<{ i: number; x: number; y: number } | null>(null);
   /** The large filter editor's popover (Q-27): where it opened, if open. */
   const [editor, setEditor] = useState<{ left: number; bottom: number } | null>(null);
@@ -4468,47 +4514,22 @@ function MainApp() {
   }, [overlayKey]);
   /** The preset whose settings panel is open (null = closed). */
   const [presetCfg, setPresetCfg] = useState<string | null>(null);
-  const [renaming, setRenaming] = useState<{ from: string; value: string } | null>(null);
-  const [aeq, setAeq] = useState("");
-  const [aeqResults, setAeqResults] = useState<AutoeqEntry[]>([]);
+  /** The open settings are for a preset just made (its name gets selected). */
+  const cfgFresh = useRef(false);
+  /** Delete was clicked once in the preset's settings: the second click deletes. */
+  const [delArm, setDelArm] = useState(false);
   const [importing, setImporting] = useState(false);
 
-  const commitRename = () => {
-    if (!renaming) return;
-    const to = renaming.value.trim();
-    if (!to || to === renaming.from) {
-      setRenaming(null);
-      return;
-    }
-    const from = renaming.from;
-    invoke<PresetsState>("preset_rename", { from, to })
-      .then((p) => {
-        // The backend moved the history files; the tree in memory follows,
-        // or its saves would keep going to the old name.
-        const owner = histOwner.current;
-        if (owner?.preset === from) histOwner.current = { ...owner, preset: to };
-        setPresets(p);
-        setRenaming(null);
-        // A preset's hotkey follows its name.
-        invoke<HotkeyInfo[]>("hotkeys").then(setHotkeyList).catch(() => {});
-      })
-      .catch((e) => showNotice(String(e)));
-  };
-
-  // Debounced AutoEQ search (fetches the cached index; network only when stale).
-  useEffect(() => {
-    if (aeq.trim().length < 2) {
-      setAeqResults([]);
-      return;
-    }
-    const t = window.setTimeout(() => {
-      invoke<AutoeqEntry[]>("autoeq_search", { query: aeq })
-        .then(setAeqResults)
-        .catch((e) => showNotice(String(e)));
-    }, 300);
-    return () => window.clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [aeq]);
+  /** Rename a preset (from its settings). Its history and hotkey follow. */
+  const renamePreset = (from: string, to: string) =>
+    invoke<PresetsState>("preset_rename", { from, to }).then((p) => {
+      // The backend moved the history files; the tree in memory follows,
+      // or its saves would keep going to the old name.
+      const owner = histOwner.current;
+      if (owner?.preset === from) histOwner.current = { ...owner, preset: to };
+      setPresets(p);
+      invoke<HotkeyInfo[]>("hotkeys").then(setHotkeyList).catch(() => {});
+    });
 
   // GitHub issue #1: REW's "Export filter settings as text" → a new preset,
   // read exactly as Equalizer APO would play it. Skipped lines are named, never hidden.
@@ -4554,8 +4575,6 @@ function MainApp() {
           .then((p) => loadOrInitHistory(p.active ?? "chain", earSnap(s, earRef.current)))
           .catch(() => initHistory(earSnap(s, earRef.current)));
         setMenuOpen(false);
-        setAeq("");
-        setAeqResults([]);
         showNotice(`imported “${entry.name}” from AutoEQ — it's your active preset now`);
       })
       .catch((e) => showNotice(String(e)))
@@ -6177,7 +6196,6 @@ function MainApp() {
       adopt(s);
       refreshPresets();
       setMenuOpen(false);
-      setNewName("");
       invoke<PresetsState>("presets_state")
         .then((p) => loadOrInitHistory(p.active ?? "chain", earSnap(s, earRef.current)))
         .catch(() => initHistory(earSnap(s, earRef.current))); // each preset keeps its own timeline
@@ -6196,29 +6214,39 @@ function MainApp() {
 
   const switchPreset = (name: string | null) =>
     presetAction(invoke<EqState>("preset_switch", { name }));
+  /** A name not taken yet: `base`, else "base 2", "base 3"… */
+  const freeName = (base: string) => {
+    let name = base;
+    for (let n = 2; presets.presets.includes(name); n++) name = `${base} ${n}`;
+    return name;
+  };
+  /** A new preset arrives with a placeholder name, so its settings open with
+   *  the name selected, ready to type over. */
+  const openFresh = (name: string) => {
+    cfgFresh.current = true;
+    setDelArm(false);
+    setPresetCfg(name);
+  };
   const createPreset = (fromLive: boolean) => {
-    let name = newName.trim();
-    if (!name) {
-      // No typed name → generate one; the button must always do something.
-      const base = fromLive ? "Live copy" : "New preset";
-      name = base;
-      for (let n = 2; presets.presets.includes(name); n++) name = `${base} ${n}`;
-    }
-    presetAction(invoke<EqState>("preset_create", { name, fromLive }));
+    const name = freeName(fromLive ? "Live copy" : "New preset");
+    presetAction(invoke<EqState>("preset_create", { name, fromLive })).then(() => openFresh(name));
   };
   const duplicatePreset = (from: string) => {
-    invoke<PresetsState>("preset_duplicate", { from, to: `${from} copy` })
-      .then(setPresets)
+    const to = freeName(`${from} copy`);
+    invoke<PresetsState>("preset_duplicate", { from, to })
+      .then((p) => {
+        setPresets(p);
+        openFresh(to);
+      })
       .catch((e) => showNotice(String(e)));
   };
   const copyFromSource = (source: string) => {
-    const stem = source.replace(/\.txt$/i, "");
-    let name = `${stem} copy`;
-    for (let n = 2; presets.presets.includes(name); n++) name = `${stem} copy ${n}`;
+    const name = freeName(`${source.replace(/.txt$/i, "")} copy`);
     invoke<PresetsState>("preset_copy_from_source", { source, name })
       .then((p) => {
         setPresets(p);
-        showNotice(`copied to “${name}” — select it in the list to activate`);
+        setMenuOpen(false);
+        openFresh(name);
       })
       .catch((e) => showNotice(String(e)));
   };
@@ -8158,8 +8186,23 @@ function MainApp() {
               {presets.active === presetCfg && <span className="dim-sm">current</span>}
             </>
           }
-          onClose={() => setPresetCfg(null)}
+          onClose={() => {
+            cfgFresh.current = false;
+            setDelArm(false);
+            setPresetCfg(null);
+          }}
         >
+          <PresetNameField
+            key={presetCfg}
+            name={presetCfg}
+            fresh={cfgFresh.current}
+            onRename={(to) =>
+              renamePreset(presetCfg, to).then(() => {
+                cfgFresh.current = false;
+                setPresetCfg(to);
+              })
+            }
+          />
           <div className="dev-sect">
             <span className="room-key">Hotkey</span>
             <span className="dim-sm">Loads this preset from any app.</span>
@@ -8186,6 +8229,27 @@ function MainApp() {
                 <PresetHotkeyAssign name={presetCfg} onDone={setHotkeyList} />
               )}
             </div>
+          </div>
+          <div className="room-row">
+            <button onClick={() => duplicatePreset(presetCfg)}>Duplicate</button>
+            {delArm ? (
+              <>
+                <button
+                  className="warn-text"
+                  onClick={() => {
+                    setDelArm(false);
+                    const gone = presetCfg;
+                    setPresetCfg(null);
+                    deletePreset(gone);
+                  }}
+                >
+                  Delete for good
+                </button>
+                <span className="dim-sm">It can't be undone.</span>
+              </>
+            ) : (
+              <button onClick={() => setDelArm(true)}>Delete…</button>
+            )}
           </div>
         </SettingsModal>
       )}
@@ -9450,12 +9514,12 @@ function MainApp() {
                 ))}
             </div>
             <div className="clips-rail-foot">
-              <button onClick={importTrack}>+ Import track</button>
+              <button onClick={importTrack}>+ Import track…</button>
               <button onClick={openUrl} title="paste any link — yt-dlp extracts the audio into the library">
-                + From link
+                + From link…
               </button>
               <button onClick={() => setGenOpen(true)} title="build a signal from primitives — it lands in the library like any track">
-                ∿ Generate
+                ∿ Generate…
               </button>
             </div>
             {genOpen && (
@@ -10589,7 +10653,7 @@ function MainApp() {
               ))}
               <div className="set-row">
                 <span className="set-key">{targetLib?.yours.length ? "" : "Your targets"}</span>
-                <button onClick={() => setTargetEdit({ initial: null })}>new target</button>
+                <button onClick={() => setTargetEdit({ initial: null })}>new target…</button>
                 <button onClick={importTarget}>import…</button>
               </div>
               <span className="set-note">
@@ -10697,11 +10761,7 @@ function MainApp() {
             <span className="preset-wrap">
               <span
                 className="preset-chip"
-                onClick={() => {
-                  setAeq("");
-                  setPalSel(0);
-                  setMenuOpen((o) => !o);
-                }}
+                onClick={() => setMenuOpen((o) => !o)}
               >
                 <b>{presets.active ?? "No preset"}</b>
                 <span className="dim-sm">{state.sourceFiles.map(toolOfFile).join(" + ")}</span>
@@ -10722,257 +10782,44 @@ function MainApp() {
                   </span>
                 )}
               </span>
-              {menuOpen &&
-                (() => {
-                  // One query searches everything: your presets AND AutoEQ.
-                  const eqQ = aeq.trim().toLowerCase();
-                  const eqPresetRows = presets.presets
-                    .filter((p) => !eqQ || p.toLowerCase().includes(eqQ))
-                    .sort((x, y) => {
-                      const sx = x.toLowerCase().startsWith(eqQ) ? 0 : 1;
-                      const sy = y.toLowerCase().startsWith(eqQ) ? 0 : 1;
-                      return sx - sy || x.localeCompare(y);
-                    });
-                  const pickables: { key: string; run: () => void }[] = [
-                    ...(!eqQ || "flat".includes(eqQ)
-                      ? [{ key: "flat", run: () => switchPreset(null) }]
-                      : []),
-                    ...eqPresetRows.map((p) => ({
-                      key: `p:${p}`,
-                      run: () => switchPreset(p),
-                    })),
-                    ...aeqResults.map((r) => ({
-                      key: `aeq:${r.path}/${r.name}`,
-                      run: () => importAeq(r),
-                    })),
-                  ];
-                  const cur = Math.min(palSel, Math.max(0, pickables.length - 1));
-                  const isKbd = (key: string) => pickables[cur]?.key === key;
-                  return (
-                    <>
-                      <div className="hist-backdrop" onClick={() => setMenuOpen(false)} />
-                      <div className="palette">
-                        <input
-                          className="pal-input mono"
-                          autoFocus
-                          placeholder="search your presets and 5,000+ AutoEQ headphones…"
-                          value={aeq}
-                          onChange={(e) => {
-                            setAeq(e.target.value);
-                            setPalSel(0);
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === "ArrowDown") {
-                              e.preventDefault();
-                              setPalSel((s) => Math.min(s + 1, pickables.length - 1));
-                            } else if (e.key === "ArrowUp") {
-                              e.preventDefault();
-                              setPalSel((s) => Math.max(s - 1, 0));
-                            } else if (e.key === "Enter") {
-                              e.preventDefault();
-                              pickables[cur]?.run();
-                            } else if (e.key === "Escape") {
-                              setMenuOpen(false);
-                            }
-                          }}
-                        />
-                        <div className="pal-list">
-                  {(!eqQ || "flat".includes(eqQ)) && (
-                  <div
-                    className={`preset-row ${presets.active == null ? "current" : ""} ${isKbd("flat") ? "kbd" : ""}`}
-                    onClick={() => switchPreset(null)}
-                    {...tipProps(
-                      <div>
-                        <div className="t-title">Flat</div>
-                        <p>
-                          Turns off all of Fletcher's filters so Fletcher adds nothing to the
-                          signal. External EQs like Peace are unaffected — if their filters are on,
-                          you'll still hear those.
-                        </p>
-                      </div>,
-                    )}
-                  >
-                    <span>Flat — no Fletcher filters</span>
-                  </div>
-                  )}
-                  {!eqQ && state.includes
+              {menuOpen && (
+                <PresetPalette
+                  presets={presets.presets}
+                  active={presets.active}
+                  hotkeyOf={(p) => {
+                    const h = presetHotkey(p);
+                    return h?.enabled ? fmtCombo(h.combo) : null;
+                  }}
+                  externals={state.includes
                     .filter((inc) => inc.toLowerCase() !== OWN_FILE)
-                    .map((inc) => {
-                      const count = state.filters.filter(
-                        (f) => f.sourceFile === inc && f.enabled,
-                      ).length;
-                      return (
-                        <div
-                          key={inc}
-                          className={`preset-row external ${count ? "" : "inactive"}`}
-                          {...tipProps(
-                            <div>
-                              <div className="t-title">{`${inc} — external EQ`}</div>
-                              <p>
-                                {`${inc} belongs to ${toolOfFile(inc) === inc ? "another tool" : toolOfFile(inc)}.
-                                Fletcher never edits or toggles files it doesn't own,
-                                so it can't switch this on or off — do that in the other tool.`}
-                              </p>
-                              <p>
-                                ⧉ copies its whole chain (preamp included) into your presets as an
-                                editable copy — and it works even while the other tool's EQ is
-                                toggled off, by reading its saved state.
-                              </p>
-                              <p className="t-vals mono">
-                                {count ? `currently contributing ${count} filters` : "currently inactive"}
-                              </p>
-                            </div>,
-                          )}
-                        >
-                          <span>{inc.replace(/\.txt$/i, "")}</span>
-                          <span className="ext-badge">external</span>
-                          <span className="spacer" />
-                          <span className="dim-sm">
-                            {count ? `${count} filters on` : "inactive"}
-                          </span>
-                          <span
-                            className="row-act"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              copyFromSource(inc);
-                            }}
-                          >
-                            ⧉
-                          </span>
-                        </div>
-                      );
-                    })}
-                  {eqPresetRows.length > 0 && (
-                    <span className="mono lab-label c-sect">YOUR PRESETS</span>
+                    .map((inc) => ({
+                      file: inc,
+                      label: toolOfFile(inc) === inc ? inc.replace(/\.txt$/i, "") : toolOfFile(inc),
+                      filtersOn: state.filters.filter((f) => f.sourceFile === inc && f.enabled).length,
+                    }))}
+                  busy={importing}
+                  flatTip={tipProps(
+                    <div>
+                      <div className="t-title">Flat</div>
+                      <p>
+                        Turns off all of Fletcher's filters so Fletcher adds nothing to the signal. External EQs like
+                        Peace are unaffected: if their filters are on, you'll still hear those.
+                      </p>
+                    </div>,
                   )}
-                  {eqPresetRows.map((p) => (
-                    <div
-                      key={p}
-                      className={`preset-row ${presets.active === p ? "current" : ""} ${isKbd(`p:${p}`) ? "kbd" : ""}`}
-                      onClick={() => switchPreset(p)}
-                      {...tipProps(
-                        <div>
-                          <div className="t-title">{p}</div>
-                          <p>
-                            Click to activate: this preset goes live with a freshly computed
-                            auto-preamp, and APO applies it instantly. While active, every
-                            edit you make saves back into the preset automatically.
-                          </p>
-                          <p className="t-keys">⧉ duplicate · × delete (permanent — no undo)</p>
-                        </div>,
-                      )}
-                    >
-                      {renaming?.from === p ? (
-                        <input
-                          className="rename-input"
-                          autoFocus
-                          value={renaming.value}
-                          onClick={(e) => e.stopPropagation()}
-                          onChange={(e) => setRenaming({ from: p, value: e.target.value })}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") commitRename();
-                            if (e.key === "Escape") setRenaming(null);
-                          }}
-                          onBlur={commitRename}
-                        />
-                      ) : (
-                        <span>{p}</span>
-                      )}
-                      <span className="spacer" />
-                      {presetHotkey(p)?.enabled && (
-                        <span className="dim-sm mono">{fmtCombo(presetHotkey(p)!.combo)}</span>
-                      )}
-                      <span
-                        className="row-act"
-                        title="rename"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setRenaming({ from: p, value: p });
-                        }}
-                      >
-                        ✎
-                      </span>
-                      <span
-                        className="row-act"
-                        title="Settings for this preset"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setMenuOpen(false);
-                          setPresetCfg(p);
-                        }}
-                      >
-                        ⚙
-                      </span>
-                      <span
-                        className="row-act"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          duplicatePreset(p);
-                        }}
-                      >
-                        ⧉
-                      </span>
-                      <span
-                        className="row-act"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          deletePreset(p);
-                        }}
-                      >
-                        ×
-                      </span>
-                    </div>
-                  ))}
-                  <div className="aeq-block">
-                    <span className="mono aeq-label">
-                      {eqQ.length >= 2
-                        ? "FROM AUTOEQ — imports as a new preset"
-                        : "AUTOEQ — type 2+ letters above to search 5,000+ headphones"}
-                    </span>
-                    {importing && <div className="preset-row"><span className="dim-sm">importing…</span></div>}
-                    {!importing &&
-                      aeqResults.map((r) => (
-                        <div
-                          key={`${r.path}/${r.name}`}
-                          className={`preset-row ${isKbd(`aeq:${r.path}/${r.name}`) ? "kbd" : ""}`}
-                          onClick={() => importAeq(r)}
-                        >
-                          <span>{r.name}</span>
-                          <span className="spacer" />
-                          <span className="dim-sm">{r.note.replace(/^by /, "")}</span>
-                        </div>
-                      ))}
-                    {!importing && eqQ.length >= 2 && aeqResults.length === 0 && (
-                      <div className="preset-row"><span className="dim-sm">no AutoEQ matches</span></div>
-                    )}
-                  </div>
-                  <div className="preset-new">
-                    <input
-                      placeholder="name (optional)…"
-                      value={newName}
-                      onChange={(e) => setNewName(e.target.value)}
-                      onKeyDown={(e) => e.key === "Enter" && createPreset(true)}
-                    />
-                    <button onClick={() => createPreset(true)} title="copy everything currently audible — including filters owned by Peace — into an editable preset">
-                      From live
-                    </button>
-                    <button onClick={() => createPreset(false)} title="start from flat — no filters, build your own">From flat</button>
-                    <button
-                      onClick={importRew}
-                      disabled={importing}
-                      title="import a Room EQ Wizard filter export (EQ window › File › Export › Export filter settings as text) — read exactly as Equalizer APO would play it"
-                    >
-                      From REW file…
-                    </button>
-                  </div>
-                        </div>
-                        <div className="pal-foot mono dim-sm">
-                          ↑↓ navigate · Enter select · Esc close
-                        </div>
-                      </div>
-                    </>
-                  );
-                })()}
+                  onPick={switchPreset}
+                  onImportAeq={importAeq}
+                  onCreate={createPreset}
+                  onRew={importRew}
+                  onCopyExternal={copyFromSource}
+                  onSettings={(p) => {
+                    setMenuOpen(false);
+                    setPresetCfg(p);
+                  }}
+                  onClose={() => setMenuOpen(false)}
+                  onError={showNotice}
+                />
+              )}
             </span>
             <span className="preset-wrap">
               <span
@@ -11003,10 +10850,10 @@ function MainApp() {
                         <span className="mono dim-sm">{`${histStats.edits} steps${histStats.branches ? ` · ${histStats.branches} branch points` : ""}`}</span>
                         <span className="spacer" />
                         <button onClick={importHistory} title="load a history file — its tree replaces this one and you land on its current node">
-                          import
+                          import…
                         </button>
                         <button onClick={exportHistory} title="save this tree (with every branch and snapshot) as a shareable file">
-                          export
+                          export…
                         </button>
                         <button onClick={popOutHistory} title="open the history tree in its own window — stays live-synced">
                           ⇱ pop out

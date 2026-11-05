@@ -622,7 +622,7 @@ export function TargetEditor({
           <span className="room-key">Base</span>
           <div className="room-row">
             <span>{baseName}</span>
-            <button onClick={() => setPicking((p) => !p)}>{picking ? "done" : "change"}</button>
+            <button onClick={() => setPicking((p) => !p)}>{picking ? "done" : "change…"}</button>
           </div>
           {baseInfo?.rig && (
             <span className="dim-sm">

@@ -443,25 +443,86 @@ nav {
   color: var(--line-strong);
 }
 
-.preset-new {
-  display: flex;
-  gap: 6px;
-  padding: 9px 12px;
-  align-items: center;
+/* The preset palette (presetmenu.tsx, Q-33 design C). Rows show only what
+   you read: the name, its hotkey, and ⚙ on the row under the mouse. */
+.pal-src {
+  font-size: 11px;
+  color: var(--dim);
 }
 
-.preset-new input {
-  flex: 1;
-  min-width: 0;
-  font: inherit;
-  font-size: 12px;
-  border: 1px solid var(--line-mid);
-  background: var(--panel);
-  padding: 5px 8px;
+.pal-hk {
+  font-size: 10.5px;
+  color: var(--dim);
+}
+
+.preset-row.current .pal-hk,
+.preset-row.current .pal-src {
+  color: var(--line-strong);
+}
+
+.pal-preset .pal-cfg {
+  visibility: hidden;
+}
+
+.pal-preset:hover .pal-cfg,
+.pal-preset.kbd .pal-cfg,
+.pal-preset.current .pal-cfg {
+  visibility: visible;
+}
+
+.pal-add {
+  color: var(--ink-2);
+  border-bottom: none;
+}
+
+.pal-plus {
+  width: 12px;
+  color: var(--dim);
+}
+
+.pal-back {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--ink);
+  cursor: pointer;
+  outline: none;
+}
+
+.pal-back:hover {
   color: var(--ink);
 }
 
-.preset-new input:focus {
+.pal-sources .preset-row {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+}
+
+.pal-sources b {
+  font-weight: 500;
+}
+
+.pal-off {
+  color: var(--dim);
+}
+
+.pal-mark {
+  background: var(--boost-wash);
+  color: inherit;
+}
+
+.dev-name-input {
+  font: inherit;
+  font-size: 13px;
+  border: 1px solid var(--line-mid);
+  background: var(--panel);
+  color: var(--ink);
+  padding: 5px 8px;
+}
+
+.dev-name-input:focus {
   outline: none;
   border-color: var(--ink);
 }
@@ -494,36 +555,6 @@ nav {
   color: var(--ink);
   min-width: 0;
   flex: 1;
-}
-
-.aeq-block {
-  border-top: 2px solid var(--ink);
-  padding-top: 8px;
-}
-
-.aeq-label {
-  display: block;
-  font-size: 9px;
-  letter-spacing: 0.1em;
-  color: var(--dim);
-  padding: 0 12px 6px;
-}
-
-.aeq-input {
-  display: block;
-  width: calc(100% - 24px);
-  margin: 0 12px 6px;
-  font: inherit;
-  font-size: 12px;
-  border: 1px solid var(--line-mid);
-  background: var(--panel);
-  padding: 5px 8px;
-  color: var(--ink);
-}
-
-.aeq-input:focus {
-  outline: none;
-  border-color: var(--ink);
 }
 
 .hist-chip {
@@ -1446,24 +1477,6 @@ button.ghost {
 
 .handle.bypassed.selected {
   stroke: var(--ink);
-}
-
-.preset-row.external {
-  cursor: default;
-  background: var(--panel);
-}
-
-.preset-row.external.inactive {
-  opacity: 0.55;
-}
-
-.ext-badge {
-  font-family: "IBM Plex Mono", monospace;
-  font-size: 8.5px;
-  letter-spacing: 0.08em;
-  color: var(--cut);
-  border: 1px solid var(--cut);
-  padding: 1px 5px;
 }
 
 .cell.selected .cell-q {

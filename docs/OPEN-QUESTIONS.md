@@ -206,7 +206,7 @@ Owner: "is there a way to also have advanced control over target building? Like 
 - **Proposal:** a target is a base plus a filter chain, edited on a graph exactly like the EQ page (same handles, strip and filter editor). The four knobs become a quick start that writes four filters into that chain, so "simple" and "advanced" are one model. Also: blend two targets (a percentage), and later the measured personal bounds from blind tests.
 - Pops out like the other editors (rule 10).
 
-## Q-33 · The preset menu redesign — **Open (2026-11-04)**
+## Q-33 · The preset menu redesign — **Resolved → ADR-0022 (2026-11-04): design C, with A's search and target panel**
 
 - **Raised by:** the owner, from a screenshot: "we also need to do another edit pass of this like we did for the EQ settings. It's honestly really bad."
 - **Problems:** four always-on icons per row (delete one slip away); making a preset is spread over three places (Peace's row and its copy button, the AutoEQ block, a name field with three buttons), and "From target…" (ADR-0021 step 6) would add a fourth; the AutoEQ header is a standing instruction.
