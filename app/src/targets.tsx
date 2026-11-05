@@ -6,6 +6,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SliderField } from "./controls";
+import { useSatellite } from "./satellite";
 
 export type TargetRef = { kind: "featured"; label: string } | { kind: "autoeq"; file: string } | { kind: "user"; name: string };
 
@@ -447,12 +448,20 @@ export function TargetPicker({
   );
 }
 
-/** A small graph of one or two target curves (the editor's preview). */
-function TargetPreview({ curve, ghost }: { curve: { freqs: number[]; db: (number | null)[] } | null; ghost?: { freqs: number[]; db: (number | null)[] } | null }) {
+/** What saving does to a target's bounds (the backend's BoundsEdit). */
+type BoundsEdit = { kind: "keep" } | { kind: "files"; paths: [string, string] } | { kind: "clear" };
+
+type PreviewCurve ={ freqs: number[]; db: (number | null)[]; upper?: (number | null)[]; lower?: (number | null)[] };
+
+/** A small graph of one or two target curves (the editor's preview), and the
+ *  target's bounds when it has them. */
+function TargetPreview({ curve, ghost }: { curve: PreviewCurve | null; ghost?: PreviewCurve | null }) {
   const W = 520;
   const H = 180;
   const [x0, x1, y0, y1] = [34, W - 8, 8, H - 20];
-  const vals = [...(curve?.db ?? []), ...(ghost?.db ?? [])].filter((v): v is number => v != null);
+  const vals = [...(curve?.db ?? []), ...(curve?.upper ?? []), ...(curve?.lower ?? []), ...(ghost?.db ?? [])].filter(
+    (v): v is number => v != null,
+  );
   const span = Math.max(6, ...vals.map(Math.abs)) + 2;
   const top = Math.ceil(span / 3) * 3;
   const xOf = (f: number) => x0 + (Math.log10(f / 20) / 3) * (x1 - x0);
@@ -477,6 +486,7 @@ function TargetPreview({ curve, ghost }: { curve: { freqs: number[]; db: (number
           </text>
         </g>
       ))}
+      {curve?.upper && curve.lower && <path d={bandPath(curve.freqs, curve.upper, curve.lower, xOf, yOf)} className="ghost-bounds" />}
       {ghost && <path d={pathGaps(ghost.freqs, ghost.db, xOf, yOf)} className="ghost-meas" />}
       {curve && <path d={pathGaps(curve.freqs, curve.db, xOf, yOf)} className="ghost-target" />}
     </svg>
@@ -490,19 +500,28 @@ const KNOBS = [
   { key: "tiltDbPerOct", label: "Tilt", min: -2, max: 2, step: 0.05, unit: "dB/oct", note: "the whole range" },
 ] as const;
 
-/** Create or edit one of your targets: a base plus four knobs, previewed live. */
+/** An editor's unsaved state: what popping it out carries to its window. */
+export type EditorDraft = { initial: UserTarget | null; t: UserTarget; bounds: BoundsEdit };
+
+/** Create or edit one of your targets: a base plus four knobs, previewed live.
+ *  `draft` resumes unsaved work; `draftOut` is kept current with it. */
 export function TargetEditor({
   initial,
+  draft,
+  draftOut,
   library,
   onSaved,
   onClose,
 }: {
   initial: UserTarget | null;
+  draft?: EditorDraft | null;
+  draftOut?: { current: EditorDraft | null };
   library: TargetLibrary | null;
   onSaved: (lib: TargetLibrary) => void;
   onClose: () => void;
 }) {
   const [t, setT] = useState<UserTarget>(
+    draft?.t ??
     initial ?? {
       name: "",
       base: library?.featured.find((f) => f.name.toLowerCase().includes("harman over-ear"))?.target ?? null,
@@ -515,7 +534,9 @@ export function TargetEditor({
     },
   );
   const [picking, setPicking] = useState(false);
-  const [preview, setPreview] = useState<{ freqs: number[]; db: (number | null)[] } | null>(null);
+  const [bounds, setBounds] = useState<BoundsEdit>(draft?.bounds ?? { kind: "keep" });
+  if (draftOut) draftOut.current = { initial, t, bounds };
+  const [preview, setPreview] = useState<PreviewCurve | null>(null);
   const [rigCurve, setRigCurve] = useState<{ freqs: number[]; db: (number | null)[] } | null>(null);
   const [showRig, setShowRig] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -523,21 +544,45 @@ export function TargetEditor({
   const baseInfo = allInfos.find((i) => sameTarget(i.target, t.base)) ?? null;
   const baseName = t.base ? (baseInfo?.name ?? ("file" in t.base ? t.base.file.replace(/\.csv$/, "") : "")) : "Flat";
   const imported = !!t.file;
+  const hasBounds = bounds.kind === "files" || (bounds.kind === "keep" && !!initial?.bounds);
+  const fileName = (p: string) => p.split(/[\\/]/).pop()!;
+  const boundsText =
+    bounds.kind === "files" ? bounds.paths.map(fileName).join(" + ") : hasBounds ? "imported" : "none";
+
+  const pickBounds = async () => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const picked = await open({
+      multiple: true,
+      filters: [{ name: "Bounds: upper and lower edges (REW text, CSV)", extensions: ["txt", "csv", "frd"] }],
+    });
+    const list = Array.isArray(picked) ? picked : picked ? [picked] : [];
+    if (!list.length) return;
+    if (list.length !== 2) return setError("Bounds need exactly two files: the upper and lower edges.");
+    setError(null);
+    setBounds({ kind: "files", paths: [list[0], list[1]] });
+  };
 
   // Latest wins, with no waiting: one preview in flight at a time, and when it
   // lands the newest knob positions go out at once. A slider drag redraws as
   // fast as the backend answers, never queueing stale positions behind it.
+  const boundsSource =
+    bounds.kind === "files"
+      ? bounds
+      : bounds.kind === "keep" && initial?.bounds
+        ? { kind: "saved", name: initial.name }
+        : null;
+  const spec = useMemo(() => ({ t, boundsSource }), [t, bounds, initial]); // eslint-disable-line react-hooks/exhaustive-deps
   const inFlight = useRef(false);
-  const latest = useRef(t);
-  latest.current = t;
+  const latest = useRef(spec);
+  latest.current = spec;
   const requestPreview = () => {
     if (inFlight.current) return;
     inFlight.current = true;
     const sent = latest.current;
     const args = imported
-      ? { target: { kind: "user", name: initial!.name }, base: null, knobs: null }
-      : { target: null, base: sent.base, knobs: sent };
-    invoke<{ freqs: number[]; db: (number | null)[] }>("target_preview", args)
+      ? { target: { kind: "user", name: initial!.name }, base: null, knobs: null, bounds: sent.boundsSource }
+      : { target: null, base: sent.t.base, knobs: sent.t, bounds: sent.boundsSource };
+    invoke<PreviewCurve>("target_preview", args)
       .then((p) => {
         setPreview(p);
         setError(null);
@@ -548,7 +593,7 @@ export function TargetEditor({
         if (latest.current !== sent) requestPreview();
       });
   };
-  useEffect(requestPreview, [t, imported, initial]);
+  useEffect(requestPreview, [spec, imported, initial]);
 
   useEffect(() => {
     if (!showRig || !baseInfo?.rigResponse) return setRigCurve(null);
@@ -558,7 +603,7 @@ export function TargetEditor({
   }, [showRig, baseInfo]);
 
   const save = () =>
-    invoke<TargetLibrary>("target_save", { target: { ...t, name: t.name.trim() }, previous: initial?.name ?? null })
+    invoke<TargetLibrary>("target_save", { target: { ...t, name: t.name.trim() }, previous: initial?.name ?? null, bounds })
       .then((lib) => {
         onSaved(lib);
         onClose();
@@ -627,6 +672,18 @@ export function TargetEditor({
         </div>
       )}
       {imported && <span className="dim-sm">An imported file: shown as it is.</span>}
+      <div className="dev-sect">
+        <span className="room-key">Bounds</span>
+        <div className="room-row">
+          <span>{boundsText}</span>
+          <button onClick={pickBounds}>{hasBounds ? "replace…" : "add…"}</button>
+          {hasBounds && <button onClick={() => setBounds({ kind: "clear" })}>remove</button>}
+        </div>
+        <span className="dim-sm">
+          A preference band around the target: two files, its upper and lower edges as offsets from it (dB), as listening studies
+          publish them.
+        </span>
+      </div>
       <TargetPreview curve={preview} ghost={showRig ? rigCurve : null} />
       {error && <span className="dim-sm warn-text">{error}</span>}
       <div className="room-row">
@@ -648,6 +705,38 @@ export function TargetEditor({
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+/** The satellite channel the target editor's window and main talk on. */
+export const TE_CHANNEL = "te";
+
+/** Main sends the draft it popped out (`seq` changes per pop-out, so a new
+ *  one replaces what the window had) and the library; the window sends back
+ *  the library after a save, and "done" when it closes. */
+export type TeState = { draft: EditorDraft | null; seq: number; library: TargetLibrary | null };
+export type TeCmd = { type: "saved"; lib: TargetLibrary } | { type: "done" };
+
+/** The target editor in its own window (satellite.ts). */
+export function PopoutTargetEditor() {
+  const { state: st, send } = useSatellite<TeState, TeCmd>(TE_CHANNEL);
+  if (!st) return <div className="fe-window-empty dim">waiting for the main window…</div>;
+  if (!st.draft) return <div className="fe-window-empty dim">Nothing open: pick a target in Settings › TARGETS.</div>;
+  const close = () => {
+    send({ type: "done" });
+    import("@tauri-apps/api/window").then(({ getCurrentWindow }) => getCurrentWindow().close()).catch(() => {});
+  };
+  return (
+    <div className="te-window">
+      <TargetEditor
+        key={st.seq}
+        initial={st.draft.initial}
+        draft={st.draft}
+        library={st.library}
+        onSaved={(lib) => send({ type: "saved", lib })}
+        onClose={close}
+      />
     </div>
   );
 }

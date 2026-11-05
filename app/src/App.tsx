@@ -13,10 +13,15 @@ import {
   ghostPeak,
   HeadphonePicker,
   headphoneLine,
+  PopoutTargetEditor,
   readGhosts,
   TargetEditor,
+  TE_CHANNEL,
   writeGhosts,
+  type EditorDraft,
   type GhostPrefs,
+  type TeCmd,
+  type TeState,
   type HeadphoneBinding,
   type HeadphoneRow,
   type Overlay,
@@ -263,6 +268,7 @@ const IS_SCOPE_SPEC_WINDOW = new URLSearchParams(window.location.search).get("vi
 const IS_SCOPE_FFT_WINDOW = new URLSearchParams(window.location.search).get("view") === "scope-fft";
 const IS_OSD_WINDOW = new URLSearchParams(window.location.search).get("view") === "osd";
 const IS_EQVIEW_WINDOW = new URLSearchParams(window.location.search).get("view") === "eqview";
+const IS_TARGET_WINDOW = new URLSearchParams(window.location.search).get("view") === "targeteditor";
 
 type ChainSnap = { enabled: boolean; kind: string; fcHz: number; gainDb: number; q: number }[];
 type HistTreeNode = {
@@ -3532,11 +3538,14 @@ function SettingsModal({
   heading,
   title,
   onClose,
+  onPopOut,
   children,
 }: {
   heading: string;
   title: React.ReactNode;
   onClose: () => void;
+  /** Offered as ⧉ beside ×: the same content in its own window. */
+  onPopOut?: () => void;
   children: React.ReactNode;
 }) {
   const [me] = useState(() => ++modalSerial);
@@ -3566,6 +3575,11 @@ function SettingsModal({
       <div className="palette dev-modal" style={{ zIndex: z + 10 }}>
         <div className="dev-modal-head">
           <span className="mono lab-label">{heading}</span>
+          {onPopOut && (
+            <span className="row-act dev-modal-pop" title="Pop out into its own window" onClick={onPopOut}>
+              ⧉
+            </span>
+          )}
           <span className="row-act" title="Close (Esc)" onClick={onClose}>
             ×
           </span>
@@ -4122,6 +4136,7 @@ export default function App() {
   if (IS_SCOPE_FFT_WINDOW) return <PopoutScopeFft />;
   if (IS_OSD_WINDOW) return <OsdNotice />;
   if (IS_EQVIEW_WINDOW) return <PopoutEqView />;
+  if (IS_TARGET_WINDOW) return <PopoutTargetEditor />;
   // eslint-disable-next-line react-hooks/rules-of-hooks
   return <MainApp />;
 }
@@ -4327,6 +4342,21 @@ function MainApp() {
   const loadHpRows = () => invoke<HeadphoneRow[]>("headphone_bindings").then(setHpRows).catch(() => {});
   /** The target editor (Settings › TARGETS): null = closed, `initial` null = new. */
   const [targetEdit, setTargetEdit] = useState<{ initial: UserTarget | null } | null>(null);
+  // The target editor's window (satellite.ts): popping out carries the
+  // modal's unsaved draft there; the window reports saves back.
+  const teDraftRef = useRef<EditorDraft | null>(null);
+  const [teState, setTeState] = useState<Omit<TeState, "library">>({ draft: null, seq: 0 });
+  useSatelliteHost<TeState, TeCmd>(TE_CHANNEL, { ...teState, library: targetLib }, (c) => {
+    if (c.type === "saved") setTargetLib(c.lib);
+    else setTeState((s) => ({ ...s, draft: null }));
+  });
+  const popOutTargetEditor = () => {
+    const draft = teDraftRef.current;
+    if (!draft) return;
+    setTeState((s) => ({ draft, seq: s.seq + 1 }));
+    setTargetEdit(null);
+    openSatellite("targeteditor", "Fletcher — target", 600, 720).catch((e) => showNotice(String(e)));
+  };
   /** Settings › TARGETS › import: a response file, and optionally preference
    *  bounds (two files; the backend tells upper from lower by their levels). */
   const importTarget = async () => {
@@ -8092,9 +8122,11 @@ function MainApp() {
           heading={targetEdit.initial ? "TARGET" : "NEW TARGET"}
           title={<b>{targetEdit.initial?.name ?? "A target of your own"}</b>}
           onClose={() => setTargetEdit(null)}
+          onPopOut={popOutTargetEditor}
         >
           <TargetEditor
             initial={targetEdit.initial}
+            draftOut={teDraftRef}
             library={targetLib}
             onSaved={setTargetLib}
             onClose={() => setTargetEdit(null)}

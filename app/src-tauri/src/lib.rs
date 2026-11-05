@@ -6426,9 +6426,10 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
 /// The pop-outs whose Ctrl+Z / Ctrl+Y walk the main window's undo rail: every
 /// satellite by default (a new pop-out gets them without being listed; one
 /// left off a list was a recurring miss), except the hotkey popup, which never
-/// takes focus, and the scope windows, which own their transport keys.
+/// takes focus, the scope windows, which own their transport keys, and the
+/// target editor, which edits no EQ and whose name field keeps its own undo.
 fn has_undo_keys(label: &str) -> bool {
-    !matches!(label, "main" | "osd") && !label.starts_with("scope-")
+    !matches!(label, "main" | "osd" | "targeteditor") && !label.starts_with("scope-")
 }
 
 /// Which pop-out currently owns the undo shortcuts. Moving straight from one

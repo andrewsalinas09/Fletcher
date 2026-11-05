@@ -793,6 +793,20 @@ pub async fn targets_search(query: String) -> Result<Vec<TargetInfo>, String> {
 pub struct CurveDto {
     pub freqs: Vec<f64>,
     pub db: Vec<Option<f64>>,
+    /// The preference band around it, when asked for (editor preview).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upper: Option<Vec<Option<f64>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lower: Option<Vec<Option<f64>>>,
+}
+
+/// Which bounds the editor's preview draws: a saved target's, or two files
+/// just picked (not saved yet).
+#[derive(Deserialize, Debug)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum BoundsSource {
+    Saved { name: String },
+    Files { paths: [String; 2] },
 }
 
 fn graph_freqs() -> Vec<f64> {
@@ -800,12 +814,13 @@ fn graph_freqs() -> Vec<f64> {
 }
 
 /// A target's curve; with `knobs` (from the editor, unsaved), those knobs on
-/// `base` instead.
+/// `base` instead; with `bounds`, the band around it too.
 #[tauri::command]
 pub async fn target_preview(
     target: Option<TargetRef>,
     base: Option<TargetRef>,
     knobs: Option<UserTarget>,
+    bounds: Option<BoundsSource>,
 ) -> Result<CurveDto, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let curve = match (target, knobs) {
@@ -827,8 +842,24 @@ pub async fn target_preview(
         };
         let placed = curve.shifted(response::anchor_offset(&curve).unwrap_or(0.0));
         let freqs = graph_freqs();
+        let band = match bounds {
+            Some(BoundsSource::Saved { name }) => target_bounds(&TargetRef::User { name }),
+            Some(BoundsSource::Files { paths }) => {
+                let [(_, upper), (_, lower)] = read_bounds_pair(&paths)?;
+                Some(Bounds { upper, lower })
+            }
+            None => None,
+        };
+        let edge = |e: &Curve| -> Vec<Option<f64>> {
+            freqs
+                .iter()
+                .map(|&f| Some(placed.at(f)? + e.at(f)?))
+                .collect()
+        };
         Ok(CurveDto {
             db: placed.sample(&freqs),
+            upper: band.as_ref().map(|b| edge(&b.upper)),
+            lower: band.as_ref().map(|b| edge(&b.lower)),
             freqs,
         })
     })
@@ -836,9 +867,73 @@ pub async fn target_preview(
     .map_err(|e| e.to_string())?
 }
 
+/// What saving does to a target's preference bounds.
+#[derive(Deserialize, Debug, Default)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum BoundsEdit {
+    /// Keep the ones it has (none for a new target).
+    #[default]
+    Keep,
+    /// Take these two files (either order: the data says which edge is which).
+    Files { paths: [String; 2] },
+    /// Drop them.
+    Clear,
+}
+
+/// The name of a file a target owns in the targets folder: "<name><suffix>.txt".
+fn owned_file(name: &str, suffix: &str) -> String {
+    format!("{}{suffix}.txt", file_safe(name))
+}
+
+const UPPER: &str = " bounds upper";
+const LOWER: &str = " bounds lower";
+
+/// Two bounds files read and ordered upper first. Which is the upper edge is
+/// read from the data, not the order they were picked in: the higher average.
+fn read_bounds_pair(paths: &[String; 2]) -> Result<[(String, Curve); 2], String> {
+    let read = |p: &String| -> Result<(String, Curve), String> {
+        let text = std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"))?;
+        let c = Curve::parse(&text).map_err(|e| format!("{p}: {e}"))?;
+        Ok((text, c))
+    };
+    let (a, b) = (read(&paths[0])?, read(&paths[1])?);
+    let mean = |c: &Curve| c.db.iter().sum::<f64>() / c.db.len().max(1) as f64;
+    Ok(if mean(&a.1) >= mean(&b.1) {
+        [a, b]
+    } else {
+        [b, a]
+    })
+}
+
 /// Save one of the user's targets (create, or update; `previous` renames).
+/// The files a target owns (an imported curve, its bounds) come from what's
+/// on disk, never from the page, and are renamed along with the target.
 #[tauri::command]
-pub fn target_save(target: UserTarget, previous: Option<String>) -> Result<TargetLibrary, String> {
+pub fn target_save(
+    target: UserTarget,
+    previous: Option<String>,
+    bounds: Option<BoundsEdit>,
+) -> Result<TargetLibrary, String> {
+    let old = match &previous {
+        Some(p) => Some(user_target(p).ok_or_else(|| format!("no target named {p}"))?),
+        None => None,
+    };
+    save_user_target(
+        UserTarget {
+            file: old.as_ref().and_then(|o| o.file.clone()),
+            bounds: old.as_ref().and_then(|o| o.bounds.clone()),
+            ..target
+        },
+        previous.as_deref(),
+        bounds.unwrap_or_default(),
+    )
+}
+
+fn save_user_target(
+    target: UserTarget,
+    previous: Option<&str>,
+    edit: BoundsEdit,
+) -> Result<TargetLibrary, String> {
     let name =
         fletcher_core::presets::sanitize_name(&target.name).ok_or("give the target a name")?;
     if let Some(TargetRef::User { name: b }) = &target.base {
@@ -846,13 +941,46 @@ pub fn target_save(target: UserTarget, previous: Option<String>) -> Result<Targe
             return Err("a target can't be its own base".into());
         }
     }
-    let renaming = previous.as_ref().filter(|p| **p != name);
+    let renaming = previous.filter(|p| *p != name);
     if (renaming.is_some() || previous.is_none()) && user_target(&name).is_some() {
         return Err(format!("a target named {name:?} already exists"));
     }
-    std::fs::create_dir_all(targets_dir()).map_err(|e| e.to_string())?;
+    let dir = targets_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    // A file that's already named for this target stays; one named for the
+    // old name moves.
+    let follow = |f: &String, suffix: &str| -> Result<String, String> {
+        let to = owned_file(&name, suffix);
+        if *f != to {
+            std::fs::rename(dir.join(f), dir.join(&to)).map_err(|e| format!("{f}: {e}"))?;
+        }
+        Ok(to)
+    };
+    let file = target.file.as_ref().map(|f| follow(f, "")).transpose()?;
+    let bounds = match (edit, &target.bounds) {
+        (BoundsEdit::Keep, Some([u, l])) => Some([follow(u, UPPER)?, follow(l, LOWER)?]),
+        (BoundsEdit::Keep, None) => None,
+        (BoundsEdit::Files { paths }, old) => {
+            let [(ut, _), (lt, _)] = read_bounds_pair(&paths)?;
+            let (u, l) = (owned_file(&name, UPPER), owned_file(&name, LOWER));
+            fsx::write_atomic(&dir.join(&u), &ut).map_err(|e| e.to_string())?;
+            fsx::write_atomic(&dir.join(&l), &lt).map_err(|e| e.to_string())?;
+            for f in old.iter().flatten().filter(|f| **f != u && **f != l) {
+                let _ = std::fs::remove_file(dir.join(f));
+            }
+            Some([u, l])
+        }
+        (BoundsEdit::Clear, old) => {
+            for f in old.iter().flatten() {
+                let _ = std::fs::remove_file(dir.join(f));
+            }
+            None
+        }
+    };
     let target = UserTarget {
         name: name.clone(),
+        file,
+        bounds,
         ..target
     };
     let text = serde_json::to_string_pretty(&target).map_err(|e| e.to_string())?;
@@ -876,33 +1004,11 @@ pub fn target_import(
         return Err(format!("a target named {name:?} already exists"));
     }
     std::fs::create_dir_all(targets_dir()).map_err(|e| e.to_string())?;
-    let copy = |src: &str, suffix: &str| -> Result<String, String> {
-        let text = std::fs::read_to_string(src).map_err(|e| format!("{src}: {e}"))?;
-        Curve::parse(&text).map_err(|e| format!("{src}: {e}"))?;
-        let file = format!("{}{suffix}.txt", file_safe(&name));
-        fsx::write_atomic(&targets_dir().join(&file), &text).map_err(|e| e.to_string())?;
-        Ok(file)
-    };
-    let file = copy(&path, "")?;
-    // Which file is the upper edge is read from the data, not the order they
-    // were picked in: the one with the higher average.
-    let mean_of = |p: &str| -> Result<f64, String> {
-        let c = Curve::parse(&std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"))?)
-            .map_err(|e| format!("{p}: {e}"))?;
-        Ok(c.db.iter().sum::<f64>() / c.db.len() as f64)
-    };
-    let bounds = match bounds {
-        Some([a, b]) => {
-            let (u, l) = if mean_of(&a)? >= mean_of(&b)? {
-                (a, b)
-            } else {
-                (b, a)
-            };
-            Some([copy(&u, " bounds upper")?, copy(&l, " bounds lower")?])
-        }
-        None => None,
-    };
-    target_save(
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?;
+    Curve::parse(&text).map_err(|e| format!("{path}: {e}"))?;
+    let file = owned_file(&name, "");
+    fsx::write_atomic(&targets_dir().join(&file), &text).map_err(|e| e.to_string())?;
+    save_user_target(
         UserTarget {
             name,
             base: None,
@@ -911,9 +1017,10 @@ pub fn target_import(
             treble_db: 0.0,
             tilt_db_per_oct: 0.0,
             file: Some(file),
-            bounds,
+            bounds: None,
         },
         None,
+        bounds.map_or(BoundsEdit::Keep, |paths| BoundsEdit::Files { paths }),
     )
 }
 

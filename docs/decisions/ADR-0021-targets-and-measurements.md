@@ -56,6 +56,8 @@ Each step ships on its own and is usable.
 
 **EQ view panel, design A (owner's pick, 2026-11-04):** `src/eqview.tsx` holds the whole ⚙ panel (filter order, ears, ghosts as a layer list whose swatches are the graph's own lines, the target chosen in its row, bounds under it, smoothing) and its own window (`?view=eqview`; main sends `ev-sync`, the window sends `ev-cmd`, Q-20 pattern, rule 10). Every slider is `SliderField` (src/controls.tsx). Steps 3, 4 and 5 touch pop-outs (the target modal), so rule 10 applies.
 
+**The editor finished (2026-11-04):** a Bounds section in the target editor (owner: "the bounds can also live in the editor"): add, replace or remove the two edge files, which file is upper read from the data; the preview draws the band. `target_save` takes a bounds edit (keep / files / clear); the files a target owns come from disk, never the page, and are renamed with it (TB-64). The editor pops out (⧉ beside ×, `SettingsModal.onPopOut`; channel `te`, window `targeteditor`), carrying the unsaved draft; saves there update main's library. It has no undo keys: it edits no EQ, and its name field keeps its own Ctrl+Z.
+
 ## Consequences
 
 - AutoEq's file layout becomes a second runtime interface (as ADR-0008 already accepted for presets); its measurement folders are versioned by source and rig.

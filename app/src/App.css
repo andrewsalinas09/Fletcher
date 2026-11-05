@@ -3980,3 +3980,18 @@ button.ghost {
 .ev-window .ev-panel {
   min-width: 0;
 }
+
+.dev-modal-pop {
+  margin-left: auto;
+  margin-right: 10px;
+}
+
+.te-window {
+  padding: 14px 16px;
+  min-height: 100vh;
+  background: var(--raised);
+}
+
+.te-window .target-editor {
+  min-width: 0;
+}
