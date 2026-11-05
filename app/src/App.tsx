@@ -3802,7 +3802,7 @@ const Q_RANGE: [number, number] = [0.05, 50];
 
 /** Main → filter-editor window: the filter it shows (follows the selection). */
 /** The EQ graph's ghosts, for another graph to draw the same way (ADR-0021). */
-type GhostView = { overlay: Overlay; prefs: GhostPrefs; ear: Ear };
+type GhostView = { overlay: Overlay; prefs: GhostPrefs; ear: Ear; split: boolean };
 type FeSync = {
   index: number | null;
   filter: EqFilter | null;
@@ -4041,6 +4041,7 @@ function FilterEditor({
             overlay={ghosts.overlay}
             prefs={ghosts.prefs}
             ear={ghosts.ear}
+            split={ghosts.split}
             drawn={totalDb}
             xOf={xOf}
             yOf={yOf}
@@ -7369,7 +7370,7 @@ function MainApp() {
   }, [multiSel]);
 
   /** The EQ graph's ghosts, for the filter editor's plot (popover and window). */
-  const feGhosts: GhostView | null = overlay && anyGhost(ghosts) ? { overlay, prefs: ghosts, ear } : null;
+  const feGhosts: GhostView | null = overlay && anyGhost(ghosts) ? { overlay, prefs: ghosts, ear, split: !!settings?.perEar } : null;
   // The filter-editor window (Q-20 pattern): main owns the truth.
   const emitFeSync = () => {
     const f = state && feIndex != null ? state.filters[feIndex] : undefined;
@@ -7715,6 +7716,7 @@ function MainApp() {
         overlay={overlay}
         prefs={ghosts}
         ear={ear}
+        split={!!settings?.perEar}
         drawn={state.sumDb.map((db) => db - state.preampDb)}
         xOf={xOf}
         yOf={yOfPinned}

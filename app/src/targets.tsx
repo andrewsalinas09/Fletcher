@@ -40,6 +40,8 @@ export type Overlay = {
   measurementError: string | null;
   measurementLeft: (number | null)[];
   measurementRight: (number | null)[] | null;
+  /** Both ears averaged: shown while the ears aren't edited separately. */
+  measurementAverage: (number | null)[];
   target: (number | null)[];
   targetError: string | null;
   boundsUpper: (number | null)[];
@@ -160,6 +162,7 @@ export function GhostLayers({
   overlay,
   prefs,
   ear,
+  split,
   drawn,
   xOf,
   yOf,
@@ -169,6 +172,8 @@ export function GhostLayers({
   overlay: Overlay;
   prefs: GhostPrefs;
   ear: "left" | "right";
+  /** Each ear is edited separately: draw this ear's own measurement. */
+  split: boolean;
   drawn: number[];
   xOf: (f: number) => number;
   yOf: (db: number) => number;
@@ -178,7 +183,14 @@ export function GhostLayers({
 }) {
   if (!anyGhost(prefs) || overlay.freqs.length !== drawn.length) return null;
   const f = overlay.freqs;
-  const meas = ear === "right" && overlay.measurementRight ? overlay.measurementRight : overlay.measurementLeft;
+  // Ears edited separately: each ear's own file. Otherwise one EQ plays on
+  // both, so the measurement shown is both ears averaged, the same curve the
+  // target is fitted to and "A target…" fits.
+  const meas = !split
+    ? overlay.measurementAverage
+    : ear === "right" && overlay.measurementRight
+      ? overlay.measurementRight
+      : overlay.measurementLeft;
   const hasMeas = meas.some((v) => v != null);
   const predicted = meas.map((m, i) => (m == null ? null : m + drawn[i]));
   // Reliability fades, it doesn't stop: shading ramps up from where peaks and
@@ -217,7 +229,7 @@ export function GhostLayers({
 export function ghostPeak(overlay: Overlay | null, prefs: GhostPrefs): number {
   if (!overlay || !anyGhost(prefs)) return 0;
   const rows = [
-    ...(prefs.measurement || prefs.predicted ? [overlay.measurementLeft] : []),
+    ...(prefs.measurement || prefs.predicted ? [overlay.measurementLeft, overlay.measurementAverage, overlay.measurementRight ?? []] : []),
     ...(prefs.target ? [overlay.target] : []),
     ...(prefs.bounds ? [overlay.boundsUpper, overlay.boundsLower] : []),
   ];
@@ -349,11 +361,20 @@ export function HeadphonePicker<D>({
       )}
       {mode === "import" && (
         <div className="hp-search">
-          <span className="dim-sm">
-            {files.length === 2
-              ? `Left: ${files[0].split(/[\\/]/).pop()} · Right: ${files[1].split(/[\\/]/).pop()}`
-              : `${files[0]?.split(/[\\/]/).pop()} (both ears; pick two files for left and right)`}
-          </span>
+          {files.length === 2 ? (
+            // The dialog hands files back in no particular order, so which is
+            // which ear is shown, and swapped with one click.
+            <div className="room-row">
+              <span className="dim-sm">
+                {`Left: ${files[0].split(/[\\/]/).pop()} · Right: ${files[1].split(/[\\/]/).pop()}`}
+              </span>
+              <span className="fe-btn mono" title="Swap left and right" onClick={() => setFiles([files[1], files[0]])}>
+                ⇄ swap
+              </span>
+            </div>
+          ) : (
+            <span className="dim-sm">{`${files[0]?.split(/[\\/]/).pop()} (both ears; pick two files for left and right)`}</span>
+          )}
           <div className="room-row">
             <input placeholder="headphone name" value={name} onChange={(e) => setName(e.target.value)} />
             <button

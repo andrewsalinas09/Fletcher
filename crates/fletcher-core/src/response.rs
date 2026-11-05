@@ -348,6 +348,9 @@ pub struct Overlay {
     pub measurement_left: Vec<Option<f64>>,
     /// Only when the measurement has separate ears.
     pub measurement_right: Option<Vec<Option<f64>>>,
+    /// Both ears averaged (the left ear when there's one): what's shown while
+    /// the ears aren't edited separately, and what the target is fitted to.
+    pub measurement_average: Vec<Option<f64>>,
     /// Measurement + EQ, per ear (right only when either differs per ear).
     pub predicted_left: Vec<Option<f64>>,
     pub predicted_right: Option<Vec<Option<f64>>>,
@@ -394,8 +397,9 @@ pub fn overlay(input: &OverlayInput) -> Overlay {
         (left, right, avg)
     });
 
-    if let Some((left, right, _)) = &ears {
+    if let Some((left, right, avg)) = &ears {
         out.measurement_left = left.sample(freqs);
+        out.measurement_average = avg.sample(freqs);
         out.measurement_right = right.as_ref().map(|r| r.sample(freqs));
         let plus = |m: &Curve, eq: &[f64]| -> Vec<Option<f64>> {
             m.sample(freqs)
@@ -659,5 +663,12 @@ mod tests {
         let gap =
             o.measurement_left[0].unwrap() - o.measurement_right.as_ref().unwrap()[0].unwrap();
         assert!((gap - 2.0).abs() < 1e-9);
+        // The average sits between the ears (shown while they're not split).
+        let (l, r, a) = (
+            o.measurement_left[0].unwrap(),
+            o.measurement_right.as_ref().unwrap()[0].unwrap(),
+            o.measurement_average[0].unwrap(),
+        );
+        assert!(a < l && a > r, "{r} < {a} < {l}");
     }
 }
