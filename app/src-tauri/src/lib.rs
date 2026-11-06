@@ -6412,11 +6412,12 @@ const MINIMIZED_ARG: &str = "--minimized";
 /// The main window starts hidden (tauri.conf.json) and is shown here, unless
 /// Windows started Fletcher at sign-in. Also re-registers Start with Windows
 /// when it's on, so entries written before `--minimized` existed (or for an
-/// older install path) pick it up.
+/// older install path) pick it up. Release builds only: a dev build shares the
+/// identifier and would point the entry at target\debug.
 fn start_window(app: &tauri::App) {
     use tauri_plugin_autostart::ManagerExt;
     let autolaunch = app.autolaunch();
-    if autolaunch.is_enabled().unwrap_or(false) {
+    if !cfg!(debug_assertions) && autolaunch.is_enabled().unwrap_or(false) {
         let _ = autolaunch.enable();
     }
     if !std::env::args().any(|a| a == MINIMIZED_ARG) {
