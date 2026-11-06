@@ -10506,7 +10506,7 @@ function MainApp() {
                 <div className={`switch ${autostart ? "on" : ""}`} onClick={toggleAutostart}>
                   <div className="knob" />
                 </div>
-                <span className="set-live dim-sm">runs in the tray so the A/B hotkey works</span>
+                <span className="set-live dim-sm">starts in the tray, so the A/B hotkey works</span>
               </div>
             </div>
             <div className="set-sect">

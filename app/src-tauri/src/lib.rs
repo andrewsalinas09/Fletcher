@@ -6406,6 +6406,24 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
+/// What Start with Windows launches Fletcher with: straight to the tray.
+const MINIMIZED_ARG: &str = "--minimized";
+
+/// The main window starts hidden (tauri.conf.json) and is shown here, unless
+/// Windows started Fletcher at sign-in. Also re-registers Start with Windows
+/// when it's on, so entries written before `--minimized` existed (or for an
+/// older install path) pick it up.
+fn start_window(app: &tauri::App) {
+    use tauri_plugin_autostart::ManagerExt;
+    let autolaunch = app.autolaunch();
+    if autolaunch.is_enabled().unwrap_or(false) {
+        let _ = autolaunch.enable();
+    }
+    if !std::env::args().any(|a| a == MINIMIZED_ARG) {
+        show_main_window(app.handle());
+    }
+}
+
 fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::menu::{Menu, MenuItem};
     use tauri::tray::TrayIconBuilder;
@@ -6990,8 +7008,10 @@ pub fn run() {
         // double-click while it's in the tray) brings this window forward and
         // exits, instead of starting a second copy that fights over fletcher.txt
         // and the A/B hotkey.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            show_main_window(app)
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if !args.iter().any(|a| a == MINIMIZED_ARG) {
+                show_main_window(app)
+            }
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -6999,9 +7019,10 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            None,
+            Some(vec![MINIMIZED_ARG]),
         ))
         .setup(|app| {
+            start_window(app);
             spawn_config_watcher(app.handle().clone());
             spawn_device_watcher(app.handle().clone());
             let _ = setup_tray(app);

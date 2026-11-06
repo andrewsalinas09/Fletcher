@@ -2,6 +2,10 @@
 
 Each version's section becomes its GitHub release notes and the "what's new" text in Settings › UPDATES. Write for listeners, not developers.
 
+## 0.8.1
+
+- **Start with Windows now starts Fletcher in the tray**, without opening its window. The A/B hotkey and preset hotkeys work from the start; open the window from the tray icon.
+
 ## 0.8.0
 
 - **Targets and your headphone's measurement on the EQ graph (#13).** Set the headphone on each output (its settings, from the output menu's ⚙): search AutoEQ's 5,000+ measurements, which name who measured it and on which rig, or import your own file, one per ear if you have both. Then, in the EQ page's ⚙ (now **EQ view**), show your headphone as measured, as it sounds with your EQ, and a target, all lined up by shape. Treble above 6 kHz is shaded, because there a measurement depends more on how the headphone sits than on the headphone.

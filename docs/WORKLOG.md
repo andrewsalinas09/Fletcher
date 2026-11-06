@@ -2,6 +2,12 @@
 
 Append-only session journal. Newest entry first.
 
+## 2026-11-06 — Start with Windows starts in the tray
+
+- **Did:** a user asked for Start with Windows to start minimized; it never did (the autostart plugin registered no arguments, the window was visible at creation). Now the window is created hidden, shown in `setup` unless launched with `--minimized`, which autostart registers; existing entries are re-registered at launch so they gain it (TB-68). The setting's hint says "starts in the tray".
+- **Learned:** testing autostart needs no VM or reboot: it's one `HKCU\…\Run` value, so running its command line reproduces a sign-in launch. Single instance means a test copy hands off to a running Fletcher, so quit that one first.
+- **Next:** the owner verifies (TB-68); ship in 0.8.1.
+
 ## 2026-11-04 — The target editor finished, the preset palette redesigned, "From target…"
 
 - **Target editor:** bounds live in it (add / replace / remove; upper told from lower by the data; the band in the preview); a target's files follow its name and come only from disk (TB-64); it pops out through satellite.ts (`SettingsModal.onPopOut`, ⧉ beside ×), carrying the unsaved draft. Modals taller than the window now scroll, head pinned.
